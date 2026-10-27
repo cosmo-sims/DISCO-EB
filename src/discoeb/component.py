@@ -252,15 +252,29 @@ class State:
     matrix, or a function of the component instance returning one of those.
     ``tail_from`` marks the elements from that index on (of every row, for a
     matrix) as a free-streaming tail of the Jacobian's sparsity pattern.
-    ``initial`` is the initial condition; see the module docstring.
+    ``driver`` marks a state that evolves on its own and drives the rest: its
+    rows of the Jacobian hold only the driver states' columns, and its columns
+    may appear in every row (the expansion and recombination history of
+    :mod:`discoeb.fused`, which the whole hierarchy reads and which reads
+    nothing of the hierarchy). ``initial`` is the initial condition; see the
+    module docstring.
     """
 
-    def __init__(self, shape=(), tail_from: int | None = None, initial: Callable | None = None):
+    def __init__(
+        self,
+        shape=(),
+        tail_from: int | None = None,
+        initial: Callable | None = None,
+        driver: bool = False,
+    ):
         self.shape = shape
         self.tail_from = tail_from
         self.initial_fn = initial
+        self.driver = bool(driver)
         if tail_from is not None and tail_from < 1:
             raise ValueError("tail_from must leave at least one core element for the tail to couple to")
+        if driver and tail_from is not None:
+            raise ValueError("a driver state is densely coupled to itself; it has no tail")
         if initial is not None and not callable(initial):
             raise TypeError("initial must be a function of the quantities the initial condition reads")
 
@@ -625,11 +639,14 @@ class Model:
 
         Every element not in a tail is core; a tail is the run of a row from
         its state's ``tail_from`` on, and its parent the element before it.
+        Driver states (:meth:`drivers`) belong to neither.
         """
 
         core: list[int] = []
         tails: list[tuple[int, list[int]]] = []
         for s in self.states.values():
+            if s.declared.driver:
+                continue
             cut = s.declared.tail_from
             for row in s.rows():
                 if cut is None:
@@ -639,16 +656,26 @@ class Model:
                     tails.append((row[cut - 1], row[cut:]))
         return core, tails
 
+    def drivers(self) -> list[int]:
+        """The flat indices of the driver states (``State(..., driver=True)``)."""
+
+        return [i for s in self.states.values() if s.declared.driver for row in s.rows() for i in row]
+
     def sparsity(self) -> np.ndarray:
         """The ``(nnz, 2)`` index array of the Jacobian's nonzeros.
 
         The core couples densely to itself; a tail is tridiagonal and meets the
-        core only through its parent. This is a superset of the true Jacobian,
-        which is what a colouring needs.
+        core only through its parent. A driver state's columns are declared in
+        every row and its rows hold the driver columns alone: the Jacobian is
+        block lower triangular, the drivers' block in the corner, and the
+        elimination fills nothing whichever end it starts from. This is a
+        superset of the true Jacobian, which is what a colouring needs.
         """
 
         core, tails = self.blocks()
+        drivers = self.drivers()
         entries = {(r, c) for r in core for c in core}
+        entries |= {(r, c) for r in range(self.nvar) for c in drivers}
         for parent, tail in tails:
             for i, idx in enumerate(tail):
                 entries.add((idx, idx))
