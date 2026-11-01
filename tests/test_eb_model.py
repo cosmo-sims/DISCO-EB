@@ -150,10 +150,13 @@ def test_the_initial_state_and_sparsity_come_from_the_components():
     assert (y0[:, model.index["theta_4"]:model.index["e_0"]] == 0.0).all()
     assert (y0[:, model.index["n_4"]:model.index["n_17"] + 1] == 0.0).all()
     np.testing.assert_allclose(y0[:, model.index["psi_1_0"]], -0.25 * y0[:, model.index["n_0"]] * model.components[-2].dlnf0[1])
-    # The sparsity pattern is read off the same states.
-    pattern = model.sparsity()
-    assert pattern.shape[1] == 2 and pattern.max() < layout.nvar
-    assert len(perturbation_model(PerturbationLayout()).sparsity()) == 11 * 11 + 3 * 39
+    # The sparsity pattern is traced through the same components: the metric
+    # reads the dark-energy momentum through dgq, a free-streaming neutrino
+    # multipole reads only its neighbours.
+    pattern = {(int(r), int(c)) for r, c in model.sparsity()}
+    i = model.index
+    assert (i["etak"], i["thetaq"]) in pattern and (i["n_5"], i["n_4"]) in pattern
+    assert (i["n_5"], i["etak"]) not in pattern and (i["n_5"], i["n_5"]) not in pattern
 
 
 def test_make_initial_states_uses_the_model():

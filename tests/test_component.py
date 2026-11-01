@@ -180,7 +180,7 @@ class Hierarchy(Species):
         output[0] = k
         output[1] = -k
 
-    x = State(lambda self: self.LMAX + 1, tail_from=1, initial=_x_initial)
+    x = State(lambda self: self.LMAX + 1, initial=_x_initial)
 
     def inv_tau(tau):
         return 1.0 / tau
@@ -211,22 +211,95 @@ def test_vector_states_are_arrays_and_their_output_buffers_are_provided():
     np.testing.assert_array_equal(model.initial_state([2.0]), [[2.0, -2.0, 0.0, 0.0]])
 
 
-def test_sparsity_roles_give_the_jacobian_pattern():
-    """x_0 is core; x_1..x_3 a tridiagonal tail hanging off x_0."""
+def pattern(model):
+    return {(int(r), int(c)) for r, c in model.sparsity()}
+
+
+def finite_difference_pattern(f, y, step=1e-6):
+    """The nonzeros of a central-difference Jacobian of ``f`` at ``y``."""
+    y = np.asarray(y, dtype=float)
+    columns = []
+    for j in range(len(y)):
+        e = np.zeros_like(y)
+        e[j] = step
+        columns.append((np.asarray(f(y + e)) - np.asarray(f(y - e))) / (2 * step))
+    return {(int(r), int(c)) for r, c in zip(*np.nonzero(np.array(columns).T))}
+
+
+def test_the_jacobian_pattern_is_traced_through_the_providers():
+    """``stream`` couples each multipole to its neighbours; nothing declares that."""
     model = Model([Hierarchy()])
-    entries = {tuple(r) for r in model.sparsity()}
-    assert entries == {(0, 0), (0, 1), (1, 0), (1, 1), (1, 2), (2, 1), (2, 2), (2, 3), (3, 2), (3, 3)}
+    tridiagonal = {(0, 1), (1, 0), (1, 2), (2, 1), (2, 3), (3, 2), (3, 3)}  # x_3 damps itself
+    assert pattern(model) == tridiagonal
+    rhs = model.build({"k": 0}, **HOST)
+    assert finite_difference_pattern(lambda y: rhs(tuple(y), 3.0, (0.7,)), (1.0, 2.0, 4.0, 8.0)) == tridiagonal
 
     class Core(Species):
-        v = State(2)  # no tail: densely coupled to everything else in the core
+        v = State(2)
 
         def d_v(k, v, output):
-            output[0] = k * v[1]
+            output[0] = k * v[1]  # v_1 has no derivative of its own: an empty row
 
-    entries = {tuple(r) for r in Model([Core(), Hierarchy()]).sparsity()}
-    core = {0, 1, 2}  # v_0, v_1, x_0
-    assert all((r, c) in entries for r in core for c in core)
-    assert (0, 4) not in entries and (3, 4) in entries and (2, 3) in entries
+    assert pattern(Model([Core(), Hierarchy()])) == {(0, 1)} | {(r + 2, c + 2) for r, c in tridiagonal}
+
+    # The toy model, against the hand-written reference: the pattern threads
+    # through the sums and the interaction (vb and qg through the drag).
+    model = toy_model()
+    expected = finite_difference_pattern(lambda y: reference(y, TAU, P), Y0)
+    assert pattern(model) == expected == {
+        (0, 0), (1, 2), (2, 1), (2, 2), (2, 4), (3, 4), (4, 2), (4, 3), (4, 4)
+    }
+
+
+def test_providers_of_inputs_alone_are_not_traced():
+    """``kappa`` floors ``opacity`` with ``max``, which a traced value refuses: it is never called."""
+
+    class Tables(Component):
+        def __init__(self):
+            self.calls = 0
+
+            def a(tau):
+                self.calls += 1
+                return int(tau) + 1.0  # int() of a traced value would raise
+
+            self.a = a
+
+    tables = Tables()
+    model = toy_model(tables)
+    assert pattern(model) == pattern(toy_model()) and tables.calls == 0
+    # ... whereas a numeric evaluation runs it.
+    assert model.evaluate("a", tau=2.7) == 3.0 and tables.calls == 1
+
+
+def test_a_branch_on_the_state_is_refused():
+    class Switch(Species):
+        u = State()
+
+        def d_u(u, k):
+            return k * u if u > 0.0 else -k * u
+
+    with pytest.raises(TypeError, match="branches on a traced value"):
+        Model([Switch()]).sparsity()
+
+    class Floor(Species):
+        u = State()
+
+        def d_u(u, k):
+            return max(k, 1e-30) * u  # a branch on an input, inside a provider that reads the state
+
+    with pytest.raises(TypeError, match="provider of inputs alone"):
+        Model([Floor()]).sparsity()
+
+    class Floored(Species):
+        u = State()
+
+        def k_floor(k):
+            return max(k, 1e-30)  # inputs alone: not traced
+
+        def d_u(u, k_floor):
+            return k_floor * u
+
+    assert pattern(Model([Floored()])) == {(0, 0)}
 
 
 def test_settings_are_class_attributes_loaded_from_the_environment(monkeypatch):
@@ -324,7 +397,7 @@ def test_matrix_states_and_tuple_constants():
             for i in range(self.NQ):
                 output[i, 0] = k * self.weight[i]
 
-        psi = State(lambda self: (self.NQ, 2), tail_from=1, initial=_psi_initial)
+        psi = State(lambda self: (self.NQ, 2), initial=_psi_initial)
 
         def __init__(self, weights, **settings):
             super().__init__(**settings)
@@ -364,10 +437,10 @@ def test_matrix_states_and_tuple_constants():
     device_self = Bins([0.5, 0.25]).device_self()
     assert type(device_self).__name__ == "Bins" and device_self._fields == ("NQ", "weight")
     assert device_self.NQ == 2 and device_self.weight == (0.5, 0.25)
-    # Matrix initial conditions and sparsity work row by row.
+    # Matrix initial conditions and sparsity work element by element: each bin
+    # couples only to itself, and w reads the bins' first elements.
     np.testing.assert_array_equal(model.initial_state([2.0]), [[1.0, 0.0, 0.5, 0.0, 0.0]])
-    entries = {tuple(r) for r in model.sparsity()}
-    assert (0, 1) in entries and (0, 3) not in entries and (1, 2) not in entries and (2, 3) in entries
+    assert pattern(model) == {(0, 1), (1, 0), (2, 3), (3, 2), (4, 0), (4, 2)}
 
 
 def test_a_device_function_a_component_holds_is_called_through_a_closure():
