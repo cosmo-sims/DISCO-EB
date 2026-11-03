@@ -75,12 +75,25 @@ hierarchy's and the LU has no coupling block. Measured: ten times the steps
 Thomson damping ``-kappa' Theta_l`` is stiff *through* the opacity, not only
 through ``Theta_l``. Kept as the record of that measurement."""
 
+SMOOTH_SWITCHES = os.environ.get("DISCO_FUSED_SMOOTH_SWITCHES", "1") == "1"
+"""Blend RECFAST's helium Saha-to-rate switch (over ``x_He`` in [0.9, 0.95]) and the
+Compton-coupling switch (over a factor of two in the time-scale ratio) with
+smoothsteps instead of jumping. The stand-alone RECFAST solve steps to every
+point of its 2048-point save grid and never notices the jumps; a hierarchy-sized
+step does: at weight 1 the jumps cost 20 rejected steps per mode (the table
+kernel has 0.4), 372 steps instead of 358, 15 percent of the time at
+128 x 512 modes, and an opacity five times less accurate (1.6e-2 against
+3.4e-3 of the kernel-side spline tables). ``DISCO_FUSED_SMOOTH_SWITCHES=0``
+restores RECFAST's switches."""
+
 THERMO_ERROR_WEIGHT = 1.0
 """Weight of the four driver states in the step-size error norm (their error is
-held to ``rtol / weight``). With ``x_H`` clamped, 1 gives the same ``P(k)`` as
-10 or 100 (2e-4 against the table pipeline) at 372 steps per mode instead of
-455 or 719; 0, which takes the thermal state out of the error control, blows
-up (7500 steps, ``P(k)`` wrong by 100 percent)."""
+held to ``rtol / weight``). ``P(k)`` is 2e-4 from the table pipeline at every
+weight from 0.3 to 100; what the weight sets is the thermal state's own
+accuracy and the step count: 0.3 gives the opacity to 3e-2 at 341 steps per
+mode, 1 to 3e-3 at 358, 3 to 2e-3 at 379, 10 to 8e-4 at 454, 100 to 2e-4 at
+719 (the kernel-side spline tables of the table pipeline deliver 3e-4 at
+most, 1e-5 rms), and 0.1 or 0 blows up."""
 
 
 def freeze(x, scale):
@@ -148,69 +161,86 @@ def hydrogen_rate(x_H, xe, Tmat, z, n_H, Hz, Tcmb, Nnow, K_peebles):
 
 
 def helium_rate(x_H, x_He, xe, Tmat, z, a, n_H, Hz, Tcmb, Nnow, fHe):
-    """``d x_He / d z``: both Saha stages while ``x_He > 0.9``, the singlet and triplet rates below."""
+    """``d x_He / d z``: both Saha stages while ``x_He > 0.9``, the singlet and triplet rates below.
 
+    With ``SMOOTH_SWITCHES`` the two are blended over ``x_He`` in [0.9, 0.95].
+    The rate equation is called from one place only and the blend is
+    branch-free: a helper inlined at two call sites, or a local assigned in
+    several branches, gives numba-cuda-mlir a memref phi that LLVM rejects.
+    """
+
+    saha = (
+        saha_slope(z, Tcmb, Nnow, CB1_He1, 1.0, 4.0, fHe)
+        + saha_slope(z, Tcmb, Nnow, const_EionHe12s, 1.0 + fHe, 1.0, fHe)
+    ) / fHe
     f1 = 0.0
-    if x_He > 0.9 or a < 3.0e-4:
-        f1 = (
-            saha_slope(z, Tcmb, Nnow, CB1_He1, 1.0, 4.0, fHe)
-            + saha_slope(z, Tcmb, Nnow, const_EionHe12s, 1.0 + fHe, 1.0, fHe)
-        ) / fHe
+    if a < 3.0e-4 or x_He >= 0.95 or (x_He > 0.9 and not SMOOTH_SWITCHES):
+        f1 = saha
     elif x_He >= 1.0e-8:
-        Hz_z_term = Hz * (1.0 + z)
-        n_He = fHe * n_H
-        one_minus_x_He = 1.0 - x_He
-        one_minus_x_H = 1.0 - x_H
-        n_He_1_minus_x_He = n_He * one_minus_x_He
-        CR_Tmat_15 = (CR * Tmat) ** 1.5
-        sq_0 = math.sqrt(Tmat / T_0)
-        sq_1 = math.sqrt(Tmat / T_1)
-        Rdown_He = a_VF / (sq_0 * (1.0 + sq_0) ** (1.0 - b_VF) * (1.0 + sq_1) ** (1.0 + b_VF))
-        Rup_He = 4.0 * Rdown_He * CR_Tmat_15 * math.exp(-CDB_He / Tmat)
-        He_Boltz = math.exp(min(680.0, Bfact / Tmat))
-        Rdown_trip = a_trip / (sq_0 * (1.0 + sq_0) ** (1.0 - b_trip) * (1.0 + sq_1) ** (1.0 + b_trip))
-        Rup_trip = (
-            Rdown_trip * math.exp(-const_h * const_c * L_He2St_ion / (const_kB * Tmat)) * CR_Tmat_15 * (4.0 / 3.0)
+        rate = helium_rate_equation(x_H, x_He, xe, Tmat, z, n_H, Hz, fHe)
+        w_saha = min(max((x_He - 0.9) / 0.05, 0.0), 1.0) if SMOOTH_SWITCHES else 0.0
+        w_saha = w_saha * w_saha * (3.0 - 2.0 * w_saha)
+        f1 = w_saha * saha + (1.0 - w_saha) * rate
+    return f1
+
+
+def helium_rate_equation(x_H, x_He, xe, Tmat, z, n_H, Hz, fHe):
+    """The singlet and triplet rate equations of HeI recombination, ``d x_He / d z``."""
+
+    Hz_z_term = Hz * (1.0 + z)
+    n_He = fHe * n_H
+    one_minus_x_He = 1.0 - x_He
+    one_minus_x_H = 1.0 - x_H
+    n_He_1_minus_x_He = n_He * one_minus_x_He
+    CR_Tmat_15 = (CR * Tmat) ** 1.5
+    sq_0 = math.sqrt(Tmat / T_0)
+    sq_1 = math.sqrt(Tmat / T_1)
+    Rdown_He = a_VF / (sq_0 * (1.0 + sq_0) ** (1.0 - b_VF) * (1.0 + sq_1) ** (1.0 + b_VF))
+    Rup_He = 4.0 * Rdown_He * CR_Tmat_15 * math.exp(-CDB_He / Tmat)
+    He_Boltz = math.exp(min(680.0, Bfact / Tmat))
+    Rdown_trip = a_trip / (sq_0 * (1.0 + sq_0) ** (1.0 - b_trip) * (1.0 + sq_1) ** (1.0 + b_trip))
+    Rup_trip = (
+        Rdown_trip * math.exp(-const_h * const_c * L_He2St_ion / (const_kB * Tmat)) * CR_Tmat_15 * (4.0 / 3.0)
+    )
+
+    tauHe_s = A2P_s * CK_He * 3.0 * n_He_1_minus_x_He / Hz
+    pHe_s = (1.0 - math.exp(-tauHe_s)) / tauHe_s
+    Doppler_term = math.sqrt(2.0 * const_kB * Tmat / (const_mH * const_mHe_mH * const_c**2))
+    if x_H < 0.9999999:
+        Doppler_2p = const_c * L_He_2p * Doppler_term
+        gamma_2Ps = (
+            3.0 * A2P_s * fHe * one_minus_x_He * const_c**2
+            / (math.sqrt(math.pi) * sigma_He_2Ps * 8.0 * math.pi * Doppler_2p * one_minus_x_H * (const_c * L_He_2p) ** 2)
         )
+        AHcon = A2P_s / (1.0 + 0.36 * gamma_2Ps**0.86)
+        K_He = 1.0 / ((A2P_s * pHe_s + AHcon) * 3.0 * n_He_1_minus_x_He)
+    else:
+        K_He = 1.0 / (A2P_s * pHe_s * 3.0 * n_He_1_minus_x_He)
 
-        tauHe_s = A2P_s * CK_He * 3.0 * n_He_1_minus_x_He / Hz
-        pHe_s = (1.0 - math.exp(-tauHe_s)) / tauHe_s
-        Doppler_term = math.sqrt(2.0 * const_kB * Tmat / (const_mH * const_mHe_mH * const_c**2))
-        if x_H < 0.9999999:
-            Doppler_2p = const_c * L_He_2p * Doppler_term
-            gamma_2Ps = (
-                3.0 * A2P_s * fHe * one_minus_x_He * const_c**2
-                / (math.sqrt(math.pi) * sigma_He_2Ps * 8.0 * math.pi * Doppler_2p * one_minus_x_H * (const_c * L_He_2p) ** 2)
-            )
-            AHcon = A2P_s / (1.0 + 0.36 * gamma_2Ps**0.86)
-            K_He = 1.0 / ((A2P_s * pHe_s + AHcon) * 3.0 * n_He_1_minus_x_He)
-        else:
-            K_He = 1.0 / (A2P_s * pHe_s * 3.0 * n_He_1_minus_x_He)
+    rate_diff_He = xe * x_He * n_H * Rdown_He - Rup_He * one_minus_x_He * math.exp(-CL_He / Tmat)
+    K_He_Lambda = K_He * Lambda_He * n_He_1_minus_x_He * He_Boltz
+    He_denom_term = 1.0 + K_He * (Lambda_He + Rup_He) * n_He_1_minus_x_He * He_Boltz
+    f1 = rate_diff_He * (1.0 + K_He_Lambda) / (Hz_z_term * He_denom_term)
 
-        rate_diff_He = xe * x_He * n_H * Rdown_He - Rup_He * one_minus_x_He * math.exp(-CL_He / Tmat)
-        K_He_Lambda = K_He * Lambda_He * n_He_1_minus_x_He * He_Boltz
-        He_denom_term = 1.0 + K_He * (Lambda_He + Rup_He) * n_He_1_minus_x_He * He_Boltz
-        f1 = rate_diff_He * (1.0 + K_He_Lambda) / (Hz_z_term * He_denom_term)
-
-        tauHe_t = A2P_t * n_He_1_minus_x_He * 3.0 / (8.0 * math.pi * Hz * L_He_2Pt**3)
-        pHe_t = (1.0 - math.exp(-tauHe_t)) / tauHe_t
-        exp_CL_PSt = math.exp(-CL_PSt / Tmat)
-        if x_H > 0.99999:
-            CfHe_t = A2P_t * pHe_t * exp_CL_PSt
-        else:
-            Doppler_2Pt = const_c * L_He_2Pt * Doppler_term
-            gamma_2Pt = (
-                3.0 * A2P_t * fHe * one_minus_x_He * const_c**2
-                / (math.sqrt(math.pi) * sigma_He_2Pt * 8.0 * math.pi * Doppler_2Pt * one_minus_x_H * (const_c * L_He_2Pt) ** 2)
-            )
-            AHcon_t = A2P_t / (1.0 + 0.66 * gamma_2Pt**0.9) / 3.0
-            CfHe_t = (A2P_t * pHe_t + AHcon_t) * exp_CL_PSt
-        CfHe_t = CfHe_t / (Rup_trip + CfHe_t)
-        trip_rate_diff = (
-            xe * x_He * n_H * Rdown_trip
-            - one_minus_x_He * 3.0 * Rup_trip * math.exp(-const_h_c_L_He_2St_kB / Tmat)
+    tauHe_t = A2P_t * n_He_1_minus_x_He * 3.0 / (8.0 * math.pi * Hz * L_He_2Pt**3)
+    pHe_t = (1.0 - math.exp(-tauHe_t)) / tauHe_t
+    exp_CL_PSt = math.exp(-CL_PSt / Tmat)
+    if x_H > 0.99999:
+        CfHe_t = A2P_t * pHe_t * exp_CL_PSt
+    else:
+        Doppler_2Pt = const_c * L_He_2Pt * Doppler_term
+        gamma_2Pt = (
+            3.0 * A2P_t * fHe * one_minus_x_He * const_c**2
+            / (math.sqrt(math.pi) * sigma_He_2Pt * 8.0 * math.pi * Doppler_2Pt * one_minus_x_H * (const_c * L_He_2Pt) ** 2)
         )
-        f1 = f1 + trip_rate_diff * CfHe_t / Hz_z_term
+        AHcon_t = A2P_t / (1.0 + 0.66 * gamma_2Pt**0.9) / 3.0
+        CfHe_t = (A2P_t * pHe_t + AHcon_t) * exp_CL_PSt
+    CfHe_t = CfHe_t / (Rup_trip + CfHe_t)
+    trip_rate_diff = (
+        xe * x_He * n_H * Rdown_trip
+        - one_minus_x_He * 3.0 * Rup_trip * math.exp(-const_h_c_L_He_2St_kB / Tmat)
+    )
+    f1 = f1 + trip_rate_diff * CfHe_t / Hz_z_term
     return f1
 
 
@@ -326,11 +356,15 @@ class Recombination(Component):
         Trad = Tcmb * z_term
         timeTh = (1.0 / (CT * Trad**4)) * (1.0 + xe + fHe) / xe
         timeH = 2.0 / (3.0 * (H0 / 100.0) * bigH * z_term**1.5)
-        if timeTh < H_frac * timeH:
-            rate = Tmat / z_term
+        locked = Tmat / z_term
+        full = CT * Trad**4 * xe / (1.0 + xe + fHe) * (Tmat - Trad) / (Hz * z_term) + 2.0 * Tmat / z_term
+        if SMOOTH_SWITCHES:
+            # smoothstep in log2 of the ratio timeTh / (H_frac timeH) over [1/2, 1], branch-free
+            w_full = min(max(math.log(timeTh / (H_frac * timeH)) / math.log(2.0) + 1.0, 0.0), 1.0)
+            w_full = w_full * w_full * (3.0 - 2.0 * w_full)
         else:
-            rate = CT * Trad**4 * xe / (1.0 + xe + fHe) * (Tmat - Trad) / (Hz * z_term) + 2.0 * Tmat / z_term
-        return rate
+            w_full = 1.0 if timeTh >= H_frac * timeH else 0.0
+        return w_full * full + (1.0 - w_full) * locked
 
     def d_lna(self, adotoa):
         return adotoa
@@ -356,7 +390,7 @@ def fused_model(layout):
 def fused_kernel(layout):
     """``(model, rhs, sparsity, error_weights)`` of a layout, built once."""
 
-    key = (layout, THERMO_ERROR_WEIGHT, FROZEN_COUPLING)
+    key = (layout, THERMO_ERROR_WEIGHT, FROZEN_COUPLING, SMOOTH_SWITCHES)
     cached = _KERNELS.get(key)
     if cached is None:
         model = fused_model(layout)
