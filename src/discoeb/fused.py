@@ -19,6 +19,13 @@ nothing in; what the fusion costs is four more Enzyme sweeps for the four dense
 columns, the recombination rates in every stage evaluation of every wave mode,
 and the error control of the thermal history by the solver's step size.
 
+``Recombination`` carries RECFAST's three states by default; with
+``DISCO_N_THERMO=1`` it carries ``x_H`` alone, helium in Saha equilibrium and
+``T_m`` from the closed-form Compton-decoupling curve, which is what makes the
+fused solve faster than the table pipeline up to about 25k trajectories (0.92
+of its time at 128 cosmologies x 128 modes) at no cost in ``P(k)``, but with a
+thermal state 2-6 percent off above ``z = 1800``.
+
 The only thing solved before the launch is a quadrature: each cosmology's
 conformal age ``tau_0``, where its trajectories stop, and the scale factor at
 ``TAU_START``, where they begin (:func:`background_endpoints`, a vmapped JAX
@@ -34,7 +41,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .component import Component, State
+from .component import Component, Setting, State
 from .eb_model import (
     density_parameters,
     dtauda,
@@ -136,6 +143,50 @@ def saha_slope(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
         denom = root + alpha
         slope = (2.0 * f_factor * dR * denom - 2.0 * beta * (droot + dR)) / (denom * denom)
     return slope
+
+
+def saha_fraction(T, z, Nnow, E_ion, offset, g_factor, f_factor):
+    """The Saha ionization fraction of one stage (:func:`thermodynamics_recfast.Saha`), scalar."""
+
+    phi = (CR * T) ** 1.5 / Nnow / (1.0 + z) ** 3
+    R = g_factor * phi * math.exp(-E_ion / T)
+    fully = T > E_ion * 0.1
+    alpha = 1.0 if fully else R + offset
+    beta = f_factor * (1.0 + f_factor) if fully else R * f_factor
+    discr = max(alpha * alpha + 4.0 * beta, 1.0e-35)
+    return 2.0 * beta / (math.sqrt(discr) + alpha) if R > 1.0e-20 else 0.0
+
+
+def helium_saha(zred, Tcmb, Nnow, fHe):
+    """``x_He`` in Saha equilibrium, both stages, as RECFAST starts it."""
+
+    T = Tcmb * (1.0 + zred)
+    return (
+        saha_fraction(T, zred, Nnow, CB1_He1, 1.0, 4.0, fHe)
+        + saha_fraction(T, zred, Nnow, const_EionHe12s, 1.0 + fHe, 1.0, fHe)
+    ) / fHe
+
+
+def matter_temperature_fit(zred, Tcmb, xe, fHe, Hz):
+    """``(T_m, d ln T_m / d ln a)`` without a ``T_m`` equation.
+
+    With ``y = 1 / (t_Compton H)`` and ``y`` proportional to ``(1+z)^{5/2}`` (matter
+    domination, frozen ``x_e``), RECFAST's temperature equation for
+    ``u = T_m / T_rad`` is ``2.5 y du/dy = y (u - 1) + u``, one universal curve:
+    ``u = 1 - 1/y`` while Compton coupling holds, ``u`` proportional to
+    ``y^{0.4}`` (``T_m`` to ``(1+z)^2``) once it has let go. The closed form
+    ``u = (y^p / (y^p + c))^{0.4/p}`` with ``p = 0.705``, ``c = 0.968`` fits that
+    curve to 2 percent everywhere.
+    """
+
+    Trad = Tcmb * (1.0 + zred)
+    y = max(CT * Trad**4 * xe / ((1.0 + xe + fHe) * Hz), 1.0e-12)
+    p = 0.7052
+    c = 0.9682
+    yp = y**p
+    ratio = (yp / (yp + c)) ** (0.4 / p)
+    dlnu_dlny = 0.4 * c / (yp + c)
+    return Trad * ratio, -1.0 - 2.5 * dlnu_dlny
 
 
 def hydrogen_rate(x_H, xe, Tmat, z, n_H, Hz, Tcmb, Nnow, K_peebles):
@@ -247,12 +298,13 @@ def helium_rate_equation(x_H, x_He, xe, Tmat, z, n_H, Hz, fHe):
 # --- the component ------------------------------------------------------------------
 
 
-def _thermo_initial(lna_start, Tcmb, output):
+def _thermo_initial(self, lna_start, Tcmb, output):
     """Fully ionized and in Compton equilibrium: ``x_H = 1``, ``x_He = 2``, ``T_m = T_cmb / a``."""
 
     output[0] = 1.0
-    output[1] = 2.0
-    output[2] = Tcmb * math.exp(-lna_start)
+    if self.N_THERMO == 3:
+        output[1] = 2.0
+        output[2] = Tcmb * math.exp(-lna_start)
 
 
 class Recombination(Component):
@@ -268,14 +320,25 @@ class Recombination(Component):
     the ``NQ_NU_BACKGROUND``-node quadrature of the RECFAST kernel.
     """
 
+    N_THERMO = Setting(3)
+    """3: ``(x_H, x_He, T_m)`` as RECFAST; 1: ``x_H`` alone, with helium in Saha
+    equilibrium and ``T_m`` from :func:`matter_temperature_fit` (``DISCO_N_THERMO``)."""
+
     lna = State(initial=lambda lna_start: lna_start, driver=True)
-    thermo = State(3, initial=_thermo_initial, driver=True)
+    thermo = State(lambda self: self.N_THERMO, initial=_thermo_initial, driver=True)
 
     def __init__(self, **settings):
         super().__init__(**settings)
+        if self.N_THERMO not in (1, 3):
+            raise ValueError("N_THERMO is 1 or 3")
         q, w, _ = neutrino_momentum_bins(NQ_NU_BACKGROUND)
         self.nu_q = tuple(float(x) for x in q)
         self.nu_w = tuple(float(x) for x in w)
+        # The providers that differ between the two layouts are set per instance.
+        if self.N_THERMO == 3:
+            self.x_He, self.Tmat, self.dlnTm_dlna, self.d_thermo = _x_He_state, _Tmat_state, _dlnTm_dlna_state, _d_thermo_full
+        else:
+            self.x_He, self.Tmat, self.dlnTm_dlna, self.d_thermo = _x_He_saha, _Tmat_fit, _dlnTm_dlna_fit, _d_thermo_hydrogen
 
     # -- what the hierarchy reads -----------------------------------------------------
 
@@ -285,9 +348,11 @@ class Recombination(Component):
 
     def rhonu(self, a, amnu):
         """``rho_nu / rho_nu(massless)`` of one flavour, 1 when massless."""
-        total = 0.0
-        for i in range(len(self.nu_q)):
-            total += self.nu_w[i] * math.sqrt(1.0 + (a * amnu / self.nu_q[i]) ** 2)
+        total = 1.0
+        if amnu > 0.0:  # eight square roots, skipped for massless neutrinos
+            total = 0.0
+            for i in range(len(self.nu_q)):
+                total += self.nu_w[i] * math.sqrt(1.0 + (a * amnu / self.nu_q[i]) ** 2)
         return freeze(total, 1073741824.0) if FROZEN_COUPLING else total  # 2^30
 
     def fHe(self, YHe):
@@ -299,11 +364,6 @@ class Recombination(Component):
         denominator changes sign and drives ``x_H`` away instead of back."""
         return min(max(thermo[0], 0.0), 1.0)
 
-    def x_He(self, thermo):
-        return min(max(thermo[1], 0.0), 2.0)
-
-    def Tmat(self, thermo):
-        return abs(thermo[2])
 
     def xe(self, x_H, x_He, fHe):
         """Free electrons per hydrogen nucleus."""
@@ -318,11 +378,10 @@ class Recombination(Component):
             opacity = math.exp(freeze(math.log(opacity), 72057594037927936.0))
         return opacity
 
-    def cs2(self, Tmat, xe, YHe, dTm_dz, inv_a):
+    def cs2(self, Tmat, xe, YHe, dlnTm_dlna):
         """``c_s^2 = k_B T_m / (mu m_H c^2) (1 - (1/3) d ln T_m / d ln a)``."""
         mu = 1.0 / (1.0 + (1.0 / const_mHe_mH - 1.0) * YHe + (1.0 - YHe) * xe)
-        dTm_dlna = -dTm_dz * inv_a
-        cs2 = max(const_kB / const_mH / const_c**2 / mu * Tmat * (3.0 - dTm_dlna / Tmat) / 3.0, 0.0)
+        cs2 = max(const_kB / const_mH / const_c**2 / mu * Tmat * (3.0 - dlnTm_dlna) / 3.0, 0.0)
         return freeze(cs2, 4611686018427387904.0) if FROZEN_COUPLING else cs2  # 2^62: cs2 < 1e-4
 
     # -- the rates ----------------------------------------------------------------------
@@ -369,11 +428,45 @@ class Recombination(Component):
     def d_lna(self, adotoa):
         return adotoa
 
-    def d_thermo(self, x_H, x_He, xe, Tmat, zred, a, n_H, Hz, Tcmb, Nnow, fHe, K_peebles, dTm_dz, adotoa, inv_a, output):
-        dz_dtau = 0.0 if FREEZE_RATES else -adotoa * inv_a
-        output[0] = hydrogen_rate(x_H, xe, Tmat, zred, n_H, Hz, Tcmb, Nnow, K_peebles) * dz_dtau
-        output[1] = helium_rate(x_H, x_He, xe, Tmat, zred, a, n_H, Hz, Tcmb, Nnow, fHe) * dz_dtau
-        output[2] = dTm_dz * dz_dtau
+
+
+# -- the providers that depend on the layout (set on the instance in __init__) ----------
+
+
+def _x_He_state(thermo):
+    return min(max(thermo[1], 0.0), 2.0)
+
+
+def _Tmat_state(thermo):
+    return abs(thermo[2])
+
+
+def _dlnTm_dlna_state(dTm_dz, inv_a, Tmat):
+    return -dTm_dz * inv_a / Tmat
+
+
+def _d_thermo_full(x_H, x_He, xe, Tmat, zred, a, n_H, Hz, Tcmb, Nnow, fHe, K_peebles, dTm_dz, adotoa, inv_a, output):
+    dz_dtau = 0.0 if FREEZE_RATES else -adotoa * inv_a
+    output[0] = hydrogen_rate(x_H, xe, Tmat, zred, n_H, Hz, Tcmb, Nnow, K_peebles) * dz_dtau
+    output[1] = helium_rate(x_H, x_He, xe, Tmat, zred, a, n_H, Hz, Tcmb, Nnow, fHe) * dz_dtau
+    output[2] = dTm_dz * dz_dtau
+
+
+def _x_He_saha(zred, Tcmb, Nnow, fHe):
+    return helium_saha(zred, Tcmb, Nnow, fHe)
+
+
+def _Tmat_fit(zred, Tcmb, xe, fHe, Hz):
+    return matter_temperature_fit(zred, Tcmb, xe, fHe, Hz)[0]
+
+
+def _dlnTm_dlna_fit(zred, Tcmb, xe, fHe, Hz):
+    return matter_temperature_fit(zred, Tcmb, xe, fHe, Hz)[1]
+
+
+def _d_thermo_hydrogen(x_H, xe, Tmat, zred, n_H, Hz, Tcmb, Nnow, K_peebles, adotoa, inv_a, output):
+    dz_dtau = 0.0 if FREEZE_RATES else -adotoa * inv_a
+    output[0] = hydrogen_rate(x_H, xe, Tmat, zred, n_H, Hz, Tcmb, Nnow, K_peebles) * dz_dtau
 
 
 # --- the model and its kernel ---------------------------------------------------------
@@ -390,7 +483,7 @@ def fused_model(layout):
 def fused_kernel(layout):
     """``(model, rhs, sparsity, error_weights)`` of a layout, built once."""
 
-    key = (layout, THERMO_ERROR_WEIGHT, FROZEN_COUPLING, SMOOTH_SWITCHES)
+    key = (layout, THERMO_ERROR_WEIGHT, FROZEN_COUPLING, SMOOTH_SWITCHES, Recombination.N_THERMO)
     cached = _KERNELS.get(key)
     if cached is None:
         model = fused_model(layout)
