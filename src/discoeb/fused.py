@@ -19,12 +19,14 @@ nothing in; what the fusion costs is four more Enzyme sweeps for the four dense
 columns, the recombination rates in every stage evaluation of every wave mode,
 and the error control of the thermal history by the solver's step size.
 
-``Recombination`` carries RECFAST's three states by default; with
-``DISCO_N_THERMO=1`` it carries ``x_H`` alone, helium in Saha equilibrium and
-``T_m`` from the closed-form Compton-decoupling curve, which is what makes the
-fused solve faster than the table pipeline up to about 25k trajectories (0.92
-of its time at 128 cosmologies x 128 modes) at no cost in ``P(k)``, but with a
-thermal state 2-6 percent off above ``z = 1800``.
+``Recombination`` carries RECFAST's three states and RECFAST's equations
+unaltered by default (the one departure is that ``x_H`` is held to ``[0, 1]``,
+outside which RECFAST's own solve never evaluates them). Two experiments that
+do alter the equations are kept behind switches, off by default, as the record
+of what they buy: ``DISCO_FUSED_SMOOTH_SWITCHES=1`` and ``DISCO_N_THERMO=1``
+(``x_H`` alone, helium in Saha equilibrium, ``T_m`` from the closed-form
+Compton-decoupling curve), the latter being what puts the fused solve ahead of
+the table pipeline at 128 cosmologies x 128 modes.
 
 The only thing solved before the launch is a quadrature: each cosmology's
 conformal age ``tau_0``, where its trajectories stop, and the scale factor at
@@ -82,16 +84,16 @@ hierarchy's and the LU has no coupling block. Measured: ten times the steps
 Thomson damping ``-kappa' Theta_l`` is stiff *through* the opacity, not only
 through ``Theta_l``. Kept as the record of that measurement."""
 
-SMOOTH_SWITCHES = os.environ.get("DISCO_FUSED_SMOOTH_SWITCHES", "1") == "1"
-"""Blend RECFAST's helium Saha-to-rate switch (over ``x_He`` in [0.9, 0.95]) and the
+SMOOTH_SWITCHES = os.environ.get("DISCO_FUSED_SMOOTH_SWITCHES", "") == "1"
+"""Experiment, off by default (it alters RECFAST's equations): blend RECFAST's helium Saha-to-rate switch (over ``x_He`` in [0.9, 0.95]) and the
 Compton-coupling switch (over a factor of two in the time-scale ratio) with
 smoothsteps instead of jumping. The stand-alone RECFAST solve steps to every
 point of its 2048-point save grid and never notices the jumps; a hierarchy-sized
 step does: at weight 1 the jumps cost 20 rejected steps per mode (the table
 kernel has 0.4), 372 steps instead of 358, 15 percent of the time at
 128 x 512 modes, and an opacity five times less accurate (1.6e-2 against
-3.4e-3 of the kernel-side spline tables). ``DISCO_FUSED_SMOOTH_SWITCHES=0``
-restores RECFAST's switches."""
+3.4e-3 of the kernel-side spline tables). ``DISCO_FUSED_SMOOTH_SWITCHES=1``
+enables it."""
 
 THERMO_ERROR_WEIGHT = 1.0
 """Weight of the four driver states in the step-size error norm (their error is
@@ -321,8 +323,9 @@ class Recombination(Component):
     """
 
     N_THERMO = Setting(3)
-    """3: ``(x_H, x_He, T_m)`` as RECFAST; 1: ``x_H`` alone, with helium in Saha
-    equilibrium and ``T_m`` from :func:`matter_temperature_fit` (``DISCO_N_THERMO``)."""
+    """3 (default): ``(x_H, x_He, T_m)`` as RECFAST; 1 (experiment, alters the
+    physics): ``x_H`` alone, with helium in Saha equilibrium and ``T_m`` from
+    :func:`matter_temperature_fit` (``DISCO_N_THERMO``)."""
 
     lna = State(initial=lambda lna_start: lna_start, driver=True)
     thermo = State(lambda self: self.N_THERMO, initial=_thermo_initial, driver=True)
