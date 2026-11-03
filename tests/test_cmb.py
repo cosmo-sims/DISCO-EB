@@ -91,11 +91,20 @@ SUCCESSIVE_TOLERANCE = 0.25
 # the multipoles; see ``test_power_spectra_derivatives``.
 CL_DERIV_GATE = 2.0e-3
 
+# Relative step of the central differences of ``test_power_spectra_derivatives``.
+# A step-acceptance flip between the two shifted solves moves ``D_l`` by up to
+# ~1e-6 of itself whatever the step, so the difference carries that over
+# ``2 step``: at 1e-5 it reached 7e-3 of the derivative's scale once the
+# polarization error weights sharpened the low-k trajectories' step control,
+# at 1e-3 it is below 5e-4, and the truncation error at 1e-3 is ~1e-6.
+FD_STEP = 1.0e-3
+
 # A central difference is only checked where the change it measures,
-# ``2 step |dD_l/d(density)|``, exceeds this fraction of ``D_l``: below it the
-# difference of two float64 spectra is rounding (the dark-energy density moves
-# EE and TE, which have no late-time source without reionization, by less).
-FD_RESOLVABLE = 1.0e-9
+# ``2 step |dD_l/d(density)|``, exceeds this fraction of ``D_l``: ten times
+# the solve's noise in ``D_l``, so what remains is a derivative and not the
+# noise (the dark-energy density moves EE and TE, which have no late-time
+# source without reionization, by at most 1e-6 of themselves at the step).
+FD_RESOLVABLE = 1.0e-5
 
 # CLASS truncates its own line-of-sight k-integration at k_max ~ 2.4 l_max / tau0,
 # so l_max_scalars must sit well above the multipoles under test or CLASS itself
@@ -297,17 +306,23 @@ def test_power_spectra_match_class(n_cosmologies, benchmark):
 
     cosmologies = _perturbed_cosmologies(n_cosmologies)
     kwargs = _spectrum_kwargs(cosmologies)
-    # The warm-up round compiles on other cosmologies; the timed round is fresh.
-    rounds = iter([_warmup_cosmologies(n_cosmologies), cosmologies])
+    # The warm-up round compiles on other cosmologies; the timed round is
+    # fresh. With the benchmark disabled, pedantic runs the target once and
+    # skips the warm-up, so the rounds are then the checked batch alone.
+    if benchmark.disabled:
+        rounds = iter([cosmologies])
+    else:
+        rounds = iter([_warmup_cosmologies(n_cosmologies), cosmologies])
+    ran = []
 
     def spectrum():
-        return jax.block_until_ready(
-            compute_cl_power_spectrum_batch(next(rounds), **kwargs)
-        )
+        ran.append(next(rounds))
+        return jax.block_until_ready(compute_cl_power_spectrum_batch(ran[-1], **kwargs))
 
     _, _, dl_ours = benchmark.pedantic(
         spectrum, rounds=1, warmup_rounds=1, iterations=1
     )
+    assert ran[-1] is cosmologies, "the checked spectra are another batch's"
     assert np.asarray(dl_ours.tt).shape == (n_cosmologies, len(TT_ELLS))
     _assert_matches_class(
         dl_ours, [_class_unlensed(c, TT_ELLS) for c in cosmologies], TT_ELLS
@@ -494,16 +509,18 @@ def test_power_spectra_derivatives(one_column_per_trajectory, benchmark):
     the acoustic peaks (it passes through zero near ``l ~ 100``) and its sum
     over these multipoles cancels threefold, so neither a relative error at a
     single ``l`` nor the summed derivative of the ``P(k)`` test is
-    well-conditioned here. At rtol = atol = 1e-4 the sensitivity and the
-    central difference each carry ~5e-4 of that scale (both move to within
-    ~1e-4 of each other at 1e-5), hence the gate. The projection runs in
+    well-conditioned here. At rtol = atol = 1e-4 the sensitivity is within
+    3e-4 of that scale of a converged central difference (rtol = atol = 1e-6,
+    step :data:`FD_STEP`) for every density, and a central difference at the
+    default tolerance within 5e-4 of it, hence the gate; the sensitivity
+    itself moves by 2e-4 between the two tolerances. The projection runs in
     float64, since its float32 rounding (2.6e-4 in ``D_l``) would swamp any
     finite difference. The spectra are those of
     ``test_power_spectra_match_class`` (same modes, saves and multipoles).
-    Entries whose central difference is below the rounding floor
+    Entries whose central difference is below the noise floor
     (:data:`FD_RESOLVABLE`) are not compared: the dark-energy density changes
-    the polarization spectra, which have no late-time source here, by less
-    than float64 resolves at the step; the sensitivity rule for those spectra
+    the polarization spectra, which have no late-time source here, by no more
+    than the solve's noise at the step; the sensitivity rule for those spectra
     is validated by the other four densities.
     """
 
@@ -546,7 +563,7 @@ def test_power_spectra_derivatives(one_column_per_trajectory, benchmark):
         sens = np.asarray(jax.block_until_ready(sens))
         summed[i] = sens.sum()
 
-        step = 1.0e-5 * abs(float(densities[i]))
+        step = FD_STEP * abs(float(densities[i]))
         plus = np.asarray(spectrum(densities.at[i].add(step)))
         minus = np.asarray(spectrum(densities.at[i].add(-step)))
         finite = (plus - minus) / (2.0 * step)

@@ -41,7 +41,9 @@ The polarization source is a small state component at low ``k``, below the
 scalar absolute tolerance of the solve, so the CMB solves weight the photon
 quadrupole and ``E_2`` up in the solver's error norm in proportion to ``1/k``
 (:func:`polarization_error_weights`); without that the low multipoles of EE
-and TE come out 10 to 40 percent low, at no gain in speed.
+and TE come out 10 to 40 percent low, at no gain in speed, and the weight
+has to reach ``1e4`` at ``k ~ 1e-4`` for EE at ``l = 2`` to come within
+0.2 percent of CLASS.
 
 
 **Where the sources are evaluated.** Inside the kernel launch: modax's Rodas5P
@@ -192,11 +194,11 @@ moves ``D_l`` by at most 2.7e-4 at 1 percent, 1.0e-3 at 2 percent and 4.4e-3
 at 5 percent (the low multipoles' late-time sources sit on the coarse end of
 the grid)."""
 
-POLARIZATION_WEIGHT_K = 0.1
+POLARIZATION_WEIGHT_K = 1.0
 """Wave number (Mpc^-1) below which the photon quadrupole and ``E_2`` are weighted
 up in the solver's error norm, by ``POLARIZATION_WEIGHT_K / k``."""
 
-POLARIZATION_WEIGHT_MAX = 1000.0
+POLARIZATION_WEIGHT_MAX = 1.0e4
 """Cap of that weight."""
 
 
@@ -213,10 +215,16 @@ def polarization_error_weights(k, layout):
     Weighting the two components by ``clip(POLARIZATION_WEIGHT_K / k, 1,
     POLARIZATION_WEIGHT_MAX)`` divides their tolerance by that factor. The
     trajectories it slows are the low-``k`` ones, which take the fewest steps
-    of a launch, so a batch costs the same within 3 percent at N=128, and EE
-    agrees with CLASS to 1.2 percent at every multipole from 2 (TE to 0.4
-    percent of ``sqrt(TT EE)``). A scalar ``atol`` of 1e-8 does the same at
-    six times the cost.
+    of a launch: at ``POLARIZATION_WEIGHT_K = 1`` a batch of 128 costs 10
+    percent more than unweighted (0.64 s against 0.58 s on an RTX 4070
+    SUPER) and EE agrees with CLASS to 0.35 percent at every multipole from
+    2 over the batch. At 0.1 the batch cost the same but EE at ``l = 2`` was
+    1.2 percent low, which the end-to-end lensing check amplified to 0.75
+    percent in the ``l = 2`` lensing correction (lensing adds 160 percent
+    there); neither the grids nor the save grid move that multipole, only
+    the solve's error control does. Tightening the scalar tolerances to 1e-5
+    instead reaches the same accuracy at 1.8 times the cost, and a scalar
+    ``atol`` of 1e-8 at six times.
 
     The massive-neutrino monopole, dipole and quadrupole of every momentum
     bin get the same weight: they are as small at low ``k`` and enter the
