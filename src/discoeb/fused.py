@@ -298,6 +298,35 @@ def helium_rate_equation(x_H, x_He, xe, Tmat, z, n_H, Hz, fHe):
     return f1
 
 
+def peebles_K(Hz, zred):
+    """The Peebles ``K`` with the Gaussian fudges of Rubino-Martin et al. (2010)."""
+
+    log_z_term = math.log(1.0 + zred)
+    return CK / Hz * (
+        1.0
+        + AGauss1 * math.exp(-(((log_z_term - zGauss1) / wGauss1) ** 2))
+        + AGauss2 * math.exp(-(((log_z_term - zGauss2) / wGauss2) ** 2))
+    )
+
+
+def matter_temperature_rate(Tmat, xe, fHe, zred, Hz, H0, Tcmb):
+    """RECFAST's matter-temperature equation ``dT_m/dz``, ``T_m`` locked to ``T_rad`` in tight Compton coupling."""
+
+    z_term = 1.0 + zred
+    Trad = Tcmb * z_term
+    timeTh = (1.0 / (CT * Trad**4)) * (1.0 + xe + fHe) / xe
+    timeH = 2.0 / (3.0 * (H0 / 100.0) * bigH * z_term**1.5)
+    locked = Tmat / z_term
+    full = CT * Trad**4 * xe / (1.0 + xe + fHe) * (Tmat - Trad) / (Hz * z_term) + 2.0 * Tmat / z_term
+    if SMOOTH_SWITCHES:
+        # smoothstep in log2 of the ratio timeTh / (H_frac timeH) over [1/2, 1], branch-free
+        w_full = min(max(math.log(timeTh / (H_frac * timeH)) / math.log(2.0) + 1.0, 0.0), 1.0)
+        w_full = w_full * w_full * (3.0 - 2.0 * w_full)
+    else:
+        w_full = 1.0 if timeTh >= H_frac * timeH else 0.0
+    return w_full * full + (1.0 - w_full) * locked
+
+
 # --- the component ------------------------------------------------------------------
 
 
@@ -407,29 +436,10 @@ class Recombination(Component):
         return Nnow * inv_a**3
 
     def K_peebles(self, Hz, zred):
-        """The Peebles ``K`` with the Gaussian fudges of Rubino-Martin et al. (2010)."""
-        log_z_term = math.log(1.0 + zred)
-        return CK / Hz * (
-            1.0
-            + AGauss1 * math.exp(-(((log_z_term - zGauss1) / wGauss1) ** 2))
-            + AGauss2 * math.exp(-(((log_z_term - zGauss2) / wGauss2) ** 2))
-        )
+        return peebles_K(Hz, zred)
 
     def dTm_dz(self, Tmat, xe, fHe, zred, Hz, H0, Tcmb):
-        """RECFAST's matter-temperature equation, with ``T_m`` locked to ``T_rad`` in tight Compton coupling."""
-        z_term = 1.0 + zred
-        Trad = Tcmb * z_term
-        timeTh = (1.0 / (CT * Trad**4)) * (1.0 + xe + fHe) / xe
-        timeH = 2.0 / (3.0 * (H0 / 100.0) * bigH * z_term**1.5)
-        locked = Tmat / z_term
-        full = CT * Trad**4 * xe / (1.0 + xe + fHe) * (Tmat - Trad) / (Hz * z_term) + 2.0 * Tmat / z_term
-        if SMOOTH_SWITCHES:
-            # smoothstep in log2 of the ratio timeTh / (H_frac timeH) over [1/2, 1], branch-free
-            w_full = min(max(math.log(timeTh / (H_frac * timeH)) / math.log(2.0) + 1.0, 0.0), 1.0)
-            w_full = w_full * w_full * (3.0 - 2.0 * w_full)
-        else:
-            w_full = 1.0 if timeTh >= H_frac * timeH else 0.0
-        return w_full * full + (1.0 - w_full) * locked
+        return matter_temperature_rate(Tmat, xe, fHe, zred, Hz, H0, Tcmb)
 
     def d_lna(self, adotoa):
         return adotoa
@@ -638,6 +648,317 @@ def solve_matter_power_spectrum_fused_batch(k_values, cosmologies, **solve_kwarg
     k_p = np.array([c.k_pivot for c in cosmologies])[None, :]
     ks = k_sorted[:, None]
     pk_sorted = 2.0 * np.pi**2 / ks**3 * A_s * (ks / k_p) ** (n_s - 1.0) * delta_m**2  # (n_k, n_cosmo)
+    order = np.argsort(np.asarray(k_values, dtype=np.float64), kind="stable")
+    pk = np.empty_like(pk_sorted.T)
+    pk[:, order] = pk_sorted.T
+    return pk
+
+
+# --- the driven solve: the thermal states integrated ahead of each step ---------------
+# modax's driver subsystem (``rodas5P.solve(driver_fn=...)``): the four thermal
+# states are advanced over each outer step by a ROS2 sub-step of their own
+# right-hand side, RECFAST unaltered, and the hierarchy reads them at its stage
+# times from the cubic Hermite block the kernel writes into the parameter row.
+# The hierarchy model then has only its own states, its Jacobian no thermal
+# columns, and the rates are evaluated two or three times per step instead of
+# at every stage and in every Jacobian direction.
+
+N_DRV = 4
+IX_DRV = N_PARAM
+DRIVER_NAMES = ["drv_t0", "drv_h"] + [
+    f"drv_{state}_{part}" for state in ("lna", "xH", "xHe", "Tm") for part in ("0", "g0", "1", "g1")
+]
+PARAM_COLUMNS_DRIVEN = {**PARAM_COLUMNS, **{name: IX_DRV + i for i, name in enumerate(DRIVER_NAMES)}}
+N_PARAM_DRIVEN = IX_DRV + len(DRIVER_NAMES)
+
+
+def hermite(s, h, y0, g0, y1, g1):
+    """The cubic Hermite interpolant of ``(y0, g0)`` at 0 and ``(y1, g1)`` at ``h``, at ``s = (t - t0) / h``."""
+
+    s2 = s * s
+    s3 = s2 * s
+    return (2.0 * s3 - 3.0 * s2 + 1.0) * y0 + (s3 - 2.0 * s2 + s) * h * g0 + (-2.0 * s3 + 3.0 * s2) * y1 + (s3 - s2) * h * g1
+
+
+def hermite_derivative(s, h, y0, g0, y1, g1):
+    """``d/dt`` of :func:`hermite`."""
+
+    s2 = s * s
+    return (
+        (6.0 * s2 - 6.0 * s) * (y0 - y1) / h + (3.0 * s2 - 4.0 * s + 1.0) * g0 + (3.0 * s2 - 2.0 * s) * g1
+    )
+
+
+class DrivenThermalHistory(Component):
+    """``a``, ``opacity``, ``cs2`` and ``rhonu`` from the driver's Hermite block in the parameter row.
+
+    The same quantities :class:`Recombination` derives from its states, read
+    instead from the ``(theta0, g0, theta1, g1)`` of each thermal state over
+    the current step; ``c_s^2`` takes ``dT_m/dtau`` from the polynomial's
+    derivative, so no RECFAST rate is evaluated here.
+    """
+
+    def __init__(self, **settings):
+        super().__init__(**settings)
+        q, w, _ = neutrino_momentum_bins(NQ_NU_BACKGROUND)
+        self.nu_q = tuple(float(x) for x in q)
+        self.nu_w = tuple(float(x) for x in w)
+
+    def drv_s(self, tau, drv_t0, drv_h):
+        return (tau - drv_t0) / drv_h
+
+    def lna(self, drv_s, drv_h, drv_lna_0, drv_lna_g0, drv_lna_1, drv_lna_g1):
+        return hermite(drv_s, drv_h, drv_lna_0, drv_lna_g0, drv_lna_1, drv_lna_g1)
+
+    def a(self, lna):
+        return math.exp(lna)
+
+    def x_H(self, drv_s, drv_h, drv_xH_0, drv_xH_g0, drv_xH_1, drv_xH_g1):
+        return min(max(hermite(drv_s, drv_h, drv_xH_0, drv_xH_g0, drv_xH_1, drv_xH_g1), 0.0), 1.0)
+
+    def x_He(self, drv_s, drv_h, drv_xHe_0, drv_xHe_g0, drv_xHe_1, drv_xHe_g1):
+        return min(max(hermite(drv_s, drv_h, drv_xHe_0, drv_xHe_g0, drv_xHe_1, drv_xHe_g1), 0.0), 2.0)
+
+    def Tmat(self, drv_s, drv_h, drv_Tm_0, drv_Tm_g0, drv_Tm_1, drv_Tm_g1):
+        return abs(hermite(drv_s, drv_h, drv_Tm_0, drv_Tm_g0, drv_Tm_1, drv_Tm_g1))
+
+    def dTm_dtau(self, drv_s, drv_h, drv_Tm_0, drv_Tm_g0, drv_Tm_1, drv_Tm_g1):
+        return hermite_derivative(drv_s, drv_h, drv_Tm_0, drv_Tm_g0, drv_Tm_1, drv_Tm_g1)
+
+    def rhonu(self, a, amnu):
+        total = 1.0
+        if amnu > 0.0:
+            total = 0.0
+            for i in range(len(self.nu_q)):
+                total += self.nu_w[i] * math.sqrt(1.0 + (a * amnu / self.nu_q[i]) ** 2)
+        return total
+
+    def fHe(self, YHe):
+        return YHe / (const_mHe_mH * (1.0 - YHe))
+
+    def xe(self, x_H, x_He, fHe):
+        return x_H + fHe * x_He
+
+    def akthom(self, YHe, Omegab, H0):
+        return 2.3038921003709498e-9 * (1.0 - YHe) * Omegab * H0**2
+
+    def opacity(self, xe, akthom, inv_a2):
+        return max(xe * akthom * inv_a2, 1.0e-30)
+
+    def cs2(self, Tmat, xe, YHe, dTm_dtau, adotoa):
+        mu = 1.0 / (1.0 + (1.0 / const_mHe_mH - 1.0) * YHe + (1.0 - YHe) * xe)
+        dlnTm_dlna = dTm_dtau / (Tmat * adotoa)
+        return max(const_kB / const_mH / const_c**2 / mu * Tmat * (3.0 - dlnTm_dlna) / 3.0, 0.0)
+
+
+_DRIVER: dict = {}
+
+
+def driver_function():
+    """``g(theta, tau, p) -> (d ln a, d x_H, d x_He, d T_m) / dtau``, RECFAST unaltered, built once.
+
+    The expansion rate is the model's own Friedmann sum
+    (:func:`discoeb.eb_model.background_model`), the rates the same helpers
+    :class:`Recombination` uses, compiled for the device by the component
+    framework's binder.
+    """
+
+    if "g" in _DRIVER:
+        return _DRIVER["g"]
+    from .component import _bound_function, _device_names
+    from .eb_model import background_model
+
+    names = _device_names()
+    jit = names["cuda"].jit(device=True)
+    memo: dict = {}
+    h_rate = _bound_function(hydrogen_rate, jit, names, memo)
+    he_rate = _bound_function(helium_rate, jit, names, memo)
+    t_rate = _bound_function(matter_temperature_rate, jit, names, memo)
+    k_peebles = _bound_function(peebles_K, jit, names, memo)
+    adotoa_of = background_model().build_function(
+        ("adotoa",),
+        inputs=("a", "rhonu", "grhog", "grhornomass", "grhoc", "grhob", "grhok",
+                "grhov", "grhor_nu", "n_mnu", "w_DE_0", "w_DE_a"),
+        name="adotoa_driver",
+    )
+    q, w, _ = neutrino_momentum_bins(NQ_NU_BACKGROUND)
+    nu_q = tuple(float(x) for x in q)
+    nu_w = tuple(float(x) for x in w)
+    n_nu = len(nu_q)
+    cuda = names["cuda"]
+
+    @cuda.jit(device=True)
+    def rhonu_of(a, amnu):
+        total = 1.0
+        if amnu > 0.0:
+            total = 0.0
+            for i in range(n_nu):
+                total += nu_w[i] * math.sqrt(1.0 + (a * amnu / nu_q[i]) ** 2)
+        return total
+
+    ix_grhok, ix_grhor_nu, ix_nmnu, ix_amnu = P.IX_GRHOK, P.IX_GRHOR_NU, P.IX_NMNU, P.IX_AMNU
+    ix_w0, ix_wa = P.IX_W_DE_0, P.IX_W_DE_A
+    ix_yhe, ix_tcmb, ix_h0, ix_ob = IX_YHE, IX_TCMB, IX_H0, IX_OMEGAB
+    mHe, dens_fac, c_mpc_s = const_mHe_mH, const_dens_fac, const_c_Mpc_s
+
+    def g(theta, tau, p):
+        lna = theta[0]
+        a = math.exp(lna)
+        inv_a = 1.0 / a
+        rhonu = rhonu_of(a, p[ix_amnu])
+        adotoa = adotoa_of(
+            a, rhonu, p[0], p[1], p[2], p[3], p[ix_grhok], p[4], p[ix_grhor_nu], p[ix_nmnu], p[ix_w0], p[ix_wa]
+        )
+        YHe = p[ix_yhe]
+        Tcmb = p[ix_tcmb]
+        H0 = p[ix_h0]
+        Omegab = p[ix_ob]
+        fHe = YHe / (mHe * (1.0 - YHe))
+        Nnow = dens_fac * (H0 / 100.0) ** 2 * Omegab * (1.0 - YHe)
+        x_H = min(max(theta[1], 0.0), 1.0)
+        x_He = min(max(theta[2], 0.0), 2.0)
+        Tmat = abs(theta[3])
+        xe = x_H + fHe * x_He
+        zred = inv_a - 1.0
+        Hz = adotoa * inv_a * c_mpc_s
+        n_H = Nnow * inv_a**3
+        K = k_peebles(Hz, zred)
+        dz_dtau = -adotoa * inv_a
+        return (
+            adotoa,
+            h_rate(x_H, xe, Tmat, zred, n_H, Hz, Tcmb, Nnow, K) * dz_dtau,
+            he_rate(x_H, x_He, xe, Tmat, zred, a, n_H, Hz, Tcmb, Nnow, fHe) * dz_dtau,
+            t_rate(Tmat, xe, fHe, zred, Hz, H0, Tcmb) * dz_dtau,
+        )
+
+    def g_frozen(theta, tau, p):
+        """Diagnostic (``DISCO_FUSED_FREEZE_RATES=1``): the expansion only, no recombination rates compiled in."""
+        a = math.exp(theta[0])
+        rhonu = rhonu_of(a, p[ix_amnu])
+        adotoa = adotoa_of(
+            a, rhonu, p[0], p[1], p[2], p[3], p[ix_grhok], p[4], p[ix_grhor_nu], p[ix_nmnu], p[ix_w0], p[ix_wa]
+        )
+        return (adotoa, 0.0, 0.0, 0.0)
+
+    _DRIVER["g"] = g_frozen if FREEZE_RATES else g
+    return _DRIVER["g"]
+
+
+_DRIVEN_KERNELS: dict = {}
+
+
+def driven_kernel(layout):
+    """``(model, rhs, sparsity)`` of the hierarchy with :class:`DrivenThermalHistory`, built once per layout."""
+
+    cached = _DRIVEN_KERNELS.get(layout)
+    if cached is None:
+        model = perturbation_model(layout, DrivenThermalHistory())
+        rhs = model.build(PARAM_COLUMNS_DRIVEN)
+        cached = _DRIVEN_KERNELS[layout] = (model, rhs, model.sparsity())
+    return cached
+
+
+def pack_driven_batch(cosmologies, k_values, tau_save=None):
+    """``(model, rhs, sparsity, params, y0, theta0, t_span, order, k_sorted, tau0)`` of a batch."""
+
+    cosmologies = tuple(P._as_cosmology(c) for c in cosmologies)
+    layout = P._layout_for(cosmologies[0])
+    model, rhs, sparsity = driven_kernel(layout)
+    stacked = P._stack_background_params(cosmologies)
+    tau0, lna_start = (np.asarray(x) for x in background_endpoints(stacked))
+    k_arr = np.ascontiguousarray(np.asarray(k_values, dtype=np.float64))
+    order = np.argsort(k_arr, kind="stable")
+    k_sorted = k_arr[order]
+    n_k, n_cosmo = len(k_sorted), len(cosmologies)
+    params = np.zeros((n_k * n_cosmo, N_PARAM_DRIVEN), dtype=np.float64)
+    y0 = np.empty((n_k * n_cosmo, model.nvar), dtype=np.float64)
+    theta0 = np.empty((n_k * n_cosmo, N_DRV), dtype=np.float64)
+    for ci, c in enumerate(cosmologies):
+        base = np.zeros((n_k, N_PARAM_DRIVEN))
+        base[:, : P.N_PARAM] = P.make_params(c, k_sorted, float(tau0[ci]))
+        base[:, P.IX_COSMOLOGY] = float(ci)
+        base[:, IX_YHE], base[:, IX_TCMB], base[:, IX_H0], base[:, IX_OMEGAB] = c.Y_He, c.T_cmb, c.H0, c.Omegab
+        base[:, IX_DRV + 1] = 1.0  # a harmless step length until the kernel writes the first block
+        params[ci::n_cosmo] = base
+        grhog, grhornomass, grhoc, grhob, grhov = P.density_coefficients(c)
+        y0[ci::n_cosmo] = model.initial_state(
+            k_sorted, tau=P.TAU_START, grhog=grhog, grhornomass=grhornomass, grhoc=grhoc, grhob=grhob,
+            grhov=grhov, w_DE_0=c.w_DE_0, w_DE_a=c.w_DE_a,
+        )
+        theta0[ci::n_cosmo] = (float(lna_start[ci]), 1.0, 2.0, c.T_cmb * math.exp(-float(lna_start[ci])))
+    if tau_save is None:
+        t_span = np.asarray((P.TAU_START, float(np.max(tau0))), dtype=np.float64)
+    else:
+        t_span = np.ascontiguousarray(np.asarray(tau_save, dtype=np.float64))
+    return model, rhs, sparsity, np.ascontiguousarray(params), np.ascontiguousarray(y0), theta0, t_span, order, k_sorted, tau0
+
+
+def solve_driven_batch(
+    k_values,
+    cosmologies,
+    *,
+    tau_save=None,
+    rtol: float = P.PERTURB_RTOL,
+    atol: float = P.PERTURB_ATOL,
+    first_step: float = P.PERTURB_FIRST_STEP,
+    max_steps: int = P.PERTURB_MAX_STEPS,
+    lu_precision: str = "fp32",
+    return_stats: bool = False,
+    driver_weight: float = THERMO_ERROR_WEIGHT,
+    driver_jac_every: int = int(os.environ.get("DISCO_DRIVER_JAC_EVERY", "8")),
+):
+    """The driven solve of a batch: ``(history, k_sorted, model, tau0[, stats])``.
+
+    ``history`` is ``(n_k, n_cosmo, n_save, nvar + 4)`` on the device in ascending
+    ``k``, the four thermal states *last*.
+    """
+
+    from modax.rodas5P import solve as rodas5P_solve
+
+    model, rhs, sparsity, params, y0, theta0, t_span, order, k_sorted, tau0 = pack_driven_batch(
+        cosmologies, k_values, tau_save
+    )
+    result = rodas5P_solve(
+        rhs, y0, t_span, params,
+        sparsity=sparsity,
+        lu_precision=lu_precision,
+        rtol=rtol, atol=atol, first_step=first_step, max_steps=max_steps,
+        pcoeff=0.3, icoeff=0.4,
+        trajectories_per_block=P.TRAJECTORIES_PER_BLOCK,
+        tf_index=P.IX_TAU_END,
+        max_registers=P.CUDA_MAX_REGISTERS,
+        return_stats=return_stats,
+        driver_fn=driver_function(),
+        driver_y0=theta0,
+        driver_column=IX_DRV,
+        driver_weights=np.full(N_DRV, float(driver_weight)),
+        driver_jac_every=driver_jac_every,
+    )
+    sol, stats = result if return_stats else (result, None)
+    n_k, n_cosmo = len(k_sorted), len(cosmologies)
+    hist = jnp.asarray(sol).reshape(n_k, n_cosmo, len(t_span), model.nvar + N_DRV)
+    return (hist, k_sorted, model, tau0) + ((stats,) if return_stats else ())
+
+
+def solve_matter_power_spectrum_driven_batch(k_values, cosmologies, **solve_kwargs):
+    """``P(k)`` in Mpc^3, shape ``(n_cosmo, n_k)``, from one driven launch."""
+
+    hist, k_sorted, model, _ = solve_driven_batch(k_values, cosmologies, **solve_kwargs)[:4]
+    y_final = np.asarray(hist[:, :, -1, : model.nvar])
+    return _power_spectrum(y_final, k_sorted, model, cosmologies, k_values)
+
+
+def _power_spectrum(y_final, k_sorted, model, cosmologies, k_values):
+    ic, ib = model.index["clxc"], model.index["clxb"]
+    cosmologies = [P._as_cosmology(c) for c in cosmologies]
+    dens = np.array([P.density_coefficients(c) for c in cosmologies])
+    grhoc, grhob = dens[:, 2][None, :], dens[:, 3][None, :]
+    delta_m = (grhoc * y_final[:, :, ic] + grhob * y_final[:, :, ib]) / (grhoc + grhob)
+    A_s = np.array([c.A_s for c in cosmologies])[None, :]
+    n_s = np.array([c.n_s for c in cosmologies])[None, :]
+    k_p = np.array([c.k_pivot for c in cosmologies])[None, :]
+    ks = k_sorted[:, None]
+    pk_sorted = 2.0 * np.pi**2 / ks**3 * A_s * (ks / k_p) ** (n_s - 1.0) * delta_m**2
     order = np.argsort(np.asarray(k_values, dtype=np.float64), kind="stable")
     pk = np.empty_like(pk_sorted.T)
     pk[:, order] = pk_sorted.T
