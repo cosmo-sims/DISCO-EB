@@ -70,9 +70,10 @@ N_PARAM = P.N_PARAM + 4
 PARAM_COLUMNS = {**P.PARAM_COLUMNS, "YHe": IX_YHE, "Tcmb": IX_TCMB, "H0": IX_H0, "Omegab": IX_OMEGAB}
 
 FREEZE_RATES = os.environ.get("DISCO_FUSED_FREEZE_RATES", "") == "1"
-"""Diagnostic: with ``DISCO_FUSED_FREEZE_RATES=1`` the recombination rates are zero (the
-thermal state stays fully ionized), which compiles RECFAST out of the kernel and
-isolates its cost per step."""
+"""Diagnostic: with ``DISCO_FUSED_FREEZE_RATES=1`` the thermal derivatives are the
+constant zero (the thermal state stays fully ionized) and RECFAST's rates are not
+compiled in, which isolates their cost per step. (An earlier form multiplied
+the rates by zero, which LLVM cannot remove, and measured nothing.)"""
 
 FROZEN_COUPLING = os.environ.get("DISCO_FUSED_FROZEN_COUPLING", "") == "1"
 """Experimental: pass ``a``, the opacity, ``c_s^2`` and ``rho_nu`` to the hierarchy
@@ -338,7 +339,9 @@ class Recombination(Component):
         self.nu_q = tuple(float(x) for x in q)
         self.nu_w = tuple(float(x) for x in w)
         # The providers that differ between the two layouts are set per instance.
-        if self.N_THERMO == 3:
+        if FREEZE_RATES and self.N_THERMO == 3:  # the rates are not compiled in at all
+            self.x_He, self.Tmat, self.dlnTm_dlna, self.d_thermo = _x_He_state, _Tmat_state, _dlnTm_dlna_state, _d_thermo_frozen
+        elif self.N_THERMO == 3:
             self.x_He, self.Tmat, self.dlnTm_dlna, self.d_thermo = _x_He_state, _Tmat_state, _dlnTm_dlna_state, _d_thermo_full
         else:
             self.x_He, self.Tmat, self.dlnTm_dlna, self.d_thermo = _x_He_saha, _Tmat_fit, _dlnTm_dlna_fit, _d_thermo_hydrogen
@@ -448,8 +451,14 @@ def _dlnTm_dlna_state(dTm_dz, inv_a, Tmat):
     return -dTm_dz * inv_a / Tmat
 
 
+def _d_thermo_frozen(output):
+    output[0] = 0.0
+    output[1] = 0.0
+    output[2] = 0.0
+
+
 def _d_thermo_full(x_H, x_He, xe, Tmat, zred, a, n_H, Hz, Tcmb, Nnow, fHe, K_peebles, dTm_dz, adotoa, inv_a, output):
-    dz_dtau = 0.0 if FREEZE_RATES else -adotoa * inv_a
+    dz_dtau = -adotoa * inv_a
     output[0] = hydrogen_rate(x_H, xe, Tmat, zred, n_H, Hz, Tcmb, Nnow, K_peebles) * dz_dtau
     output[1] = helium_rate(x_H, x_He, xe, Tmat, zred, a, n_H, Hz, Tcmb, Nnow, fHe) * dz_dtau
     output[2] = dTm_dz * dz_dtau
