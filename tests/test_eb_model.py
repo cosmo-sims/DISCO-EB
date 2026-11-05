@@ -165,6 +165,10 @@ def test_make_initial_states_uses_the_model():
             n_s=0.966, H0=67.0, Tcmb=2.7255, YHe=0.245, Neff=3.046, Nmnu=0.0, mnu=0.0, k_p=0.05,
         )
     )
-    y0 = make_initial_states(cosmology, np.array([1e-2, 1e-1]), PerturbationLayout())
-    assert y0.shape == (2, 50) and np.isfinite(y0).all()
+    from discoeb.perturbations import joint_model
+
+    model = joint_model(PerturbationLayout())
+    y0 = make_initial_states(cosmology, np.array([1e-2, 1e-1]), model, lna_start=-15.0)
+    assert y0.shape == (2, 55) and np.isfinite(y0).all()
     np.testing.assert_allclose(y0[:, 0], [-1e-2, -1e-1], rtol=1e-3)  # etak ~ -k
+    np.testing.assert_allclose(y0[:, 50:], [[-15.0, 1.0, 2.0, 2.7255 * np.exp(15.0), 0.0]] * 2)  # the thermal state

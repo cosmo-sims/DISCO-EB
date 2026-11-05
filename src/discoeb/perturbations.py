@@ -9,18 +9,22 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .component import Component
 from .eb_model import (
     MassiveNeutrinos,
     MasslessNeutrinos,
     Photons,
     density_parameters,
     dtauda,
-    evolve_background,
-    layout_state_names,
+    neutrino_density_ratio,
     perturbation_model,
     perturbation_sparsity,
     setup_background_evolution,
+)
+from .recombination import (
+    AKTHOM_PER_OMEGAB_H0SQ,
+    THERMAL_PARAMETERS,
+    THERMO_ERROR_WEIGHT,
+    Recombination,
 )
 from .thermodynamics_recfast import evaluate_thermo
 
@@ -403,17 +407,12 @@ def _as_cosmology(cosmology):
         tau_reio=float(cosmology.get("tau_reio", 0.0)),
     )
 
-# Solver and grid presets for the accelerated matter-power path.
+# Solver and grid presets.
 N_THERMO_GRID = 2048
+"""Points of the adaptive RECFAST grid of :func:`thermal_history_batch` and :func:`host_thermal_history`."""
 N_BACKGROUND_GRID = 4096
 THERMO_BATCH_CHUNK = 128
-"""Cosmologies per vmapped background solve in :func:`build_thermo_tables_batch`.
-
-One lane per cosmology, so a launch costs the same whether it carries one
-cosmology or 128, and a batch is solved in as few launches as possible. A
-partial chunk is padded to this size by repeating its last cosmology, so every
-batch of up to 128 cosmologies runs the one compiled program.
-"""
+"""Cosmologies per lane-padded RECFAST launch in :func:`thermal_history_batch`."""
 PERTURB_RTOL = 1.0e-4
 PERTURB_ATOL = 1.0e-4
 PERTURB_FIRST_STEP = 1.0e-2
@@ -424,15 +423,14 @@ TAU_START = 0.1
 #   p = (grhog, grhornomass, grhoc, grhob, grhov,
 #        tau_start, tau_end, k, cosmology_idx, save_index,
 #        w_DE_0, w_DE_a, cs2_DE, grhok, grhor_nu, n_mnu, amnu,
-#        eps, dir_grhog, dir_grhornomass, dir_grhoc, dir_grhob, dir_grhov)
+#        eps, dir_grhog, dir_grhornomass, dir_grhoc, dir_grhob, dir_grhov,
+#        YHe, Tcmb, H0, Omegab, z_re)
 # grhok = grhom * Omega_k is the (constant) comoving curvature density
-# coefficient 8*pi*G*rho_K a^2; it is 0 for a flat cosmology.
-# The rhs reads density ``c`` as ``p[c] + p[IX_EPS] * p[IX_DIR + c]``. ``eps``
-# is zero in every primal solve, so the trajectory is what it always was; its
-# derivative with respect to ``eps`` alone is the directional derivative along
-# the row's ``dir`` vector. That is what lets a trajectory carry a single
-# sensitivity column for a direction of its own -- see
-# :func:`matter_power_spectrum_jax`.
+# coefficient 8*pi*G*rho_K a^2; it is 0 for a flat cosmology. The rhs reads
+# density ``c`` as ``p[c] + p[IX_EPS] * p[IX_DIR + c]``; ``eps`` is zero in
+# every solve and the ``dir`` columns are kept for callers that seed a
+# direction of their own. The last five columns are what the recombination
+# rates and reionization read (:data:`discoeb.recombination.THERMAL_PARAMETERS`).
 IX_TAU_START = 5
 IX_TAU_END = 6
 IX_K = 7
@@ -447,7 +445,13 @@ IX_NMNU = 15
 IX_AMNU = 16
 IX_EPS = 17
 IX_DIR = 18
-N_PARAM = IX_DIR + 5
+N_PARAM_HIERARCHY = IX_DIR + 5
+IX_YHE = N_PARAM_HIERARCHY
+IX_TCMB = N_PARAM_HIERARCHY + 1
+IX_H0 = N_PARAM_HIERARCHY + 2
+IX_OMEGAB = N_PARAM_HIERARCHY + 3
+IX_ZRE = N_PARAM_HIERARCHY + 4
+N_PARAM = N_PARAM_HIERARCHY + len(THERMAL_PARAMETERS)
 
 PARAM_COLUMNS = {
     "grhog_nominal": 0,
@@ -473,12 +477,22 @@ PARAM_COLUMNS = {
     "dir_grhoc": IX_DIR + 2,
     "dir_grhob": IX_DIR + 3,
     "dir_grhov": IX_DIR + 4,
+    **{name: N_PARAM_HIERARCHY + i for i, name in enumerate(THERMAL_PARAMETERS)},
 }
 """The row's columns by the names the component model's providers take them under
-(:mod:`discoeb.eb_model`): ``grhog_nominal`` is read into the equations as
-``grhog = grhog_nominal + eps * dir_grhog``."""
+(:mod:`discoeb.eb_model`, :mod:`discoeb.recombination`): ``grhog_nominal`` is
+read into the equations as ``grhog = grhog_nominal + eps * dir_grhog``."""
 
-THERMO_TABLE_DTYPE = np.float32
+PHYSICAL_DENSITY_COLUMNS = (0, 1, 2, 3, 4)
+"""Packed-parameter columns carrying the background densities
+``(grhog, grhornomass, grhoc, grhob, grhov)``."""
+
+THERMAL_COLUMNS = (IX_YHE, IX_TCMB, IX_H0, IX_OMEGAB)
+"""Packed-parameter columns the recombination rates read: ``(YHe, Tcmb, H0, Omegab)``."""
+
+PHYSICAL_COLUMNS = PHYSICAL_DENSITY_COLUMNS + THERMAL_COLUMNS
+"""Every column a derivative with respect to the cosmology wants."""
+
 TRAJECTORIES_PER_BLOCK = 32
 """Wave modes packed into one CUDA block by modax's thread-local Rodas5P kernel."""
 
@@ -486,52 +500,15 @@ CUDA_MAX_REGISTERS = int(os.environ.get("DISCO_CUDA_MAX_REGISTERS", "168"))
 """Per-thread register cap for that kernel: fewer registers, more resident warps."""
 
 NQMAX = MassiveNeutrinos.NQMAX
-"""Massive-neutrino momentum bins used by both the background and the hierarchy.
+"""Massive-neutrino momentum bins used by both the background and the hierarchy."""
 
-The ``NQMAX`` setting of :class:`discoeb.eb_model.MassiveNeutrinos`
-(``DISCO_NQMAX``). Each bin adds ``lmaxnu + 1 == 16`` state variables and the
-generated dense Jacobian scales as ``nvar^2``, so this sets the numba compile
-time: 3 bins give ``nvar = 98``, 5 bins give ``nvar = 130`` and compile ~4x
-slower for no gain in P(k) accuracy against CLASS.
-"""
-
-
-_DENSITY_CACHE: "BoundedCache"
-
-
-def _densities(cosmology) -> dict:
-    """:func:`discoeb.eb_model.density_parameters` of a cosmology, as floats, memoised."""
-
-    cosmology = _as_cosmology(cosmology)
-    cached = _DENSITY_CACHE.get(cosmology)
-    if cached is None:
-        d = density_parameters(cosmology.to_background_params(), xp=np)
-        cached = _DENSITY_CACHE[cosmology] = {k: float(v) for k, v in d.items()}
-    return cached
-
-
-def density_coefficients(cosmology) -> tuple[float, float, float, float, float]:
-    """Return the background ``grho`` density coefficients for ``cosmology``.
-
-    ``(grhog, grhornomass, grhoc, grhob, grhov)`` from
-    :func:`discoeb.eb_model.density_parameters`: ``grhornomass`` uses the
-    *massless* neutrino count, and the dark-energy coefficient closes the
-    density budget at ``a = 1`` with the model's own Friedmann sum, so it
-    accounts for curvature and the massive-neutrino density.
-    """
-
-    d = _densities(cosmology)
-    return (d["grhog"], d["grhornomass"], d["grhoc"], d["grhob"], d["grhov"])
+THERMO_RTOL = 1e-5
+THERMO_ATOL = 1e-7
+"""Tolerances of the stand-alone RECFAST solve of :func:`thermal_history_batch`."""
 
 
 class BoundedCache(OrderedDict):
-    """A least-recently-used ``dict`` holding at most ``maxsize`` entries.
-
-    The module memoizes per-cosmology and per-batch host work (thermodynamics
-    tables, packed initial states, grid summaries). An inference loop proposes
-    a fresh batch every iteration, so an unbounded memo would grow without
-    limit; this one forgets the oldest entries instead.
-    """
+    """A least-recently-used ``dict`` holding at most ``maxsize`` entries."""
 
     def __init__(self, maxsize: int):
         super().__init__()
@@ -555,209 +532,85 @@ class BoundedCache(OrderedDict):
             self.popitem(last=False)
 
 
-THERMO_TABLE_CACHE_SIZE = 4096
-"""Cosmologies whose thermodynamics tables are kept: a few dozen 128-batches."""
-
 BATCH_CACHE_SIZE = 8
 """Batches whose prepared solve and packed initial states are kept."""
 
-_THERMO_TABLE_CACHE: BoundedCache = BoundedCache(THERMO_TABLE_CACHE_SIZE)
+_DENSITY_CACHE: BoundedCache = BoundedCache(4096)
+_PREPARED_SOLVE_CACHE: BoundedCache = BoundedCache(BATCH_CACHE_SIZE)
+_PACKED_BATCH_CACHE: BoundedCache = BoundedCache(BATCH_CACHE_SIZE)
+_KERNELS: dict = {}
 
 
-def build_thermo_tables(cosmology, n_grid: int = N_THERMO_GRID):
-    """Cached wrapper around :func:`_build_thermo_tables`.
+def _densities(cosmology) -> dict:
+    """:func:`discoeb.eb_model.density_parameters` of a cosmology, as floats, memoised."""
 
-    Each call runs a full RECFAST recombination solve plus the background
-    quadrature, so it is far too expensive to repeat per evaluation -- a CMB batch
-    needs every cosmology's ``tau0`` up front *and* again inside the solve
-    preparation. The tables depend only on ``(cosmology, n_grid)``, so memoize
-    them. A single cosmology is the one-lane case of
-    :func:`build_thermo_tables_batch`, on the same compiled program.
-    """
-
-    return build_thermo_tables_batch((_as_cosmology(cosmology),), n_grid)[0]
-
-
-def build_thermo_tables_batch(cosmologies, n_grid: int = N_THERMO_GRID):
-    """Return one :func:`build_thermo_tables` tuple per cosmology, batched.
-
-    The tables of each cosmology, memoized per cosmology, with the misses solved
-    together: the RECFAST recombination history, the background quadrature *and*
-    the resampling onto the device tables (:func:`_thermo_tables_device`) are
-    one ``jax.vmap``-ed program over a chunk of :data:`THERMO_BATCH_CHUNK`
-    cosmologies, so a fresh batch of 128 costs one launch -- a few hundred
-    milliseconds, against ~0.8 s per cosmology solved one at a time, and against
-    ~5 s when the resampling was done on the host cosmology by cosmology.
-
-    ``vmap`` rather than the parameter batch axis :func:`batch_dimensions`
-    threads through the splines. Under ``vmap`` each cosmology keeps its own
-    adaptive step sequence; a batch axis would instead put all of them under the
-    single scalar error norm of the thermodynamics ``PIDController``, tying every
-    cosmology's step size to the worst one in the batch.
-
-    Not bit-identical to the serial builder. ``tau_grid`` and ``tau0`` match
-    exactly, but batching re-associates the arithmetic inside the RECFAST solve,
-    and at its default ``rtol = 1e-5`` that is enough to flip step-acceptance
-    decisions: ``xe`` moves by up to ~2e-3 at early times, in cosmologies where
-    the solve is barely converged to begin with. That is a property of the
-    tolerance, not of batching -- the serial solve is itself only good to ~8e-2
-    there against a converged reference. It does not reach the observable:
-    ``P(k)`` shifts by at most ~7e-6, against a test gate of 5e-3.
-    """
-
-    order = []
-    todo = []
-    found = {}
-    for cosmology in cosmologies:
-        key = (_as_cosmology(cosmology), n_grid)
-        if key not in found:
-            cached = _THERMO_TABLE_CACHE.get(key)
-            if cached is not None:
-                found[key] = cached
-            elif key not in todo:
-                todo.append(key)
-        order.append(key)
-
-    for start in range(0, len(todo), THERMO_BATCH_CHUNK):
-        chunk = todo[start : start + THERMO_BATCH_CHUNK]
-        tables = _build_thermo_tables_batch([key[0] for key in chunk], n_grid)
-        found.update(zip(chunk, tables))
-        _THERMO_TABLE_CACHE.update(zip(chunk, tables))
-
-    return tuple(found[key] for key in order)
-
-
-_SPLINE_INVERSE_CACHE: dict[int, np.ndarray] = {}
-
-
-def _not_a_knot_inverse(n: int) -> np.ndarray:
-    """Inverse of the uniform-grid not-a-knot cubic-spline system for the knot second derivatives.
-
-    On a uniform grid of spacing ``h`` the second derivatives ``M`` of the
-    not-a-knot cubic spline through ``y`` solve ``A M = 6 D2 y / h**2`` with
-    ``D2`` the second difference, interior rows ``(1, 4, 1)`` and the end
-    rows ``(1, -2, 1)`` (continuity of the third derivative at the second and
-    second-to-last knots). ``A`` depends on ``n`` alone, so its inverse is built
-    once and the device forms every cosmology's ``seconds`` as one matrix
-    product -- the same numbers as ``scipy.interpolate.CubicSpline(x, y)(x, 2)``
-    on that grid, to 1e-13 of their scale.
-    """
-
-    cached = _SPLINE_INVERSE_CACHE.get(n)
+    cosmology = _as_cosmology(cosmology)
+    cached = _DENSITY_CACHE.get(cosmology)
     if cached is None:
-        a = np.zeros((n, n))
-        idx = np.arange(1, n - 1)
-        a[idx, idx - 1] = 1.0
-        a[idx, idx] = 4.0
-        a[idx, idx + 1] = 1.0
-        a[0, :3] = (1.0, -2.0, 1.0)
-        a[-1, -3:] = (1.0, -2.0, 1.0)
-        cached = np.linalg.inv(a)
-        _SPLINE_INVERSE_CACHE[n] = cached
+        d = density_parameters(cosmology.to_background_params(), xp=np)
+        cached = _DENSITY_CACHE[cosmology] = {k: float(v) for k, v in d.items()}
     return cached
 
 
-@partial(jax.jit, static_argnames=("n_grid",))
-def _thermo_tables_device(stacked, spline_inverse, n_grid: int):
-    """The device tables of a stack of cosmologies, one vmap lane each.
+def density_coefficients(cosmology) -> tuple[float, float, float, float, float]:
+    """``(grhog, grhornomass, grhoc, grhob, grhov)`` of :func:`discoeb.eb_model.density_parameters`."""
 
-    Runs :func:`evolve_background` and then the resampling onto the layout the
-    numba-CUDA callbacks read -- the conformal-time quadrature, the uniform
-    ``log(tau)`` grid to each cosmology's own ``tau0``, the spline evaluations
-    of ``a``, ``kappa'``, ``c_s^2`` and ``rho_nu`` on it, and their not-a-knot
-    second derivatives (:func:`_not_a_knot_inverse`) -- as one program. Returns
-    ``(tau_grid, values, seconds, tau0)`` stacked over the lanes.
+    d = _densities(cosmology)
+    return (d["grhog"], d["grhornomass"], d["grhoc"], d["grhob"], d["grhov"])
+
+
+# ============================================================
+# THE JOINT MODEL AND ITS KERNEL
+# ============================================================
+
+
+def _layout_for(cosmology) -> PerturbationLayout:
+    """The perturbation layout the module presets imply for a cosmology."""
+
+    return PerturbationLayout.from_cosmology(
+        cosmology,
+        lmaxg=Photons.LMAX_G,
+        lmaxpol=Photons.LMAX_POL,
+        lmaxr=MasslessNeutrinos.LMAX_NR,
+        lmaxnu=MassiveNeutrinos.LMAX_NU,
+        nqmax=MassiveNeutrinos.NQMAX,
+    )
+
+
+def joint_model(layout, extra=()):
+    """The hierarchy of ``layout`` with :class:`~discoeb.recombination.Recombination` appended.
+
+    The recombination states come *after* the hierarchy's, so the layout's
+    indices (:data:`IX_ETAK` ...) hold and the thermal states are the last
+    five columns of every history: ``ln a``, ``x_H``, ``x_He``, ``T_m`` and
+    the optical depth, at ``model.index["lna"]`` and so on.
     """
 
-    a_background = jnp.geomspace(1.0e-9, 1.0, N_BACKGROUND_GRID)
-
-    def one(params):
-        tau_reio = params["tau_reio"]
-        background = evolve_background(
-            param={k: v for k, v in params.items() if k != "tau_reio"},
-            thermo_module="RECFAST", num_thermo=n_grid,
-        )
-        dtauda_values = jax.vmap(dtauda, in_axes=(0, None))(a_background, background["densities"])
-        steps = 0.5 * (dtauda_values[1:] + dtauda_values[:-1]) * jnp.diff(a_background)
-        tau_background = jnp.concatenate(
-            (jnp.zeros((1,)), jnp.cumsum(steps))
-        ) + jnp.reshape(background["taumin"], (-1,))[0]
-        tau0 = tau_background[-1]
-        log_tau_grid = jnp.linspace(jnp.log(TAU_START), jnp.log(tau0), n_grid)
-        tau_grid = jnp.exp(log_tau_grid)
-        a_vals = jnp.interp(tau_grid, tau_background, a_background)
-        loga_eval = jnp.log(a_vals)
-
-        xe_spline = background["xe_of_loga_spline"]
-        xe_vals = xe_spline.evaluate(loga_eval)[:, 0]
-        a_recfast_start = 1.0 / 3501.0
-        xe_recfast_start = xe_spline.evaluate(jnp.log(jnp.asarray([a_recfast_start])))[0, 0]
-        xe_vals = jnp.where(a_vals < a_recfast_start, xe_recfast_start, xe_vals)
-        akthom = (
-            2.3038921003709498e-9
-            * (1.0 - params["YHe"])
-            * params["Omegab"]
-            * params["H0"] ** 2
-        )
-        # Reionization (CAMB's parametrization): hydrogen and HeII reionize
-        # together in a tanh step of width delta_z = 0.5 in y = (1 + z)^1.5
-        # about z_re, HeIII at z = 3.5; z_re is set by the optical depth
-        # tau_reio = int kappa' dtau, found by bisection on the background grid.
-        f_he = params["YHe"] / (4.0 * (1.0 - params["YHe"]))  # n_He / n_H
-        xe_rec_background = xe_spline.evaluate(jnp.log(a_background))[:, 0]
-        xe_rec_background = jnp.where(a_background < a_recfast_start, xe_recfast_start, xe_rec_background)
-        dtau_background = jnp.gradient(tau_background)
-
-        def xe_reio(a, xe_rec, z_re):
-            z = 1.0 / a - 1.0
-            y, y_re = (1.0 + z) ** 1.5, (1.0 + z_re) ** 1.5
-            delta_y = 1.5 * jnp.sqrt(1.0 + z_re) * 0.5
-            step = 0.5 * (1.0 + jnp.tanh((y_re - y) / delta_y))
-            he3 = 0.5 * (1.0 + jnp.tanh((3.5 - z) / 0.5))
-            return (1.0 + f_he - xe_rec) * step + f_he * he3
-
-        def tau_of(z_re):
-            return jnp.sum(xe_reio(a_background, xe_rec_background, z_re) * akthom / a_background**2 * dtau_background)
-
-        def bisect(carry, _):
-            lo, hi = carry
-            mid = 0.5 * (lo + hi)
-            too_much = tau_of(mid) > tau_reio
-            return (jnp.where(too_much, lo, mid), jnp.where(too_much, mid, hi)), None
-
-        (lo, hi), _ = jax.lax.scan(bisect, (jnp.asarray(1.0), jnp.asarray(40.0)), None, length=40)
-        z_re = 0.5 * (lo + hi)
-        xe_vals = xe_vals + jnp.where(tau_reio > 0.0, xe_reio(a_vals, xe_vals, z_re), 0.0)
-        opacity_vals = xe_vals * akthom / a_vals**2
-        cs2_vals = background["cs2a_of_loga_spline"].evaluate(loga_eval)[:, 0] / a_vals
-        rhonu_vals = jnp.exp(
-            background["logrhonu_of_loga_spline"].evaluate(loga_eval)[:, 0]
-        )
-
-        values = jnp.stack((a_vals, opacity_vals, cs2_vals, rhonu_vals))
-        h = log_tau_grid[1] - log_tau_grid[0]
-        second_difference = values[:, 2:] - 2.0 * values[:, 1:-1] + values[:, :-2]
-        rhs = jnp.zeros_like(values).at[:, 1:-1].set(6.0 * second_difference / h**2)
-        seconds = rhs @ spline_inverse.T
-        return tau_grid, values, seconds, tau0
-
-    return jax.vmap(one)(stacked)
+    return perturbation_model(layout, extra=[Recombination(), *extra])
 
 
-THERMO_RTOL = 1e-5
-THERMO_ATOL = 1e-7
-"""Tolerances of the RECFAST solve behind the device tables (see :func:`_solve_thermal_histories`)."""
+def thermal_indices(model) -> tuple[int, ...]:
+    """The flat indices of the five recombination states in ``model``."""
+
+    return tuple(model.index[n] for n in ("lna", "thermo_0", "thermo_1", "thermo_2", "kappa"))
 
 
-@partial(jax.jit, static_argnames=("n_grid", "rtol", "atol"))
-def _solve_thermal_histories(stacked, n_grid: int, rtol: float = THERMO_RTOL, atol: float = THERMO_ATOL):
-    """The RECFAST solve of ``evolve_background`` alone, one vmap lane per cosmology."""
+def joint_kernel(layout, extra=(), key=None):
+    """``(model, rhs, sparsity)`` of the joint model, built once per layout (and ``key``).
 
-    def one(params):
-        param = setup_background_evolution(amin=1e-9, amax=1.01, param=dict(params))
-        return evaluate_thermo(param=param, num_thermo=n_grid, rtol=rtol, atol=atol)
+    The right-hand side closes over nothing that varies between batches, so
+    modax compiles it once; the pattern is the hierarchy's with the five
+    driver columns in every row and the driver rows on their own, which
+    modax's ``split=True`` reads as a driver block and a main block.
+    """
 
-    return jax.vmap(one)(stacked)
+    cache_key = (layout, key)
+    cached = _KERNELS.get(cache_key)
+    if cached is None:
+        model = joint_model(layout, extra)
+        rhs = model.build(PARAM_COLUMNS)
+        cached = _KERNELS[cache_key] = (model, rhs, model.sparsity())
+    return cached
 
 
 def _stack_background_params(cosmologies) -> dict:
@@ -767,56 +620,115 @@ def _stack_background_params(cosmologies) -> dict:
     return {key: jnp.asarray([row[key] for row in rows], dtype=jnp.float64) for key in rows[0]}
 
 
-def thermal_history_batch(cosmologies, n_grid: int = N_THERMO_GRID) -> dict:
-    """Solve the recombination history of a batch of cosmologies in one launch.
+def _background_tau(d):
+    """``(a_grid, tau_grid)`` of the conformal-time quadrature for densities ``d`` (JAX)."""
 
-    Returns host arrays: ``a`` of shape ``(n_grid + 1,)`` (the adaptive RECFAST
-    grid), and ``xe``, ``Tm`` and ``cs2`` of shape ``(n_cosmologies, n_grid + 1)``:
-    the free-electron fraction ``n_e / n_H``, the matter temperature in K and the
-    baryon sound speed squared. It is the thermodynamics half of
-    :func:`build_thermo_tables_batch`, exposed so the recombination solve can be
-    checked and timed on its own.
+    a_bg = jnp.geomspace(1.0e-9, 1.0, N_BACKGROUND_GRID)
+    dt = jax.vmap(dtauda, in_axes=(0, None))(a_bg, d)
+    steps = 0.5 * (dt[1:] + dt[:-1]) * jnp.diff(a_bg)
+    radiation = (
+        d["grhog"] + d["grhornomass"]
+        + d["grhor_nu"] * d["n_mnu"] * neutrino_density_ratio(1.0e-9, d["amnu"])
+    )
+    taumin = 1.0e-9 / jnp.sqrt(radiation / 3.0)
+    return a_bg, jnp.concatenate((jnp.zeros((1,)), jnp.cumsum(steps))) + taumin
+
+
+def _reionization_redshift(a_bg, tau_bg, xe_rec, params, tau_reio):
+    """``z_re`` of CAMB's step, by bisection on the background grid, for ``tau_reio > 0``."""
+
+    f_he = params["YHe"] / (4.0 * (1.0 - params["YHe"]))
+    akthom = AKTHOM_PER_OMEGAB_H0SQ * (1.0 - params["YHe"]) * params["Omegab"] * params["H0"] ** 2
+    dtau = jnp.gradient(tau_bg)
+
+    def xe_reio(a, z_re):
+        z = 1.0 / a - 1.0
+        y, y_re = (1.0 + z) ** 1.5, (1.0 + z_re) ** 1.5
+        delta_y = 1.5 * jnp.sqrt(1.0 + z_re) * 0.5
+        step = 0.5 * (1.0 + jnp.tanh((y_re - y) / delta_y))
+        he3 = 0.5 * (1.0 + jnp.tanh((3.5 - z) / 0.5))
+        return (1.0 + f_he - xe_rec) * step + f_he * he3
+
+    def tau_of(z_re):
+        return jnp.sum(xe_reio(a_bg, z_re) * akthom / a_bg**2 * dtau)
+
+    def bisect(carry, _):
+        lo, hi = carry
+        mid = 0.5 * (lo + hi)
+        too_much = tau_of(mid) > tau_reio
+        return (jnp.where(too_much, lo, mid), jnp.where(too_much, mid, hi)), None
+
+    (lo, hi), _ = jax.lax.scan(bisect, (jnp.asarray(1.0), jnp.asarray(40.0)), None, length=40)
+    return jnp.where(tau_reio > 0.0, 0.5 * (lo + hi), 0.0)
+
+
+@jax.jit
+def background_endpoints(stacked):
+    """``(tau0, lna_start, z_re)`` of stacked background parameters, one vmap lane each.
+
+    The conformal age, where each trajectory stops; ``ln a`` at
+    :data:`TAU_START`, where it starts; and the reionization redshift that
+    gives ``tau_reio`` (0 without reionization), solved on the background with
+    the residual recombination ionization neglected, which moves ``tau_reio``
+    by 2e-4 of itself.
+    """
+
+    def one(params):
+        d = density_parameters({k: v for k, v in params.items() if k != "tau_reio"})
+        a_bg, tau_bg = _background_tau(d)
+        lna_start = jnp.log(jnp.interp(TAU_START, tau_bg, a_bg))
+        z_re = _reionization_redshift(a_bg, tau_bg, 0.0, params, params["tau_reio"])
+        return tau_bg[-1], lna_start, z_re
+
+    return jax.vmap(one)(stacked)
+
+
+class _PreparedSolve(NamedTuple):
+    """What a batch shares: the compiled joint model and each cosmology's endpoints."""
+
+    cosmologies: tuple
+    layout: object
+    model: object
+    ode_fn: object
+    sparsity: object
+    tau0: np.ndarray  # (n_cosmologies,)
+    lna_start: np.ndarray
+    z_re: np.ndarray
+
+
+def _prepare_solve(cosmologies, extra=(), key=None) -> _PreparedSolve:
+    """Return (and cache) the joint kernel and the endpoints of a batch of cosmologies.
+
+    All cosmologies in a batch must share a perturbation layout. Nothing here
+    depends on the wave modes, the save times or the tolerances; the kernel
+    is compiled once per layout and the endpoints are a vmapped quadrature of
+    a few milliseconds.
     """
 
     cosmologies = tuple(_as_cosmology(cosmology) for cosmology in cosmologies)
-    stacked = _stack_background_params(cosmologies)
-    a, cs2, Tm, mu, xe, dxeda = _solve_thermal_histories(stacked, n_grid, rtol=THERMO_RTOL, atol=THERMO_ATOL)
-    return {
-        "a": np.asarray(a)[0],
-        "xe": np.asarray(xe)[:, :, 0],
-        "Tm": np.asarray(Tm)[:, :, 0],
-        "cs2": np.asarray(cs2)[:, :, 0],
-    }
+    cache_key = (cosmologies, key, MassiveNeutrinos.NQMAX, Photons.LMAX_G, Photons.LMAX_POL,
+                 MasslessNeutrinos.LMAX_NR, MassiveNeutrinos.LMAX_NU, TAU_START)
+    cached = _PREPARED_SOLVE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    layout = _layout_for(cosmologies[0])
+    for cosmology in cosmologies[1:]:
+        if _layout_for(cosmology) != layout:
+            raise ValueError(
+                "all cosmologies in a batch must share a perturbation layout "
+                "(same dark-energy / massive-neutrino settings)"
+            )
+    model, rhs, sparsity = joint_kernel(layout, extra, key)
+    tau0, lna_start, z_re = (np.asarray(x) for x in background_endpoints(_stack_background_params(cosmologies)))
+    prepared = _PreparedSolve(cosmologies, layout, model, rhs, sparsity, tau0, lna_start, z_re)
+    _PREPARED_SOLVE_CACHE[cache_key] = prepared
+    return prepared
 
 
-def _build_thermo_tables_batch(cosmologies, n_grid: int = N_THERMO_GRID):
-    """Uncached :func:`build_thermo_tables_batch`, for one chunk of cosmologies.
+def make_params(cosmology, k_values: np.ndarray, tau_end: float, z_re: float = 0.0) -> np.ndarray:
+    """Return per-mode packed parameters for the device rhs, one row per wave mode."""
 
-    Returns one ``(tau_grid, values, seconds, tau0)`` tuple of host arrays per
-    cosmology. The chunk is padded to :data:`THERMO_BATCH_CHUNK` lanes with its
-    last cosmology so that every chunk runs the one compiled program.
-    """
-
-    n = len(cosmologies)
-    padded = tuple(cosmologies) + (cosmologies[-1],) * (THERMO_BATCH_CHUNK - n)
-    stacked = _stack_background_params(padded)
-    tau_grid, values, seconds, tau0 = (
-        np.asarray(x)
-        for x in _thermo_tables_device(stacked, _not_a_knot_inverse(n_grid), n_grid)
-    )
-    return tuple(
-        (tau_grid[i], values[i], seconds[i], float(tau0[i])) for i in range(n)
-    )
-
-
-def make_params(cosmology, k_values: np.ndarray, tau_end: float) -> np.ndarray:
-    """Return per-mode packed perturbation parameters for the device rhs.
-
-    One row per wave mode, its columns named by :data:`PARAM_COLUMNS`. The
-    cosmology tag is 0 and the sensitivity direction zero: ``eps`` and ``dir``
-    are zero, so the densities the rhs sees are exactly the nominal ones.
-    """
-
+    cosmology = _as_cosmology(cosmology)
     d = _densities(cosmology)
     k_values = np.asarray(k_values, dtype=np.float64)
     row = {
@@ -835,6 +747,11 @@ def make_params(cosmology, k_values: np.ndarray, tau_end: float) -> np.ndarray:
         "grhor_nu": d["grhor_nu"],
         "n_mnu": d["n_mnu"],
         "amnu": d["amnu"],
+        "YHe": cosmology.Y_He,
+        "Tcmb": cosmology.T_cmb,
+        "H0": cosmology.H0,
+        "Omegab": cosmology.Omegab,
+        "z_re": z_re,
     }
     params = np.zeros((len(k_values), N_PARAM), dtype=np.float64)
     for name, column in PARAM_COLUMNS.items():
@@ -843,18 +760,12 @@ def make_params(cosmology, k_values: np.ndarray, tau_end: float) -> np.ndarray:
     return params
 
 
-def make_initial_states(cosmology, k_values: np.ndarray, layout) -> np.ndarray:
-    """Return adiabatic initial states for every wave mode, shape ``(n_k, nvar)``.
+def make_initial_states(cosmology, k_values: np.ndarray, model, lna_start: float) -> np.ndarray:
+    """Adiabatic initial states for every wave mode plus the fully ionized thermal state, ``(n_k, nvar)``."""
 
-    Each state's initial condition is declared on its component
-    (:mod:`discoeb.eb_model`): CAMB's adiabatic growing-mode series at
-    ``k tau << 1`` for the metric, the fluids and the radiation hierarchies,
-    ``clxq = (1 + w_0) clxc`` at rest for the dark-energy fluid, and the
-    massless hierarchy scaled by ``dlnf0/dlnq`` for each massive-neutrino bin.
-    """
-
+    cosmology = _as_cosmology(cosmology)
     grhog, grhornomass, grhoc, grhob, grhov = density_coefficients(cosmology)
-    return perturbation_model(layout).initial_state(
+    return model.initial_state(
         k_values,
         tau=TAU_START,
         grhog=grhog,
@@ -864,334 +775,18 @@ def make_initial_states(cosmology, k_values: np.ndarray, layout) -> np.ndarray:
         grhov=grhov,
         w_DE_0=cosmology.w_DE_0,
         w_DE_a=cosmology.w_DE_a,
+        lna_start=float(lna_start),
+        Tcmb=cosmology.T_cmb,
     )
-
-
-class ThermalHistory(Component):
-    """``a``, ``opacity``, ``cs2`` and ``rhonu`` at ``tau``, read off device spline tables.
-
-    The tables are stacked over cosmologies: ``values`` and ``rescaled_seconds``
-    (the spline's second derivatives times ``h^2 / 6`` for the uniform step
-    ``h`` in ``log(tau)``, so the evaluator is a Horner polynomial in the local
-    coordinate) have shape ``(n_cosmologies, n_channels, n_grid)`` and
-    ``tau_min`` / ``inv_dtau`` are ``(n_cosmologies,)``. The device evaluator
-    selects a cosmology's table by the ``IX_COSMOLOGY`` tag on each
-    trajectory's parameter row, converted once per right-hand side call (the
-    row is a tuple in modax's JVP path, so it cannot be read back by bit
-    pattern), so one compiled kernel solves an arbitrary batch of cosmologies.
-
-    The tables may be host arrays, uploaded here, or device arrays, used in
-    place. The spline reads the device arrays' *contents at launch*, not at
-    build time, so a caller that keeps one set of device buffers per batch
-    shape and refills them per batch (:class:`DeviceTableSlot`) runs every
-    batch on the one kernel compiled against those buffers.
-    """
-
-    def __init__(self, tau_min, inv_dtau, values, rescaled_seconds):
-        from numba_cuda_mlir import cuda
-
-        def on_device(table, dtype):
-            if cuda.is_cuda_array(table):
-                return table
-            return cuda.to_device(np.ascontiguousarray(table, dtype=dtype))
-
-        n_grid = values.shape[-1]
-        tau_min_dev = on_device(tau_min, np.float64)
-        inv_dtau_dev = on_device(inv_dtau, np.float64)
-        values_dev = on_device(values, THERMO_TABLE_DTYPE)
-        rescaled_seconds_dev = on_device(rescaled_seconds, THERMO_TABLE_DTYPE)
-
-        @cuda.jit(device=True)
-        def uniform_spline_eval(x, cosmology_idx, channel):
-            x_min = tau_min_dev[cosmology_idx]
-            inv_dx = inv_dtau_dev[cosmology_idx]
-
-            # 1. Non-branching index calculation
-            i = (x - x_min) * inv_dx
-            idx = max(0, min(int(i), n_grid - 2))
-
-            # 2. Normalized local coordinate t in [0, 1]
-            t = i - idx
-
-            # 3. Load coefficients
-            y0 = values_dev[cosmology_idx, channel, idx]
-            y1 = values_dev[cosmology_idx, channel, idx + 1]
-            k0 = rescaled_seconds_dev[cosmology_idx, channel, idx]
-            k1 = rescaled_seconds_dev[cosmology_idx, channel, idx + 1]
-
-            # 4. Transform to Horner evaluation scheme
-            c0 = y0
-            c1 = (y1 - y0) - (2.0 * k0 + k1)
-            c2 = 3.0 * k0
-            c3 = k1 - k0
-
-            return c0 + t * (c1 + t * (c2 + t * c3))
-
-        # The providers close over the spline, which closes over the device
-        # arrays: a device function cannot take ``self``.
-        def a(log_tau, cosmology_idx):
-            return uniform_spline_eval(log_tau, cosmology_idx, 0)
-
-        def opacity(log_tau, cosmology_idx):
-            return max(uniform_spline_eval(log_tau, cosmology_idx, 1), 1e-30)
-
-        def cs2(log_tau, cosmology_idx):
-            return max(uniform_spline_eval(log_tau, cosmology_idx, 2), 0.0)
-
-        def rhonu(log_tau, cosmology_idx):
-            return uniform_spline_eval(log_tau, cosmology_idx, 3)
-
-        self.spline = uniform_spline_eval
-        self.a, self.opacity, self.cs2, self.rhonu = a, opacity, cs2, rhonu
-
-    @staticmethod
-    def log_tau(self, tau):
-        return math.log(tau)
-
-    @staticmethod
-    def cosmology_idx(self, cosmology_tag):
-        return int(cosmology_tag)
-
-
-def build_numba_rhs(layout, tau_min, inv_dtau, values, rescaled_seconds):
-    """Return the numba-CUDA right-hand side ``f(y, tau, p) -> tuple`` for a layout.
-
-    The right-hand side is :func:`discoeb.eb_model.perturbation_model` built
-    by :meth:`discoeb.component.Model.build`: every species' equations and the
-    interactions between them, their dependencies resolved by name and emitted
-    as one straight-line function. That is the form Enzyme can differentiate
-    for the Jacobian and ``df/dt``: fixed-size tuples of scalars, ``y`` and
-    ``p`` indexed only at build-time constants (a run-time index into a tuple
-    makes numba emit a bounds check Enzyme refuses), no device-function call
-    but the thermodynamics spline. The same function evaluated over array rows
-    serves the kernel's primal stage evaluations.
-
-    The multipole hierarchies are not looped over: each multipole above the
-    quadrupole is its own line, with its ``l`` and neighbours written in, so
-    the truncations are read from ``layout`` and the state-vector layout, the
-    initial conditions and the sparsity pattern change together. The
-    dynamical-dark-energy fluid and the massive-neutrino momentum bins are
-    components registered only when the layout enables them (the
-    flat-LambdaCDM kernel is unchanged). The thermodynamics tables are read by
-    a :class:`ThermalHistory`; see there for their layout and for how one
-    kernel serves every batch of a shape.
-
-    The generated text is ``rhs._generated_source``.
-    """
-
-    thermal_history = ThermalHistory(tau_min, inv_dtau, values, rescaled_seconds)
-    model = perturbation_model(layout, thermal_history)
-    expected = layout_state_names(layout)
-    if tuple(model.state) != expected or model.nvar != layout.nvar:
-        raise AssertionError(
-            "the component model's state order does not reproduce the layout's indices"
-        )
-    return model.build(PARAM_COLUMNS)
-
-
-class DeviceTableSlot:
-    """Device buffers of a fixed shape that one compiled kernel reads its tables from.
-
-    A numba-CUDA kernel that closes over a device array bakes in the array's
-    address, so the right-hand side (and the CMB source hook) built against a
-    batch's thermodynamics tables is a different kernel for every batch, and
-    every batch of an inference loop would compile its own, ~45 s each. A slot
-    instead owns device buffers sized for a batch *shape* -- the number of
-    cosmologies and the table length -- and the device function compiled
-    against them; :meth:`load` copies a batch's tables into the buffers, so the
-    same kernel serves every batch of that shape.
-
-    The copy is ordered against the launches by a device-wide synchronisation
-    on either side of it: every earlier launch (on XLA's streams too, which do
-    not synchronise with numba's) has finished reading the old tables before
-    they are overwritten, and the new ones have landed before anything is
-    launched against them. That wait is only taken when the slot changes hands,
-    never when a batch is re-solved. A kernel reads the tables loaded at its
-    launch, so one batch at a time per slot: loading the next batch waits for
-    the previous one's launches.
-    """
-
-    def __init__(self, shapes_dtypes, build):
-        from numba_cuda_mlir import cuda
-
-        self._cuda = cuda
-        self.buffers = tuple(cuda.device_array(shape, dtype) for shape, dtype in shapes_dtypes)
-        self.device_function = build(*self.buffers)
-        self.loaded = None
-
-    def load(self, key, *tables) -> None:
-        """Make ``tables`` (host arrays, one per buffer) the slot's contents, under ``key``."""
-
-        if self.loaded is not None and self.loaded == key:
-            return
-        self.loaded = None
-        self._cuda.synchronize()
-        for buffer, table in zip(self.buffers, tables, strict=True):
-            buffer.copy_to_device(np.ascontiguousarray(table, dtype=buffer.dtype))
-        self._cuda.synchronize()
-        self.loaded = key
-
-
-class _PreparedSolve(NamedTuple):
-    """Compiled artifacts shared by every cosmology of a (possibly batched) solve."""
-
-    cosmologies: tuple
-    layout: object
-    tables: tuple  # per-cosmology (tau_grid, values, seconds, tau0)
-    tau0: np.ndarray  # (n_cosmologies,)
-    ode_fn: object
-    sparsity: object
-    slot: DeviceTableSlot
-    stacked: tuple  # host (tau_min, inv_dtau, values, rescaled_seconds) the slot is loaded with
-
-    def bind(self) -> None:
-        """Load this batch's thermodynamics tables into the kernel's buffers.
-
-        Called right before every launch of ``ode_fn``; a no-op when the slot
-        already holds them (a repeated solve of the same batch).
-        """
-
-        self.slot.load(self.cosmologies, *self.stacked)
-
-
-_PREPARED_SOLVE_CACHE: BoundedCache = BoundedCache(BATCH_CACHE_SIZE)
-_DENSITY_CACHE = BoundedCache(THERMO_TABLE_CACHE_SIZE)
-_PACKED_BATCH_CACHE: BoundedCache = BoundedCache(BATCH_CACHE_SIZE)
-_TABLE_SLOTS: dict = {}
-
-
-def _stack_thermo_tables(tables):
-    """Stack per-cosmology thermo tables for the multi-cosmology device evaluator.
-
-    Returns ``(tau_min, inv_dtau, values, rescaled_seconds, tau0)`` where
-    ``values`` and ``rescaled_seconds`` (second derivatives times ``h^2 / 6``,
-    the form :func:`build_numba_rhs`'s Horner evaluator reads) are
-    ``(n_cosmologies, n_channels, n_grid)`` and the rest are ``(n_cosmologies,)``.
-    The device spline evaluator selects a cosmology's row by the per-trajectory
-    ``IX_COSMOLOGY`` tag.
-    """
-
-    tau_min = np.array([np.log(t[0][0]) for t in tables], dtype=np.float64)
-    inv_dtau = np.array(
-        [(t[0].shape[0] - 1) / (np.log(t[0][-1]) - np.log(t[0][0])) for t in tables],
-        dtype=np.float64,
-    )
-    values = np.stack([t[1] for t in tables])
-    rescaled_seconds = np.stack([t[2]*(np.log(t[0][1]) - np.log(t[0][0]))**2/6.0 for t in tables])
-    tau0 = np.array([t[3] for t in tables], dtype=np.float64)
-    return tau_min, inv_dtau, values, rescaled_seconds, tau0
-
-
-def _layout_for(cosmology) -> PerturbationLayout:
-    """The perturbation layout the module presets imply for a cosmology."""
-
-    return PerturbationLayout.from_cosmology(
-        cosmology,
-        lmaxg=Photons.LMAX_G,
-        lmaxpol=Photons.LMAX_POL,
-        lmaxr=MasslessNeutrinos.LMAX_NR,
-        lmaxnu=MassiveNeutrinos.LMAX_NU,
-        nqmax=MassiveNeutrinos.NQMAX,
-    )
-
-
-def _prepare_solve(cosmologies) -> _PreparedSolve:
-    """Return (and cache) the compiled solve artifacts for a batch of cosmologies.
-
-    The thermodynamics tables, the numba-CUDA right-hand side device function and
-    the Jacobian sparsity pattern depend only on the cosmologies (and the
-    module-level grid and quadrature presets), not on the wave modes, the save
-    times, or the solver tolerances. The right-hand side and the sparsity
-    pattern are also the identity keys of modax's compiled-kernel cache, and
-    the kernel compilation is the *slow* step (tens of seconds). So the
-    right-hand side is not built per batch: it is compiled once per batch
-    *shape* against a :class:`DeviceTableSlot` of device buffers, and each
-    batch's tables are copied into those buffers before its launches
-    (:meth:`_PreparedSolve.bind`). A sampler proposing a fresh batch of the same
-    size every iteration thus pays the thermodynamics solve and the copy, never
-    a recompile.
-
-    All cosmologies in a batch must share a perturbation layout (same dark-energy
-    and massive-neutrino settings); one compiled kernel then solves them all,
-    selecting each cosmology's thermodynamics table by the ``IX_COSMOLOGY`` tag.
-
-    The prepared solves of the last :data:`BATCH_CACHE_SIZE` batches are kept
-    (host tables only); the slots hold the device memory, one set of buffers
-    per batch shape. :func:`clear_prepared_solve_cache` releases both.
-    """
-
-    cosmologies = tuple(_as_cosmology(cosmology) for cosmology in cosmologies)
-    # Include the presets that change the compiled artifacts, so a caller that
-    # rebinds them (e.g. NQMAX) does not get a stale kernel.
-    key = (
-        cosmologies,
-        MassiveNeutrinos.NQMAX,
-        Photons.LMAX_G,
-        Photons.LMAX_POL,
-        MasslessNeutrinos.LMAX_NR,
-        MassiveNeutrinos.LMAX_NU,
-        N_THERMO_GRID,
-        TAU_START,
-        TRAJECTORIES_PER_BLOCK,
-    )
-    cached = _PREPARED_SOLVE_CACHE.get(key)
-    if cached is not None:
-        return cached
-
-    layout = _layout_for(cosmologies[0])
-    for cosmology in cosmologies[1:]:
-        if _layout_for(cosmology) != layout:
-            raise ValueError(
-                "all cosmologies in a batch must share a perturbation layout "
-                "(same dark-energy / massive-neutrino settings)"
-            )
-
-    tables = build_thermo_tables_batch(cosmologies)
-    tau_min, inv_dtau, values, rescaled_seconds, tau0 = _stack_thermo_tables(tables)
-    n_cosmo, n_channels, n_grid = values.shape
-    slot_key = key[1:] + (layout, n_cosmo, n_channels, n_grid)
-    slot = _TABLE_SLOTS.get(slot_key)
-    if slot is None:
-        slot = DeviceTableSlot(
-            (
-                ((n_cosmo,), np.float64),
-                ((n_cosmo,), np.float64),
-                ((n_cosmo, n_channels, n_grid), THERMO_TABLE_DTYPE),
-                ((n_cosmo, n_channels, n_grid), THERMO_TABLE_DTYPE),
-            ),
-            lambda *buffers: build_numba_rhs(layout, *buffers),
-        )
-        _TABLE_SLOTS[slot_key] = slot
-    # The pattern is all modax needs: it colours it for the Enzyme sweeps, and
-    # orders it with AMD, factorises it symbolically and compiles a sparse LU
-    # and sparse triangular solves for that exact structure.
-    prepared = _PreparedSolve(
-        cosmologies,
-        layout,
-        tables,
-        tau0,
-        slot.device_function,
-        perturbation_sparsity(layout),
-        slot,
-        (tau_min, inv_dtau, values, rescaled_seconds),
-    )
-    _PREPARED_SOLVE_CACHE[key] = prepared
-    return prepared
 
 
 def _pack_batch(prepared, k_values, tau_save=None):
-    """Return (and cache) the packed ``(params, y0, t_span, order, k_sorted)``.
+    """Return (and cache) the packed ``(params, y0, t_span, order, k_sorted)`` of a batch.
 
-    Building the packed inputs means one :func:`make_initial_states` per cosmology
-    -- i.e. ``n_cosmologies * n_k`` scalar :func:`adiabatic_initial_conditions`
-    calls, tens of milliseconds for a large batch. That work depends only on the
-    cosmologies and the wave modes (not the solver tolerances), so it is cached
-    on ``(cosmologies, k, tau_save)``; a repeated solve of the same batch then
-    skips straight to the kernel launch.
-
-    ``tau_save`` is the shared grid of conformal times at which every trajectory
-    is recorded (the CMB line-of-sight integration needs a dense one). It
-    defaults to just the two endpoints, i.e. the final state only.
+    Trajectories are packed as ``row = k_idx * n_cosmo + cosmology_idx``, so a
+    block of consecutive rows shares one wave mode; ``tau_save`` is the shared
+    grid of save times (default: the two endpoints), with every trajectory
+    stopping at its own ``tau0`` through ``IX_TAU_END``.
     """
 
     k_arr = np.ascontiguousarray(np.asarray(k_values, dtype=np.float64))
@@ -1201,66 +796,55 @@ def _pack_batch(prepared, k_values, tau_save=None):
     if cached is not None:
         return cached
 
-    layout = prepared.layout
+    model = prepared.model
     n_cosmo = len(prepared.cosmologies)
     order = np.argsort(k_arr, kind="stable")
     k_sorted = k_arr[order]
-    n_k = len(k_sorted)
-
-    # Pack trajectories as row = k_idx * n_cosmo + cosmology_idx, so a block of
-    # TRAJECTORIES_PER_BLOCK consecutive rows shares one wave mode when
-    # n_cosmo >= TRAJECTORIES_PER_BLOCK: neighbouring threads then take near-identical
-    # adaptive steps, minimizing warp divergence.
-    n_traj = n_k * n_cosmo
+    n_traj = len(k_sorted) * n_cosmo
     params = np.empty((n_traj, N_PARAM), dtype=np.float64)
-    y0 = np.empty((n_traj, layout.nvar), dtype=np.float64)
+    y0 = np.empty((n_traj, model.nvar), dtype=np.float64)
     for ci, cosmology in enumerate(prepared.cosmologies):
-        base = make_params(cosmology, k_sorted, float(prepared.tau0[ci]))
+        base = make_params(cosmology, k_sorted, float(prepared.tau0[ci]), float(prepared.z_re[ci]))
         base[:, IX_COSMOLOGY] = float(ci)
         params[ci::n_cosmo] = base
-        y0[ci::n_cosmo] = make_initial_states(cosmology, k_sorted, layout)
-    params = np.ascontiguousarray(params)
-    y0 = np.ascontiguousarray(y0)
-
-    # Each trajectory stops at its own tau0 (IX_TAU_END); the shared save grid
-    # runs to the largest tau0 and the trailing save slot holds each trajectory's
-    # final state.
+        y0[ci::n_cosmo] = make_initial_states(cosmology, k_sorted, model, prepared.lna_start[ci])
     if tau_save is None:
         t_span = np.asarray((TAU_START, float(np.max(prepared.tau0))), dtype=np.float64)
     else:
         t_span = np.ascontiguousarray(np.asarray(tau_save, dtype=np.float64))
-
-    packed = (params, y0, t_span, order, k_sorted)
+    packed = (np.ascontiguousarray(params), np.ascontiguousarray(y0), t_span, order, k_sorted)
     _PACKED_BATCH_CACHE[key] = packed
     return packed
 
 
-def clear_prepared_solve_cache() -> None:
-    """Drop all cached prepared and packed solves and the device table slots.
+def error_weights_for(prepared, n_traj: int, base=None, thermo_weight: float = THERMO_ERROR_WEIGHT):
+    """The solver's error weights ``(n_traj, nvar)``: ``base`` (or ones) for the hierarchy,
+    ``thermo_weight`` on ``ln a`` and the RECFAST states, zero on the optical depth."""
 
-    Releases the slots' device buffers; the next solve of each batch shape
-    compiles its kernel again.
-    """
+    model = prepared.model
+    weights = np.ones((n_traj, model.nvar), dtype=np.float64)
+    if base is not None:
+        base = np.asarray(base, dtype=np.float64)
+        weights[:, : base.shape[-1]] = base
+    lna, x_h, x_he, t_m, kappa = thermal_indices(model)
+    weights[:, [lna, x_h, x_he, t_m]] = thermo_weight
+    weights[:, kappa] = 0.0
+    return weights
 
-    _PREPARED_SOLVE_CACHE.clear()
-    _PACKED_BATCH_CACHE.clear()
-    _THERMO_TABLE_CACHE.clear()
-    _TABLE_SLOTS.clear()
 
-
-def _launch(prepared, params, y0, t_span, *, rtol, atol, first_step, max_steps):
-    """One modax Rodas5P launch of the prepared solve over the packed trajectories."""
+def _launch(prepared, params, y0, t_span, *, rtol, atol, first_step, max_steps,
+            error_weights=None, thermo_weight=THERMO_ERROR_WEIGHT, lu_precision="fp32", **extra):
+    """One split modax Rodas5P launch of the prepared solve over the packed trajectories."""
 
     from modax.rodas5P import solve as rodas5P_solve
 
-    prepared.bind()
     return rodas5P_solve(
         prepared.ode_fn,
         y0,
         t_span,
         params,
         sparsity=prepared.sparsity,
-        lu_precision="fp32",
+        lu_precision=lu_precision,
         rtol=rtol,
         atol=atol,
         first_step=first_step,
@@ -1270,6 +854,9 @@ def _launch(prepared, params, y0, t_span, *, rtol, atol, first_step, max_steps):
         trajectories_per_block=TRAJECTORIES_PER_BLOCK,
         tf_index=IX_TAU_END,
         max_registers=CUDA_MAX_REGISTERS,
+        error_weights=error_weights_for(prepared, np.shape(params)[0], error_weights, thermo_weight),
+        split=True,
+        **extra,
     )
 
 
@@ -1284,17 +871,12 @@ def solve_perturbation_history(
     first_step: float = PERTURB_FIRST_STEP,
     max_steps: int = PERTURB_MAX_STEPS,
 ):
-    """Solve the perturbation hierarchy of one cosmology and return the saved history.
+    """Solve the joint system of one cosmology and return the saved history.
 
-    The one-cosmology case of :func:`solve_perturbation_history_batch`, with the
-    wave modes put back in the caller's order. ``tau_save`` are strictly
-    increasing conformal times at which to record the state, from
-    ``TAU_START`` to ``tau0`` (default: just the two endpoints, i.e. the final
-    state). ``as_jax`` keeps the history on the device.
-
-    Returns ``(history, layout, tables)``: ``history`` has shape
-    ``(n_k, len(tau_save), nvar)`` and ``tables`` is the ``build_thermo_tables``
-    tuple of the cosmology.
+    Returns ``(history, layout, model)``: ``history`` has shape
+    ``(n_k, len(tau_save), nvar)`` in the caller's ``k`` order, with the
+    hierarchy at the layout's indices and the five recombination states last
+    (:func:`thermal_indices`).
     """
 
     hist, k_sorted, prepared = solve_perturbation_history_batch(
@@ -1305,7 +887,7 @@ def solve_perturbation_history(
     history = hist[:, 0][jnp.asarray(inv_order)]
     if not as_jax:
         history = np.asarray(history)
-    return history, prepared.layout, prepared.tables[0]
+    return history, prepared.layout, prepared.model
 
 
 def solve_perturbation_history_batch(
@@ -1320,50 +902,23 @@ def solve_perturbation_history_batch(
 ):
     """Solve a batch of cosmologies on a shared ``tau_save`` grid in one launch.
 
-    All ``n_cosmologies * n_k`` trajectories are integrated by a single
-    modax Rodas5P launch. Each trajectory still stops at its *own* ``tau0``
-    (via ``IX_TAU_END``), so save times beyond a cosmology's ``tau0`` simply hold
-    its frozen final state -- consumers must mask them (as
-    :mod:`discoeb.cmb` does through the opacity and the source channels).
-
-    Returns
-    -------
-    (history, k_sorted, prepared)
-        ``history`` is a device-resident JAX array of shape
-        ``(n_k, n_cosmologies, len(tau_save), nvar)``, with the wave modes in
-        **ascending** order (``k_sorted``).
-
-        The history is deliberately left in this layout: it is the solver's own
-        packing, so the reshape is a free view. Transposing to a cosmology-major
-        layout, or gathering the wave modes back into the caller's order, would
-        each need a full second copy of the array -- 6.5 GB for a 128-cosmology,
-        1000-save-point batch, enough to exhaust a 12 GB GPU on its own. Ascending
-        ``k`` is what the downstream spline and the ``dln k`` quadrature want
-        anyway.
+    All ``n_cosmologies * n_k`` trajectories are integrated by a single modax
+    launch, the recombination of each one ahead of its hierarchy in every step
+    (modax's ``split``). Each trajectory stops at its *own* ``tau0``; save
+    times beyond it hold its frozen final state. Returns
+    ``(history, k_sorted, prepared)`` with ``history`` a device-resident
+    ``(n_k, n_cosmologies, len(tau_save), nvar)`` in ascending ``k``.
     """
 
     prepared = _prepare_solve(tuple(cosmologies))
-    layout = prepared.layout
-    n_cosmo = len(prepared.cosmologies)
-
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_save)
-    n_k = len(k_sorted)
     sol = _launch(prepared, params, y0, t_span, rtol=rtol, atol=atol, first_step=first_step, max_steps=max_steps)
-    # Rows are packed k-major (row = k_idx * n_cosmo + cosmology_idx), so this
-    # reshape is a free view -- no copy of the (potentially multi-GB) history.
-    hist = jnp.asarray(sol).reshape(n_k, n_cosmo, len(t_span), layout.nvar)
+    hist = jnp.asarray(sol).reshape(len(k_sorted), len(prepared.cosmologies), len(t_span), prepared.model.nvar)
     return hist, k_sorted, prepared
 
 
 def solve_perturbations(k_values, cosmology, **solve_kwargs):
-    """Solve the perturbation hierarchy for each ``k`` and return final states.
-
-    Returns
-    -------
-    np.ndarray
-        Final perturbation state for each wave mode, shape ``(n_k, nvar)``,
-        evaluated at ``tau0`` (today).
-    """
+    """Final states ``(n_k, nvar)`` of one cosmology at ``tau0``."""
 
     solve_kwargs.pop("tau_save", None)
     hist, _, _ = solve_perturbation_history(k_values, cosmology, **solve_kwargs)
@@ -1376,239 +931,21 @@ def solve_matter_power_spectrum(k_values, cosmology, **solve_kwargs) -> np.ndarr
     return solve_matter_power_spectrum_batch(k_values, (cosmology,), **solve_kwargs)[0]
 
 
-PHYSICAL_DENSITY_COLUMNS = (0, 1, 2, 3, 4)
-"""Packed-parameter columns carrying the background densities.
+def _power_spectrum_from_final(y_final, k_sorted, cosmologies, k_values):
+    """``P(k)`` ``(n_cosmo, n_k)`` in the caller's order from final states ``(n_k, n_cosmo, nvar)``."""
 
-``(grhog, grhornomass, grhoc, grhob, grhov)`` -- the entries of a parameter row
-that are physical quantities one would differentiate. The rest of the row is
-the wave number, two integration bounds, two integer selectors and the
-dark-energy and massive-neutrino settings, none of which a gradient with
-respect to "the cosmology" wants, and two of which are not differentiable at
-all.
-"""
-
-
-def matter_power_spectrum_jax(
-    k_values,
-    cosmology,
-    densities=None,
-    *,
-    rtol: float = PERTURB_RTOL,
-    atol: float = PERTURB_ATOL,
-    first_step: float = PERTURB_FIRST_STEP,
-    max_steps: int = PERTURB_MAX_STEPS,
-    one_column_per_trajectory: bool = True,
-):
-    """``P(k)`` as a JAX array, differentiable in the background densities.
-
-    ``densities`` is the five-vector of :data:`PHYSICAL_DENSITY_COLUMNS`,
-    defaulting to the cosmology's own. Differentiating with respect to it runs
-    modax's continuous forward-sensitivity system alongside the state. The
-    densities enter twice -- through the hierarchy, and through the
-    matter-weighting of ``delta_m`` -- and both paths are differentiated, so
-    this is the total derivative and not just the ODE's part of it. What is
-    held fixed is the thermodynamics: the recombination history is tabulated on
-    the host and uploaded, so this is a derivative at fixed ionisation history.
-
-    The same sensitivity system can be laid out over the threads two ways.
-
-    ``one_column_per_trajectory=True`` (the default)
-        Every wave mode is replicated once per density, and replica ``j``
-        carries one sensitivity column, along the unit direction ``e_j``,
-        through the ``IX_EPS`` / ``IX_DIR`` columns of its parameter row. A
-        thread then integrates ``2 * nvar`` components instead of ``6 * nvar``,
-        and the five columns run side by side on threads the launch would
-        otherwise leave idle -- 128 modes are four blocks of 32 on a GPU with
-        dozens of SMs. The state and the Jacobian are recomputed by each
-        replica, which costs nothing while the card has SMs to spare. Measured
-        on an RTX 4070 SUPER for the 128 test modes (``jax.value_and_grad``,
-        ``test_matter_power_spectrum_derivatives``): 0.28 s for the plain
-        solve, 1.92 s for five columns in one thread, 0.59 s for one column
-        per thread. A backward adjoint solve would need at least the forward
-        solve plus a second pass of comparable cost, so this is already at the
-        adjoint's floor with no trajectory storage.
-
-    ``one_column_per_trajectory=False``
-        One trajectory per mode carrying all five columns
-        (``sens_param_columns=PHYSICAL_DENSITY_COLUMNS``). Five times less
-        thread-time in total, since the state and the Jacobian are formed once
-        per mode rather than once per column, so it is the arrangement to
-        prefer once a batch is large enough to saturate the GPU by itself.
-
-    Either way the sensitivities are kept out of step-size control
-    (``sens_error_control=False``): they run to ~1e17 while the state is O(1),
-    so letting them into the weighted error norm hands them the step size and
-    costs 20x the solve for no accuracy the tolerances asked for. The LU is
-    fp64, unlike the plain solve: the Rosenbrock-W property lets an fp32
-    factorisation carry the *state* at full order, but the sensitivity rows are
-    driven by that same matrix and measure ~25% error from it, against ~5e-4
-    in fp64.
-    """
-    import jax.numpy as jnp
-
-    cosmology = _as_cosmology(cosmology)
-    prepared = _prepare_solve((cosmology,))
-    cosmology = prepared.cosmologies[0]
-
-    history, densities, k_sorted, order = _history_jax(
-        prepared,
-        k_values,
-        densities,
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
-        one_column_per_trajectory=one_column_per_trajectory,
-    )
-    y_final = history[:, -1, :]
-
-    grhoc_val = densities[2]
-    grhob_val = densities[3]
-    delta_m = (
-        grhoc_val * y_final[:, IX_CLXC] + grhob_val * y_final[:, IX_CLXB]
-    ) / (grhoc_val + grhob_val)
-    ks = jnp.asarray(k_sorted)
-    pk_sorted = (
-        2.0
-        * jnp.pi**2
-        / ks**3
-        * cosmology.A_s
-        * (ks / cosmology.k_pivot) ** (cosmology.n_s - 1.0)
-        * delta_m**2
-    )
-    return pk_sorted[jnp.asarray(np.argsort(order))]
-
-
-def _history_jax(
-    prepared,
-    k_values,
-    densities=None,
-    tau_save=None,
-    *,
-    rtol: float = PERTURB_RTOL,
-    atol: float = PERTURB_ATOL,
-    first_step: float = PERTURB_FIRST_STEP,
-    max_steps: int = PERTURB_MAX_STEPS,
-    one_column_per_trajectory: bool = True,
-    sens_error_control: bool = False,
-    error_weights=None,
-):
-    """The saved history of one cosmology's modes, differentiable in the densities.
-
-    The solve behind :func:`matter_power_spectrum_jax` and
-    :func:`discoeb.cmb.cl_power_spectrum_jax`, which documents the two thread
-    layouts (``one_column_per_trajectory``) and the solver settings. ``prepared``
-    is the :func:`_prepare_solve` of the single cosmology; ``tau_save`` is the
-    save grid (default: the two endpoints, i.e. the final state only);
-    ``error_weights`` are optional per-mode weights ``(n_k, nvar)`` in
-    ascending ``k`` for the solver's error norm (modax's ``error_weights``),
-    replicated for the sensitivity layout.
-
-    Returns ``(history, densities, k_sorted, order)``: ``history`` is
-    ``(n_k, n_save, nvar)`` in ascending ``k`` as a JAX array whose derivative
-    with respect to ``densities`` is modax's forward sensitivity; ``densities``
-    is the resolved five-vector; ``k_sorted`` and ``order`` are the sorted wave
-    numbers and the sort of the caller's ``k_values``.
-    """
-    import jax
-    import jax.numpy as jnp
-
-    from modax.rodas5P import solve as rodas5P_solve
-
-    params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_save)
-    prepared.bind()
-    columns = list(PHYSICAL_DENSITY_COLUMNS)
-    n_dir = len(columns)
-    n_k = params.shape[0]
-    if densities is None:
-        densities = params[0, columns]
-    densities = jnp.asarray(densities)
-
-    settings = dict(
-        sparsity=prepared.sparsity,
-        lu_precision="fp64",
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
-        pcoeff=0.3,
-        icoeff=0.4,
-        trajectories_per_block=TRAJECTORIES_PER_BLOCK,
-        tf_index=IX_TAU_END,
-        max_registers=CUDA_MAX_REGISTERS,
-        sens_error_control=sens_error_control,
-        error_weights=error_weights,
-    )
-    settings_rep = dict(
-        settings,
-        error_weights=None
-        if error_weights is None
-        else np.repeat(np.asarray(error_weights), n_dir, axis=0),
-    )
-    t_span_j = jnp.asarray(t_span)
-
-    def with_densities(base, d):
-        return jnp.asarray(base).at[:, jnp.asarray(columns)].set(
-            jnp.broadcast_to(d, (base.shape[0], n_dir))
-        )
-
-    if not one_column_per_trajectory:
-        history = rodas5P_solve(
-            prepared.ode_fn,
-            jnp.asarray(y0),
-            t_span_j,
-            with_densities(params, densities),
-            sens_param_columns=PHYSICAL_DENSITY_COLUMNS,
-            **settings,
-        )
-    else:
-        # Replica j of mode i is row i * n_dir + j, so a block of consecutive
-        # rows still spans neighbouring wave modes and their similar step
-        # sequences; each replica's direction is the unit vector e_j.
-        params_rep = np.repeat(params, n_dir, axis=0)
-        params_rep[:, IX_DIR : IX_DIR + n_dir] = np.tile(np.eye(n_dir), (n_k, 1))
-        y0_rep = jnp.asarray(np.repeat(y0, n_dir, axis=0))
-        y0_j = jnp.asarray(y0)
-
-        @jax.custom_jvp
-        def saved_history(d):
-            return rodas5P_solve(
-                prepared.ode_fn, y0_j, t_span_j, with_densities(params, d), **settings
-            )
-
-        @saved_history.defjvp
-        def saved_history_jvp(primals, tangents):
-            (d,), (dd,) = primals, tangents
-            p_rep = with_densities(params_rep, d)
-
-            def along_directions(eps):
-                return rodas5P_solve(
-                    prepared.ode_fn,
-                    y0_rep,
-                    t_span_j,
-                    p_rep.at[:, IX_EPS].set(eps),
-                    sens_param_columns=(IX_EPS,),
-                    **settings_rep,
-                )
-
-            # d/d(eps) at eps = 0 along every replica at once: one joint launch
-            # of n_k * n_dir trajectories, each carrying its own single column.
-            n_rep = p_rep.shape[0]
-            sol, dsol = jax.jvp(
-                along_directions, (jnp.zeros(n_rep),), (jnp.ones(n_rep),)
-            )
-            # Every replica of a mode integrates the same state; keep the first.
-            history = sol[::n_dir]
-            # sens[i, j] = d y_i(tau) / d density_j at every save. The
-            # contraction with the input tangent is linear, so JAX transposes
-            # it and jax.grad falls out of the same rule with no adjoint solve.
-            sens = dsol.reshape(n_k, n_dir, *dsol.shape[1:])
-            return history, jnp.einsum("ijtv,j->itv", sens, dd)
-
-        history = saved_history(densities)
-
-    return history, densities, k_sorted, order
-
+    dens = np.array([density_coefficients(c) for c in cosmologies])
+    grhoc, grhob = dens[:, 2][None, :], dens[:, 3][None, :]
+    delta_m = (grhoc * y_final[:, :, IX_CLXC] + grhob * y_final[:, :, IX_CLXB]) / (grhoc + grhob)
+    A_s = np.array([c.A_s for c in cosmologies])[None, :]
+    n_s = np.array([c.n_s for c in cosmologies])[None, :]
+    k_p = np.array([c.k_pivot for c in cosmologies])[None, :]
+    ks = k_sorted[:, None]
+    pk_sorted = 2.0 * np.pi**2 / ks**3 * A_s * (ks / k_p) ** (n_s - 1.0) * delta_m**2
+    order = np.argsort(np.asarray(k_values, dtype=np.float64), kind="stable")
+    pk = np.empty_like(pk_sorted.T)
+    pk[:, order] = pk_sorted.T
+    return pk
 
 
 def solve_matter_power_spectrum_batch(
@@ -1620,42 +957,262 @@ def solve_matter_power_spectrum_batch(
     first_step: float = PERTURB_FIRST_STEP,
     max_steps: int = PERTURB_MAX_STEPS,
 ) -> np.ndarray:
-    """Return ``P(k)`` for a batch of cosmologies in one GPU solve.
-
-    All cosmologies must share a perturbation layout. The ``n_cosmologies * n_k``
-    trajectories are integrated by a single modax Rodas5P launch, so the whole
-    batch amortizes one kernel compilation and one set of device buffers.
-
-    Returns
-    -------
-    np.ndarray
-        ``P(k)`` in Mpc^3, shape ``(n_cosmologies, n_k)``, in the caller's
-        original cosmology and ``k`` order.
-    """
+    """Return ``P(k)`` in Mpc^3, shape ``(n_cosmologies, n_k)``, for a batch in one launch."""
 
     prepared = _prepare_solve(tuple(cosmologies))
-    cosmologies = prepared.cosmologies
-    layout = prepared.layout
-    n_cosmo = len(cosmologies)
-
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values)
-    n_k = len(k_sorted)
     sol = _launch(prepared, params, y0, t_span, rtol=rtol, atol=atol, first_step=first_step, max_steps=max_steps)
-    y_final = np.asarray(sol)[:, -1, :].reshape(n_k, n_cosmo, layout.nvar)
+    y_final = np.asarray(sol)[:, -1, :].reshape(len(k_sorted), len(prepared.cosmologies), prepared.model.nvar)
+    return _power_spectrum_from_final(y_final, k_sorted, prepared.cosmologies, k_values)
 
-    pk_sorted = np.empty((n_cosmo, n_k), dtype=np.float64)
-    for ci, cosmology in enumerate(cosmologies):
-        densities = density_coefficients(cosmology)
-        grhoc_val, grhob_val = densities[2], densities[3]
-        for ki in range(n_k):
-            yv = y_final[ki, ci]
-            delta_m = total_matter_density_contrast(
-                grhoc_val, yv[IX_CLXC], grhob_val, yv[IX_CLXB]
-            )
-            pk_sorted[ci, ki] = matter_power_spectrum(
-                float(k_sorted[ki]), delta_m, cosmology.A_s, cosmology.n_s, cosmology.k_pivot
-            )
 
-    pk = np.empty_like(pk_sorted)
-    pk[:, order] = pk_sorted
-    return pk
+# ============================================================
+# DIFFERENTIABLE SOLVES
+# ============================================================
+
+
+def _row_by_name(params_row, densities=None, thermal=None) -> dict:
+    """The parameter row by name, with the traced densities and thermal inputs in place."""
+
+    row = {name: float(params_row[column]) for name, column in PARAM_COLUMNS.items()}
+    if densities is not None:
+        for name, column in PARAM_COLUMNS.items():
+            if column in PHYSICAL_DENSITY_COLUMNS:
+                row[name] = densities[column]
+    if thermal is not None:
+        for i, name in enumerate(THERMAL_PARAMETERS[:4]):
+            row[name] = thermal[i]
+    return row
+
+
+def solve_history_jax(
+    prepared,
+    k_values,
+    densities=None,
+    thermal=None,
+    tau_save=None,
+    *,
+    rtol: float = PERTURB_RTOL,
+    atol: float = PERTURB_ATOL,
+    first_step: float = PERTURB_FIRST_STEP,
+    max_steps: int = PERTURB_MAX_STEPS,
+    sens_error_control: bool = False,
+    error_weights=None,
+    thermo_weight: float = THERMO_ERROR_WEIGHT,
+):
+    """The saved history of one cosmology's modes, differentiable in the cosmology.
+
+    ``densities`` is the five-vector of :data:`PHYSICAL_DENSITY_COLUMNS` and
+    ``thermal`` the four-vector ``(YHe, Tcmb, H0, Omegab)`` of
+    :data:`THERMAL_COLUMNS`, each defaulting to the cosmology's own; the row
+    is built from them so that ``jax.grad`` through this function is the
+    derivative of the solve with respect to those nine numbers, recombination
+    included: modax's forward sensitivities run over both blocks of the split
+    solve. The initial state is held fixed (its dependence on the densities is
+    of order ``(k tau_start)^2``), and the trajectory stops at the cosmology's
+    own ``tau0``; :func:`matter_power_spectrum_jax` adds the end-time term.
+
+    Returns ``(history, densities, thermal, k_sorted, order)`` with ``history``
+    ``(n_k, n_save, nvar)`` in ascending ``k``.
+    """
+
+    from modax.rodas5P import solve as rodas5P_solve
+
+    params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_save)
+    if densities is None:
+        densities = params[0, list(PHYSICAL_DENSITY_COLUMNS)]
+    if thermal is None:
+        thermal = params[0, list(THERMAL_COLUMNS)]
+    densities = jnp.asarray(densities, dtype=jnp.float64)
+    thermal = jnp.asarray(thermal, dtype=jnp.float64)
+    n_traj = params.shape[0]
+    params_j = jnp.asarray(params)
+    params_j = params_j.at[:, jnp.asarray(PHYSICAL_DENSITY_COLUMNS)].set(jnp.broadcast_to(densities, (n_traj, 5)))
+    params_j = params_j.at[:, jnp.asarray(THERMAL_COLUMNS)].set(jnp.broadcast_to(thermal, (n_traj, 4)))
+    history = rodas5P_solve(
+        prepared.ode_fn,
+        jnp.asarray(y0),
+        jnp.asarray(t_span),
+        params_j,
+        sparsity=prepared.sparsity,
+        lu_precision="fp64",
+        rtol=rtol,
+        atol=atol,
+        first_step=first_step,
+        max_steps=max_steps,
+        pcoeff=0.3,
+        icoeff=0.4,
+        trajectories_per_block=TRAJECTORIES_PER_BLOCK,
+        tf_index=IX_TAU_END,
+        max_registers=CUDA_MAX_REGISTERS,
+        error_weights=error_weights_for(prepared, n_traj, error_weights, thermo_weight),
+        sens_param_columns=PHYSICAL_COLUMNS,
+        sens_error_control=sens_error_control,
+        split=True,
+    )
+    return history, densities, thermal, k_sorted, order
+
+
+def _tau0_of(densities, row):
+    """The conformal age as a function of the five densities (JAX), the other background inputs from ``row``."""
+
+    d = {
+        "grhog": densities[0], "grhornomass": densities[1], "grhoc": densities[2], "grhob": densities[3],
+        "grhov": densities[4], "grhok": row["grhok"], "grhor_nu": row["grhor_nu"], "n_mnu": row["n_mnu"],
+        "amnu": row["amnu"], "w_DE_0": row["w_DE_0"], "w_DE_a": row["w_DE_a"], "cs2_DE": row["cs2_DE"],
+    }
+    return _background_tau(d)[1][-1]
+
+
+def matter_power_spectrum_jax(
+    k_values,
+    cosmology,
+    densities=None,
+    thermal=None,
+    *,
+    rtol: float = PERTURB_RTOL,
+    atol: float = PERTURB_ATOL,
+    first_step: float = PERTURB_FIRST_STEP,
+    max_steps: int = PERTURB_MAX_STEPS,
+    sens_error_control: bool = False,
+    thermo_weight: float = THERMO_ERROR_WEIGHT,
+):
+    """``P(k)`` as a JAX array, differentiable in the densities and the thermal inputs.
+
+    ``densities`` (five, :data:`PHYSICAL_DENSITY_COLUMNS`) and ``thermal``
+    (``YHe, Tcmb, H0, Omegab``) default to the cosmology's own. The derivative
+    is the total one: the densities enter the hierarchy, the recombination
+    rates (through the expansion rate), the matter weighting of ``delta_m``
+    and the conformal age at which the state is read, and all four paths are
+    differentiated -- the last through ``y(tau_0(d)) = y(tau_0^*) +
+    y'(tau_0^*) (tau_0(d) - tau_0^*)``, which is zero in value and carries
+    ``d tau_0 / d(densities)`` from the background quadrature. What is held
+    fixed is the initial state.
+    """
+
+    cosmology = _as_cosmology(cosmology)
+    prepared = _prepare_solve((cosmology,))
+    history, densities, thermal, k_sorted, order = solve_history_jax(
+        prepared, k_values, densities, thermal, rtol=rtol, atol=atol, first_step=first_step,
+        max_steps=max_steps, sens_error_control=sens_error_control, thermo_weight=thermo_weight,
+    )
+    y_final = history[:, -1, :]
+    params = _pack_batch(prepared, k_values)[0]
+    row = _row_by_name(params[0], densities, thermal)
+
+    # The end-time term: the state's rate at tau0 from the model's own
+    # equations on the final state, times how tau0 moves with the densities.
+    model = prepared.model
+    base = dict(row)
+    base.update(model.state_values(y_final, xp=jnp))
+    base["k"] = jnp.asarray(k_sorted)
+    base["tau"] = jnp.full((len(k_sorted),), float(prepared.tau0[0]))
+    z, vb = model.evaluate("z", "vb", math=jnp, **base)
+    ks = jnp.asarray(k_sorted)
+    tau0 = _tau0_of(densities, row)
+    dtau = tau0 - jax.lax.stop_gradient(tau0)
+    clxc = y_final[:, IX_CLXC] - ks * z * dtau
+    clxb = y_final[:, IX_CLXB] - ks * (z + vb) * dtau
+
+    grhoc_val, grhob_val = densities[2], densities[3]
+    delta_m = (grhoc_val * clxc + grhob_val * clxb) / (grhoc_val + grhob_val)
+    pk_sorted = (
+        2.0 * jnp.pi**2 / ks**3 * cosmology.A_s * (ks / cosmology.k_pivot) ** (cosmology.n_s - 1.0) * delta_m**2
+    )
+    return pk_sorted[jnp.asarray(np.argsort(order))]
+
+
+# ============================================================
+# THE RECOMBINATION HISTORY ON ITS OWN (diagnostics and grid design)
+# ============================================================
+
+
+@partial(jax.jit, static_argnames=("n_grid", "rtol", "atol"))
+def _solve_thermal_histories(stacked, n_grid: int, rtol: float = THERMO_RTOL, atol: float = THERMO_ATOL):
+    """The RECFAST solve of :func:`discoeb.eb_model.evolve_background` alone, one vmap lane per cosmology."""
+
+    def one(params):
+        param = setup_background_evolution(amin=1e-9, amax=1.01, param=dict(params))
+        return evaluate_thermo(param=param, num_thermo=n_grid, rtol=rtol, atol=atol)
+
+    return jax.vmap(one)(stacked)
+
+
+def thermal_history_batch(cosmologies, n_grid: int = N_THERMO_GRID) -> dict:
+    """Solve the recombination history of a batch of cosmologies in one stand-alone launch.
+
+    Returns host arrays: ``a`` of shape ``(n_grid + 1,)`` (the adaptive RECFAST
+    grid), and ``xe``, ``Tm`` and ``cs2`` of shape ``(n_cosmologies, n_grid + 1)``.
+    This is RECFAST on its own, as :mod:`discoeb.thermodynamics_recfast`
+    integrates it in ``ln a``; the perturbation solve integrates the same
+    equations in conformal time inside its own kernel.
+    """
+
+    cosmologies = tuple(_as_cosmology(cosmology) for cosmology in cosmologies)
+    padded = cosmologies + (cosmologies[-1],) * (-len(cosmologies) % THERMO_BATCH_CHUNK)
+    stacked = _stack_background_params(padded)
+    a, cs2, Tm, mu, xe, dxeda = _solve_thermal_histories(stacked, n_grid, rtol=THERMO_RTOL, atol=THERMO_ATOL)
+    n = len(cosmologies)
+    return {
+        "a": np.asarray(a)[0],
+        "xe": np.asarray(xe)[:n, :, 0],
+        "Tm": np.asarray(Tm)[:n, :, 0],
+        "cs2": np.asarray(cs2)[:n, :, 0],
+    }
+
+
+_HOST_HISTORY_CACHE: BoundedCache = BoundedCache(64)
+
+
+def host_thermal_history(cosmology, n_grid: int = N_THERMO_GRID):
+    """``(tau_grid, values, tau0)`` of one cosmology on a uniform ``log tau`` grid, as host arrays.
+
+    ``values`` is ``(3, n_grid)``: ``a``, the opacity ``kappa'`` (with
+    reionization) and ``c_s^2`` from the stand-alone RECFAST solve and the
+    background quadrature. Used to design the CMB grids and by the
+    thermodynamics tests; the perturbation kernel reads none of it.
+    """
+
+    cosmology = _as_cosmology(cosmology)
+    key = (cosmology, n_grid)
+    cached = _HOST_HISTORY_CACHE.get(key)
+    if cached is not None:
+        return cached
+    hist = thermal_history_batch([cosmology], n_grid)
+    params = cosmology.to_background_params()
+    d = density_parameters({k: v for k, v in params.items() if k != "tau_reio"}, xp=np)
+    a_bg, tau_bg = (np.asarray(x) for x in _background_tau({k: jnp.asarray(v) for k, v in d.items()}))
+    tau0 = float(tau_bg[-1])
+    tau_grid = np.exp(np.linspace(np.log(TAU_START), np.log(tau0), n_grid))
+    a_vals = np.interp(tau_grid, tau_bg, a_bg)
+    a_rec, xe_rec, cs2_rec = hist["a"], hist["xe"][0], hist["cs2"][0]
+    a_recfast_start = 1.0 / 3501.0
+    xe_start = float(np.interp(np.log(a_recfast_start), np.log(a_rec), xe_rec))
+    xe_vals = np.where(a_vals < a_recfast_start, xe_start, np.interp(np.log(a_vals), np.log(a_rec), xe_rec))
+    xe_bg = np.where(a_bg < a_recfast_start, xe_start, np.interp(np.log(a_bg), np.log(a_rec), xe_rec))
+    z_re = float(_reionization_redshift(
+        jnp.asarray(a_bg), jnp.asarray(tau_bg), jnp.asarray(xe_bg),
+        {k: jnp.asarray(v) for k, v in params.items()}, jnp.asarray(params["tau_reio"]),
+    ))
+    f_he = params["YHe"] / (4.0 * (1.0 - params["YHe"]))
+    if z_re > 0.0:
+        z = 1.0 / a_vals - 1.0
+        y, y_re = (1.0 + z) ** 1.5, (1.0 + z_re) ** 1.5
+        step = 0.5 * (1.0 + np.tanh((y_re - y) / (0.75 * np.sqrt(1.0 + z_re))))
+        he3 = 0.5 * (1.0 + np.tanh((3.5 - z) / 0.5))
+        xe_vals = xe_vals + (1.0 + f_he - xe_vals) * step + f_he * he3
+    akthom = AKTHOM_PER_OMEGAB_H0SQ * (1.0 - params["YHe"]) * params["Omegab"] * params["H0"] ** 2
+    opacity = xe_vals * akthom / a_vals**2
+    cs2 = np.interp(np.log(a_vals), np.log(a_rec), cs2_rec)
+    out = (tau_grid, np.stack((a_vals, opacity, cs2)), tau0)
+    _HOST_HISTORY_CACHE[key] = out
+    return out
+
+
+def clear_prepared_solve_cache() -> None:
+    """Drop the cached prepared and packed solves and the compiled joint models."""
+
+    _PREPARED_SOLVE_CACHE.clear()
+    _PACKED_BATCH_CACHE.clear()
+    _HOST_HISTORY_CACHE.clear()
+    _KERNELS.clear()

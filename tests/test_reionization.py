@@ -65,10 +65,10 @@ def _class(param, extra):
 
 def _tables(tau_reio):
     from discoeb.cmb import visibility_on_grid
-    from discoeb.perturbations import _as_cosmology, build_thermo_tables
+    from discoeb.perturbations import _as_cosmology, host_thermal_history
 
     cosmology = _as_cosmology({**REFERENCE_COSMOLOGY, "tau_reio": tau_reio})
-    tau_grid, values, _, tau0 = build_thermo_tables(cosmology)
+    tau_grid, values, tau0 = host_thermal_history(cosmology)
     _, g, emk = visibility_on_grid(tau_grid, values[1], tau_grid, float(tau0))
     return tau_grid, values, float(tau0), g, emk
 

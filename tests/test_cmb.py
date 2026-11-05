@@ -383,11 +383,9 @@ def test_power_spectra_successive_batches(benchmark):
 
     The pattern of an inference loop: a sampler proposes a new batch of
     cosmologies every iteration and the model must not compile again for it.
-    The right-hand side and the source hook are compiled once per batch
-    *shape*, against device buffers that every batch's thermodynamics tables
-    and visibility are copied into (``DeviceTableSlot``); modax's kernel cache
-    is keyed on those device functions, so a fresh batch of the same size is a
-    cache hit.
+    The right-hand side and the source hook are compiled once per layout and
+    nothing is uploaded per batch: the recombination history is part of the
+    solve, so a fresh batch of any size is a kernel-cache hit.
 
     A first batch warms up: it compiles the kernel and the projection, and
     primes the JAX programs of the batched thermodynamics solve. A second fresh
@@ -471,14 +469,7 @@ def test_power_spectra_successive_batches(benchmark):
 
 
 @pytest.mark.skipif(not _cuda_available(), reason="numba-CUDA requires a CUDA GPU")
-@pytest.mark.parametrize(
-    "one_column_per_trajectory",
-    [
-        pytest.param(True, id="one-column-per-thread"),
-        pytest.param(False, id="five-columns-per-thread"),
-    ],
-)
-def test_power_spectra_derivatives(one_column_per_trajectory, benchmark):
+def test_power_spectra_derivatives(benchmark):
     """Time and check dD_l/d(background densities) of TT, TE and EE by forward sensitivity.
 
     The CMB counterpart of ``test_matter_power_spectrum_derivatives``: the five
@@ -525,9 +516,7 @@ def test_power_spectra_derivatives(one_column_per_trajectory, benchmark):
     assert densities.shape == (len(PHYSICAL_DENSITY_COLUMNS),)
 
     def spectrum(d):
-        _, _, dl = cl_power_spectrum_jax(
-            cosmology, d, one_column_per_trajectory=one_column_per_trajectory, **kwargs
-        )
+        _, _, dl = cl_power_spectrum_jax(cosmology, d, **kwargs)
         return jnp.stack(dl)  # (3, n_ell): TT, TE, EE
 
     value_and_grad = jax.value_and_grad(lambda d: jnp.sum(spectrum(d)))
@@ -572,14 +561,14 @@ def test_power_spectra_derivatives(one_column_per_trajectory, benchmark):
 # ---------------------------------------------------------------------------
 
 
-def _reference_sources(layout, y, k, a, g, emk, densities):
+def _reference_sources(layout, y, k, a, densities):
     """The CAMB-form sources of flat LambdaCDM with massless neutrinos, written out."""
 
     import jax.numpy as jnp
 
     grhog, grhor, grhoc, grhob, grhov = densities
     k = k[:, None]
-    a, g, emk = a[None, :], g[None, :], emk[None, :]
+    a = a[None, :]
     etak = y[..., layout.ix_etak]
     clxc, clxb, vb = y[..., layout.ix_clxc], y[..., layout.ix_clxb], y[..., layout.ix_vb]
     clxg, qg, pig = y[..., layout.ix_g], y[..., layout.ix_g + 1], y[..., layout.ix_g + 2]
@@ -597,11 +586,7 @@ def _reference_sources(layout, y, k, a, g, emk, densities):
     sigma = z + 1.5 * dgq / k2
     polter = pig / 10.0 + 9.0 / 15.0 * e2
     monopole = -etak / k + 2.0 * phi + 0.25 * clxg
-    return jnp.stack(
-        [g * (monopole + 0.625 * polter), g * (sigma + vb), 1.875 * g * polter, phi,
-         jnp.broadcast_to(emk, phi.shape)],
-        axis=0,
-    )
+    return jnp.stack([monopole + 0.625 * polter, sigma + vb, 1.875 * polter, phi], axis=0)
 
 
 def test_sources_come_from_the_component_model():
@@ -609,39 +594,41 @@ def test_sources_come_from_the_component_model():
 
     from types import SimpleNamespace
 
-    from discoeb.cmb import source_channels_jax, source_model
-    from discoeb.perturbations import N_PARAM, PARAM_COLUMNS, PerturbationLayout, _as_cosmology, make_params
+    import jax.numpy as jnp
+
+    from discoeb.cmb import source_model
+    from discoeb.perturbations import PARAM_COLUMNS, PerturbationLayout, _as_cosmology, make_params
     from test_perturbations import REFERENCE_COSMOLOGY
 
     layout = PerturbationLayout()
     model = source_model(layout)
     rng = np.random.default_rng(3)
     n_k, n_tau = 4, 5
-    y = rng.normal(size=(n_k, n_tau, layout.nvar))
+    y = rng.normal(size=(n_k, n_tau, model.nvar))
     k = np.geomspace(1e-3, 0.3, n_k)
     a = np.geomspace(1e-3, 1e-2, n_tau)
-    g, emk = rng.uniform(0.1, 1.0, n_tau), rng.uniform(0.1, 1.0, n_tau)
     params = make_params(_as_cosmology(REFERENCE_COSMOLOGY), k, 14000.0)
     row = {name: float(params[0, column]) for name, column in PARAM_COLUMNS.items()}
     densities = params[0, :5]
 
-    reference = _reference_sources(layout, y, k, a, g, emk, densities)
-    channels = source_channels_jax(model, y, k, a, g, emk, row)
+    reference = _reference_sources(layout, y, k, a, densities)
+    base = dict(row)
+    base.update(model.state_values(jnp.asarray(y), xp=jnp))
+    base.update(k=jnp.asarray(k)[:, None], a=jnp.asarray(a)[None, :])
+    channels = jnp.stack(model.evaluate("m0", "m1", "m2", "phi", math=jnp, **base), axis=0)
     np.testing.assert_allclose(np.asarray(channels), np.asarray(reference), rtol=1e-12)
 
-    # The device function, run as plain Python, point by point.
+    # The device function, run as plain Python, point by point, with ``a`` given.
     host = dict(
         jit=lambda f: f,
         cuda=SimpleNamespace(local=SimpleNamespace(array=lambda shape, dtype: np.zeros(shape))),
         float64=np.float64,
     )
     quantities = model.build_function(
-        ("s_noisw", "s_j1", "s_j2", "phi"), inputs=("y", "tau", "a", "g"), params=PARAM_COLUMNS, **host
+        ("m0", "m1", "m2", "phi"), inputs=("y", "tau", "a"), params=PARAM_COLUMNS, **host
     )
     for i in range(n_k):
-        p = params[i]
         for j in range(n_tau):
-            np.testing.assert_allclose(
-                quantities(y[i, j], 100.0, a[j], g[j], p), np.asarray(reference[:4, i, j]), rtol=1e-12
-            )
-    assert len(np.asarray(reference)) == 5 and N_PARAM == len(params[0])
+            p = params[i].copy()
+            out = quantities(tuple(y[i, j]), 300.0, float(a[j]), tuple(p))
+            np.testing.assert_allclose(np.asarray(out), np.asarray(channels[:, i, j]), rtol=1e-12)

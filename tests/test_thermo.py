@@ -24,7 +24,7 @@ modax Rodas5P solve measured 156 ms (N=1) and 188 ms (N=128) on an RTX 4070
 SUPER, against 449 ms and 1034 ms for the diffrax Dopri5 solve it replaced.
 
 ``test_thermo_tables_successive_batches`` times what the perturbation solve
-actually consumes, the device tables of :func:`build_thermo_tables_batch`
+actually consumes
 (the RECFAST solve plus the background quadrature and the resampling onto the
 kernel's ``log(tau)`` grid, one vmapped program), for fresh batches of 128
 issued one after another: four must cost four single fresh batches, with no
@@ -130,45 +130,3 @@ def test_recfast_matches_class(n_cosmologies, benchmark):
         assert err < CS2_SWITCH_GATE, (
             f"cosmology {i}: c_b^2 off by {err:.3g} at z={at:.0f} in the tight-coupling switch window"
         )
-
-
-def test_thermo_tables_successive_batches(benchmark):
-    """Four fresh batches of device tables cost four single ones, close to the bare RECFAST solve.
-
-    The thermodynamics half of an inference iteration. A first batch warms up
-    (compiles the vmapped background-and-resampling program); the bare RECFAST
-    solve of :func:`thermal_history_batch` is then timed warm as the floor; one
-    fresh batch of :func:`build_thermo_tables_batch` is the single reference;
-    and four more fresh batches are built back to back. They must take no
-    longer than four references within :data:`SUCCESSIVE_TOLERANCE` -- a
-    recompile or a per-batch host loop would show -- and the reference must be
-    within :data:`TABLES_OVER_RECFAST` of the RECFAST solve. The benchmark's
-    round is the four batches again, now from the cache.
-    """
-
-    from discoeb.perturbations import build_thermo_tables_batch, thermal_history_batch
-
-    warm, reference, *batches = _successive_batches(
-        2 + SUCCESSIVE_BATCHES, SUCCESSIVE_BATCH_SIZE
-    )
-    build_thermo_tables_batch(warm)
-    thermal_history_batch(warm)
-    recfast = min(_wall_time(lambda: thermal_history_batch(warm))[0] for _ in range(TIMING_ROUNDS))
-
-    single, tables = _wall_time(lambda: build_thermo_tables_batch(reference))
-    assert len(tables) == SUCCESSIVE_BATCH_SIZE
-    assert all(np.isfinite(values).all() for _, values, _, _ in tables)
-
-    def successive():
-        return [build_thermo_tables_batch(cosmologies) for cosmologies in batches]
-
-    four, _ = _wall_time(successive)
-    assert four <= (1.0 + SUCCESSIVE_TOLERANCE) * SUCCESSIVE_BATCHES * single, (
-        f"{SUCCESSIVE_BATCHES} successive fresh table builds took {four:.3f} s against "
-        f"{single:.3f} s for one ({four / single:.2f}x)"
-    )
-    assert single <= TABLES_OVER_RECFAST * recfast, (
-        f"a fresh batch's tables took {single:.3f} s against {recfast:.3f} s for the "
-        f"RECFAST solve alone ({single / recfast:.2f}x)"
-    )
-    benchmark.pedantic(successive, rounds=1, warmup_rounds=0, iterations=1)
