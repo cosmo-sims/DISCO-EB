@@ -710,16 +710,22 @@ def _pack_batch(prepared, k_values, tau_save=None):
 
 def error_weights_for(prepared, n_traj: int, base=None, thermo_weight: float = THERMO_ERROR_WEIGHT):
     """The solver's error weights ``(n_traj, nvar)``: ``base`` (or ones) for the hierarchy,
-    ``thermo_weight`` on ``ln a`` and the RECFAST states, zero on the optical depth."""
+    ``thermo_weight`` on the recombination block.
+
+    The optical depth is weighted like the rest of the block: its error is
+    measured against ``rtol |kappa|``, so the block's own steps resolve its
+    increments where ``kappa`` is of order one, through recombination and
+    after, which is where ``exp(-kappa)`` reads them (an unweighted optical
+    depth integrated on the block's steps left the lensed TT 0.5 percent off
+    CLASS at ``l = 1500``).
+    """
 
     model = prepared.model
     weights = np.ones((n_traj, model.nvar), dtype=np.float64)
     if base is not None:
         base = np.asarray(base, dtype=np.float64)
         weights[:, : base.shape[-1]] = base
-    lna, x_h, x_he, t_m, kappa = thermal_indices(model)
-    weights[:, [lna, x_h, x_he, t_m]] = thermo_weight
-    weights[:, kappa] = 0.0
+    weights[:, list(thermal_indices(model))] = thermo_weight
     return weights
 
 
@@ -905,8 +911,10 @@ def solve_history_jax(
     derivative of the solve with respect to those nine numbers, recombination
     included: modax's forward sensitivities run over both blocks of the split
     solve. The initial state is held fixed (its dependence on the densities is
-    of order ``(k tau_start)^2``), and the trajectory stops at the cosmology's
-    own ``tau0``; :func:`matter_power_spectrum_jax` adds the end-time term.
+    of order ``(k tau_start)^2``). Without ``tau_save`` the trajectory stops
+    at the conformal age of the densities given, so a finite difference sees
+    the end-time dependence that :func:`matter_power_spectrum_jax` carries
+    as an explicit term in the derivative.
 
     Returns ``(history, densities, thermal, k_sorted, order)`` with ``history``
     ``(n_k, n_save, nvar)`` in ascending ``k``.
@@ -925,10 +933,18 @@ def solve_history_jax(
     params_j = jnp.asarray(params)
     params_j = params_j.at[:, jnp.asarray(PHYSICAL_DENSITY_COLUMNS)].set(jnp.broadcast_to(densities, (n_traj, 5)))
     params_j = params_j.at[:, jnp.asarray(THERMAL_COLUMNS)].set(jnp.broadcast_to(thermal, (n_traj, 4)))
+    t_span = jnp.asarray(t_span)
+    if tau_save is None:
+        # The trajectory stops at the conformal age of the densities given,
+        # so a finite difference of the final state sees the same end-time
+        # dependence the sensitivity's explicit term carries.
+        tau0 = jax.lax.stop_gradient(_tau0_of(densities, _row_by_name(params[0])))
+        params_j = params_j.at[:, IX_TAU_END].set(tau0)
+        t_span = t_span.at[-1].set(tau0)
     history = rodas5P_solve(
         prepared.ode_fn,
         jnp.asarray(y0),
-        jnp.asarray(t_span),
+        t_span,
         params_j,
         sparsity=prepared.sparsity,
         lu_precision="fp64",
@@ -940,7 +956,11 @@ def solve_history_jax(
         icoeff=0.4,
         trajectories_per_block=TRAJECTORIES_PER_BLOCK,
         tf_index=IX_TAU_END,
-        max_registers=CUDA_MAX_REGISTERS,
+        # The joint system's thread-local memory, not its registers, bounds the
+        # occupancy: an uncapped register budget halves the resident threads
+        # the driver reserves local memory for (1.6 GB at 168 registers beside
+        # a CMB batch's XLA pool was a launch failure on a 12 GB card).
+        max_registers=None,
         error_weights=error_weights_for(prepared, n_traj, error_weights, thermo_weight),
         sens_param_columns=PHYSICAL_COLUMNS,
         sens_error_control=sens_error_control,

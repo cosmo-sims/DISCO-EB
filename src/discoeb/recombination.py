@@ -34,7 +34,7 @@ import numpy as np
 from .component import Component, State, float32, float64
 from .eb_model import neutrino_momentum_bins
 from .thermodynamics_recfast import (
-    A2P_s, A2P_t, AGauss1, AGauss2, Bfact, CB1, CB1_He1, CDB, CDB_He, CK, CK_He, CL, CL_He, CL_PSt,
+    A2P_s, A2P_t, AGauss1, AGauss2, Bfact, CB1, CB1_He1, CDB, CDB_He, CK, CK_He, CL, CL_He, CL_PSt, FUDGE_H,
     CR, CT, DZ_H_SAHA_BLEND, H_frac, L_He2St_ion, L_He_2Pt, L_He_2p, Lambda, Lambda_He,
     NQ_NU_BACKGROUND, T_0, T_1, Z_H_SAHA_END, a_PPB, a_VF, a_trip, b_PPB, b_VF, b_trip, bigH, c_PPB,
     const_EionHe12s, const_c, const_c_Mpc_s, const_dens_fac, const_h, const_h_c_L_He_2St_kB,
@@ -46,14 +46,13 @@ THERMAL_PARAMETERS = ("YHe", "Tcmb", "H0", "Omegab", "z_re")
 columns of the parameter row after the hierarchy's own
 (:data:`discoeb.perturbations.PARAM_COLUMNS`). ``z_re = 0`` means no reionization."""
 
-THERMO_ERROR_WEIGHT = 1.0
+THERMO_ERROR_WEIGHT = float(os.environ.get("DISCO_THERMO_WEIGHT", "1.0"))
 """Weight of ``ln a`` and the three RECFAST states in the error norm of the
 recombination block's own steps (their error is held to ``rtol / weight``).
 The block steps ahead of the hierarchy on steps of its own, so the weight sets
 the thermal state's accuracy and the number of RECFAST evaluations, not the
 hierarchy's steps; ``P(k)`` is unchanged from 0.3 to 100, and 0 leaves the
-block's steps uncontrolled. The optical depth is excluded from the norm: its
-increments are integrated to the state's accuracy whatever its magnitude."""
+block's steps uncontrolled."""
 
 AKTHOM_PER_OMEGAB_H0SQ = 2.3038921003709498e-9
 """``n_H sigma_T c / (H_0 units)``: ``kappa' = x_e akthom / a^2`` with ``akthom = this (1 - Y_He) Omega_b H_0^2``."""
@@ -93,11 +92,6 @@ else:
         return math.log(x)
 
 
-
-
-# --- RECFAST's rates as plain device helpers --------------------------------------------
-
-
 def saha_slope(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
     """``d x / d z`` of the Saha ionization fraction at ``z`` (:func:`thermodynamics_recfast.Saha`).
 
@@ -132,7 +126,7 @@ def hydrogen_rate(x_H, xe, Tmat, z, n_H, Hz, Tcmb, Nnow, K_peebles):
     saha = saha_slope(z, Tcmb, Nnow, CB1, 0.0, 1.0, 1.0)
     f0 = saha
     if z < Z_H_SAHA_END:
-        fu = 1.105
+        fu = FUDGE_H
         one_minus_x_H = 1.0 - x_H
         Tmat_1e4 = Tmat / 1.0e4
         Rdown = 1.0e-19 * a_PPB * pow_(Tmat_1e4, b_PPB) / (1.0 + c_PPB * pow_(Tmat_1e4, d_PPB))
@@ -243,12 +237,13 @@ def matter_temperature_rate(Tmat, xe, fHe, zred, Hz, H0, Tcmb):
     """RECFAST's matter-temperature equation ``dT_m/dz``, ``T_m`` locked to ``T_rad`` in tight Compton coupling."""
 
     z_term = 1.0 + zred
+    inv_z = 1.0 / z_term
     Trad = Tcmb * z_term
-    timeTh = (1.0 / (CT * Trad**4)) * (1.0 + xe + fHe) / xe
-    timeH = 2.0 / (3.0 * (H0 / 100.0) * bigH * pow_(z_term, 1.5))
-    locked = Tmat / z_term
-    full = CT * Trad**4 * xe / (1.0 + xe + fHe) * (Tmat - Trad) / (Hz * z_term) + 2.0 * Tmat / z_term
-    w_full = 1.0 if timeTh >= H_frac * timeH else 0.0
+    compton = CT * Trad**4 * xe / (1.0 + xe + fHe)  # 1 / timeTh
+    inv_timeH = 1.5 * (H0 / 100.0) * bigH * pow_(z_term, 1.5)
+    locked = Tmat * inv_z
+    full = compton * (Tmat - Trad) / Hz * inv_z + 2.0 * locked
+    w_full = 1.0 if inv_timeH >= H_frac * compton else 0.0  # timeTh >= H_frac timeH
     return w_full * full + (1.0 - w_full) * locked
 
 
@@ -259,12 +254,15 @@ def logistic(x):
 
     Through ``exp`` (Enzyme has no forward rule for libdevice's ``tanh``) in
     single precision where the rates' transcendentals are. The argument is
-    capped so the exponential stays finite: an overflow to infinity would make
-    the derivative ``2 e^{-2x} / (1 + e^{-2x})^2`` infinity over infinity in the
-    Jacobian sweeps, and that is the optical depth's row.
+    capped at 30: the step is then ``1e-13`` instead of ``0`` where it is off,
+    and the exponential's derivatives, which the sensitivity sweeps multiply by
+    tangents of order a thousand in single precision, stay finite (capped at
+    80, ``e^80 = 5e34`` sat at the edge of single precision and the
+    second-order sweep overflowed it to infinity and the optical depth's
+    sensitivity to NaN).
     """
 
-    return 1.0 / (1.0 + exp_(min(-2.0 * x, 80.0)))
+    return 1.0 / (1.0 + exp_(min(-2.0 * x, 30.0)))
 
 
 # --- the component ------------------------------------------------------------------
@@ -355,9 +353,9 @@ class Recombination(Component):
 
     def cs2(self, Tmat, xe_rec, YHe, dTm_dz, inv_a):
         """``c_s^2 = k_B T_m / (mu m_H c^2) (1 - (1/3) d ln T_m / d ln a)``."""
-        mu = 1.0 / (1.0 + (1.0 / const_mHe_mH - 1.0) * YHe + (1.0 - YHe) * xe_rec)
+        inv_mu = 1.0 + (1.0 / const_mHe_mH - 1.0) * YHe + (1.0 - YHe) * xe_rec
         dTm_dlna = -dTm_dz * inv_a
-        return max(const_kB / const_mH / const_c**2 / mu * Tmat * (3.0 - dTm_dlna / Tmat) / 3.0, 0.0)
+        return max(const_kB / (3.0 * const_mH * const_c**2) * inv_mu * (3.0 * Tmat - dTm_dlna), 0.0)
 
     # -- the rates ----------------------------------------------------------------------
 

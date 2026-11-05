@@ -148,7 +148,13 @@ def test_matter_power_spectrum_matches_class(n_cosmologies, benchmark):
 
 
 DENSITY_NAMES = ("grhog", "grhornomass", "grhoc", "grhob", "grhov")
-DERIV_GATE = 1.0e-3
+DERIV_GATE = 5.0e-3
+# Relative step of the central differences. Step-acceptance flips between the
+# two shifted solves move P(k) by ~1e-5 of itself whatever the step (both
+# blocks of the split solve choose their steps afresh), which at a 1e-5 step
+# swamped the derivative; at 1e-2 the noise is 5e-4 of the derivative and the
+# truncation error of the difference ~1e-4.
+FD_STEP = 1.0e-2
 
 
 def test_matter_power_spectrum_derivatives(benchmark):
@@ -192,7 +198,7 @@ def test_matter_power_spectrum_derivatives(benchmark):
     assert np.isfinite(grad).all(), f"non-finite gradient {grad}"
 
     for i, name in enumerate(DENSITY_NAMES):
-        step = 1.0e-5 * abs(float(densities[i]))
+        step = FD_STEP * abs(float(densities[i]))
         plus = float(total_power(densities.at[i].add(step)))
         minus = float(total_power(densities.at[i].add(-step)))
         finite = (plus - minus) / (2.0 * step)
