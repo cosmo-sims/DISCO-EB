@@ -13,8 +13,8 @@ dependencies = [
     # The perturbation solve runs on modax's sparse direct linear solver, whose
     # fill-reducing ordering is SuiteSparse's AMD (through cvxopt's wheel since
     # modax-solvers 0.0.3; the `sparse` extra is kept for older checkouts).
-    # 0.0.5 for solve(..., sensitivity=) and the packed-diagonal fix.
-    "modax-solvers[sparse]>=0.0.5",
+    # 0.0.6 for Blackwell, solve(..., sensitivity=) and the packed-diagonal fix.
+    "modax-solvers[sparse]>=0.0.6",
     "equinox>=0.13",
     "xprof>=2.21.6",
     "tensorflow>=2.20.0",
@@ -45,15 +45,11 @@ classifiers = [
 # numba-cuda-mlir and linked by nvjitlink, and 0.5.2 with CUDA 13.4 emits a
 # `.smax` that ptxas rejects when building the 50-variable Enzyme kernel. On
 # Python 3.10 modax runs the whole stack on CUDA 12 instead, so the 13.x toolkit
-# pin applies only above it. nvJitLink is pinned with it because JAX would
-# otherwise pull the newest, and nvJitLink 13.4+ rejects numba-cuda-mlir 0.5.1's
-# Blackwell (sm_100+) LTO IR ("Target-incompatible DataLayout"); from the same
-# release as libNVVM, it links for Blackwell and for everything older.
+# pin applies only above it.
 [tool.uv]
 constraint-dependencies = [
     "numba-cuda-mlir==0.5.1",
     "cuda-toolkit==13.2.1; python_version >= '3.11'",
-    "nvidia-nvjitlink==13.2.*; python_version >= '3.11'",
 ]
 
 # numba-enzyme caps numba below 0.62 and llvmlite below 0.45 for its CPU

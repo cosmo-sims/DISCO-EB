@@ -629,7 +629,7 @@ def compute_thermal_history(
     y0 = jnp.stack([jnp.ones(B), 2.0 * jnp.ones(B), T_ini], axis=-1)
 
     if THERMO_SOLVER == "rodas5P":
-        from ._modax import solve_rodas5p as modax_solve
+        from modax.rodas5P import solve as modax_solve
 
         settings = dict(lu_precision="fp64")
     elif THERMO_SOLVER == "tsit5":

@@ -18,36 +18,32 @@ Currently work in progress:
 
 ## Installation
 
-Use `uv` to install the pinned GPU compiler and solver dependencies:
+Use `uv` to install the GPU compiler and solver dependencies with the
+constraints this project pins:
 
 ```bash
-git clone https://github.com/ohahn/DISCO-EB.git
+git clone https://github.com/cosmo-sims/DISCO-EB.git
 cd DISCO-EB
 uv sync
 ```
 
 ### Current CUDA solver environment
 
-Use `uv sync` for the current GPU solver stack. The project pins source
-revisions of Enzyme and modax: Enzyme needs optimizer passes to compile the
-generated perturbation equations, and modax needs a sparse diagonal fix to
-evolve them correctly. Their PyPI releases lack these fixes. The Enzyme
-source build downloads the matching LLVM/Enzyme tools automatically.
-Plain `pip install` does not apply the source pins or compiler constraints
-in `[tool.uv]` and is not sufficient for this solver stack.
+`uv sync` installs modax and numba-enzyme-cuda from PyPI, together with the
+numba-cuda-mlir and CUDA toolkit versions pinned in `[tool.uv]`. Plain
+`pip install` does not apply those constraints, nor the override that lets
+numba-enzyme-cuda run with current numba, and is not sufficient for this
+solver stack.
 
 ```bash
 uv run python examples/solve_eb_comoving_curvature.py
 ```
 
-With modax 0.0.4, numba-enzyme-cuda 0.2.2 and numba-cuda-mlir 0.5.1,
-DISCO-EB automatically compiles Rodas5P and its derivatives for `sm_90` on
-Blackwell GPUs, then links for the actual GPU. This keeps both inputs on the
-LLVM path supported by Enzyme. Setting `NUMBA_ENZYME_CUDA_CC` before the first
-solve is respected for both compiler inputs; setting it alone without the
-matching Rodas5P target causes a linker data-layout error. The compatibility
-adapter uses modax's internal compilation hook until modax exposes a target
-option.
+On Blackwell GPUs (compute capability 10.0 and up) modax compiles Rodas5P and
+its Enzyme derivatives for `sm_90` and links the result for the actual GPU,
+which keeps both on the LLVM 7 dialect Enzyme's LLVM 15 toolchain reads.
+`NUMBA_ENZYME_CUDA_CC`, set before the first solve, chooses that target for
+both instead.
 
 ### For Development
 
