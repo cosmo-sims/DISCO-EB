@@ -7,7 +7,7 @@ Currently supported features (the list is growing, so check back):
 
 - Autodifferentiable via JAX
 - Standard LCDM model with Quintessence DE fluid (w0,wa) and massive neutrinos (one species)
-- Thermal history from a RECFAST implementation in the module, integrated with the perturbations of every wave mode in one GPU solve (modax splits it off as a driver block from the sparsity pattern; no tabulated thermodynamics)
+- Thermal history from a RECFAST implementation in the module, integrated with the perturbations of every wave mode in one GPU solve (a block of a modax hierarchy that steps on its own and publishes the scale factor, opacity, sound speed and neutrino density to the perturbations as interpolants; no tabulated thermodynamics)
 - Numerous example jupyter notebooks, e.g. for Euclid-like Fisher forecasts
   
 New modules/plugins can be easily added (see how to contribute in CONTRIBUTING.md file). We are enthusiastic if extensions/improvements that are of broader interest are re-integrated into the master branch and DISCO-EB grows as a community effort.

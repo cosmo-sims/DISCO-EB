@@ -937,20 +937,39 @@ class Model:
             names = {"cuda": cuda, "float64": float64, "float32": float64}
         return jit, names
 
-    def _state_reads(self):
-        for s in self.states.values():
+    def _subset(self, states) -> list:
+        """The :class:`_State` records of ``states`` (``None`` for all), in model order."""
+
+        if states is None:
+            return list(self.states.values())
+        unknown = [n for n in states if n not in self.states]
+        if unknown:
+            raise ValueError(f"no such states: {unknown}")
+        return [s for s in self.states.values() if s.name in states]
+
+    def _state_reads(self, states=None):
+        """Read the states of the flat ``y`` -- the model's, or the subset ``states`` packed in model order."""
+
+        offset = 0
+        for s in self._subset(states):
             if not s.shape:
-                yield f"    {s.name} = y[{s.offset}]"
+                yield f"    {s.name} = y[{offset}]"
             elif len(s.shape) == 1:
                 yield f"    {s.name} = cuda.local.array({s.shape[0]}, float64)"
                 yield f"    for i in range({s.shape[0]}):"
-                yield f"        {s.name}[i] = y[{s.offset} + i]"
+                yield f"        {s.name}[i] = y[{offset} + i]"
             else:
                 n, m = s.shape
                 yield f"    {s.name} = cuda.local.array(({n}, {m}), float64)"
                 yield f"    for i in range({n}):"
                 yield f"        for j in range({m}):"
-                yield f"            {s.name}[i, j] = y[{s.offset} + i * {m} + j]"
+                yield f"            {s.name}[i, j] = y[{offset} + i * {m} + j]"
+            offset += s.size
+
+    def state_indices(self, states) -> list[int]:
+        """The flat indices of the elements of ``states``, in model order."""
+
+        return [s.offset + i for s in self._subset(states) for i in range(s.size)]
 
     def state_values(self, y, xp=np) -> dict:
         """The states of a flat state array ``y`` (last axis), by name.
@@ -977,6 +996,8 @@ class Model:
         *,
         time: str = "tau",
         name: str = "rhs",
+        states: Sequence[str] | None = None,
+        quantities: Sequence[str] = (),
         jit: Callable | None = None,
         cuda=None,
         float64=None,
@@ -988,6 +1009,14 @@ class Model:
         see the CUDA ``cuda`` and ``float64``; a test may pass ``jit`` (an
         identity for plain Python) and stand-ins for the two device names to
         run the model on the host.
+
+        ``states`` restricts the function to a block of the model: ``y`` then
+        holds those states alone, packed in model order, and the rates
+        returned are theirs. ``quantities`` are names the function takes as
+        given, in a tuple ``q`` after ``p`` (``rhs(y, tau, p, q)``), in place
+        of their providers -- what a block of a modax hierarchy reads of the
+        blocks upstream of it. A block whose rates need a state outside it
+        fails to compile, which is the one-way coupling checked.
         """
 
         jit, names = self._device(jit, cuda, float64)
@@ -996,12 +1025,14 @@ class Model:
         for pname in params:
             if pname in self.states or pname in self.index:
                 raise ValueError(f"parameter {pname!r} clashes with a state variable")
-        producers, contributions, derivatives = self._collect(params, {time})
-        missing = [s for s, ps in derivatives.items() if not ps]
+        quantities = tuple(quantities)
+        block = self._subset(states)
+        producers, contributions, derivatives = self._collect(params, {time, *quantities}, shadow=bool(quantities))
+        missing = [s.name for s in block if not derivatives[s.name]]
         if missing:
             raise ValueError(f"no component writes the derivatives of {missing}")
-        given = {time, *self.states, *params}
-        wanted = [(p.label, d) for ps in derivatives.values() for p in ps for d in p.params]
+        given = {time, *(s.name for s in block), *params, *quantities}
+        wanted = [(p.label, d) for s in block for p in derivatives[s.name] for d in p.params]
         order = self._order(wanted, producers, contributions, given)
 
         memo: dict = {}
@@ -1038,9 +1069,12 @@ class Model:
                 yield f"        for j in range({m}):"
                 yield f"            {target}[i, j] += {source}[i, j]"
 
-        lines = [f"def {name}(y, {time}, p):", "    # states", *self._state_reads(), "    # parameters"]
+        signature = f"y, {time}, p" + (", q" if quantities else "")
+        lines = [f"def {name}({signature}):", "    # states", *self._state_reads(states), "    # parameters"]
         for pname, column in params.items():
             lines.append(f"    {pname} = p[{int(column)}]")
+        for k, quantity in enumerate(quantities):
+            lines.append(f"    {quantity} = q[{k}]")
         lines.append("    # quantities")
         for quantity in order:
             if quantity in producers:
@@ -1048,7 +1082,7 @@ class Model:
             else:
                 lines.append(f"    {quantity} = " + " + ".join(call(p) for p in contributions[quantity]))
         lines.append("    # derivatives")
-        for s in self.states.values():
+        for s in block:
             d = f"d_{s.name}"
             if not s.shape:
                 lines.append(f"    {d} = " + " + ".join(call(p) for p in derivatives[s.name]))
@@ -1060,7 +1094,7 @@ class Model:
                 lines.append(f"    {call(p, buffer)}")
                 lines.extend(accumulate(d, buffer, s.shape))
         lines.append("    return (")
-        for s in self.states.values():
+        for s in block:
             if not s.shape:
                 lines.append(f"        d_{s.name},")
             elif len(s.shape) == 1:
@@ -1080,6 +1114,7 @@ class Model:
         inputs: Sequence[str] = (),
         params: Mapping[str, int] | None = None,
         name: str = "quantities",
+        states: Sequence[str] | None = None,
         jit: Callable | None = None,
         cuda=None,
         float64=None,
@@ -1088,11 +1123,13 @@ class Model:
 
         ``inputs`` are the base quantities it takes as positional arguments, in
         that order; the name ``"y"`` among them stands for the flat state, read
-        into the states as :meth:`build` does. With ``params`` the function
-        takes the parameter row ``p`` last. Everything else the outputs need is
-        provided by the components, so a kernel that needs the expansion rate
-        or the line-of-sight sources computes them from the same equations as
-        the right-hand side. Returns a scalar for one output, a tuple otherwise.
+        into the states as :meth:`build` does (the states of the block
+        ``states`` alone when given, packed in model order). With ``params``
+        the function takes the parameter row ``p`` last. Everything else the
+        outputs need is provided by the components, so a kernel that needs the
+        expansion rate or the line-of-sight sources computes them from the
+        same equations as the right-hand side. Returns a scalar for one
+        output, a tuple otherwise.
         """
 
         jit, names = self._device(jit, cuda, float64)
@@ -1101,7 +1138,7 @@ class Model:
         with_state = "y" in inputs
         given = {*inputs, *params}
         if with_state:
-            given |= set(self.states)
+            given |= {s.name for s in self._subset(states)}
         producers, contributions, _ = self._collect(params, given, shadow=True)
         order = self._order([(name, o) for o in outputs], producers, contributions, given)
 
@@ -1119,7 +1156,7 @@ class Model:
         signature = list(inputs) + (["p"] if params else [])
         lines = [f"def {name}({', '.join(signature)}):"]
         if with_state:
-            lines.extend(self._state_reads())
+            lines.extend(self._state_reads(states))
         for pname, column in params.items():
             lines.append(f"    {pname} = p[{int(column)}]")
         for quantity in order:

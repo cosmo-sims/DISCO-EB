@@ -6,9 +6,10 @@ for statement), ``ln a`` from the model's own Friedmann sum and the optical dept
 five more states of the joint system, and :class:`Recombination` provides the
 hierarchy with ``a``, the Thomson opacity, ``c_s^2`` and the massive-neutrino
 density ratio from them. These states read nothing of the hierarchy, so the
-Jacobian pattern traced through the providers is block lower triangular, and
-modax (``split=True``) finds the block in the pattern and integrates it ahead of
-the hierarchy in every step, handing it over as a quintic polynomial of time. Nothing is tabulated and no device buffer is refilled: the
+joint model is a modax hierarchy of two blocks (:func:`discoeb.perturbations.joint_kernel`):
+the recombination block steps on its own ahead of the hierarchy and publishes
+the four quantities, which modax hands over as quintic polynomials of time
+between its steps. Nothing is tabulated and no device buffer is refilled: the
 right-hand side is compiled once per layout and serves every batch.
 
 RECFAST's equations are unaltered. Two implementation choices sit beside them:

@@ -1349,7 +1349,7 @@ def cl_power_spectrum_jax(
     :data:`~discoeb.perturbations.PHYSICAL_DENSITY_COLUMNS`) and ``thermal``
     (``YHe, Tcmb, H0, Omegab``) default to the cosmology's own;
     differentiating with respect to them runs modax's forward sensitivity
-    system over both blocks of the split solve, so the recombination history
+    system over both blocks of the hierarchy, so the recombination history
     is differentiated along with the hierarchy, and the densities enter again
     through the source algebra (:func:`source_channels_jax`). The grids, the
     save grid and the reionization redshift are held fixed. The solve uses

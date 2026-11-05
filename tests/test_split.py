@@ -1,24 +1,23 @@
-"""The joint system's pattern splits into the recombination block and the hierarchy."""
+"""The joint system as a modax hierarchy: the recombination block publishing what the hierarchy reads."""
 
 import pytest
 
-from discoeb.perturbations import PerturbationLayout, joint_kernel, thermal_indices
+from discoeb.perturbations import THERMAL_QUANTITIES, THERMAL_STATES, PerturbationLayout, joint_kernel, thermal_indices
 
 
-def test_the_recombination_states_are_the_driver_block():
-    split_blocks = pytest.importorskip("modax.rodas5P").split_blocks
+def test_the_recombination_block_publishes_the_thermal_quantities():
     colour_sparsity = pytest.importorskip("modax._sparsity").colour_sparsity
-    normalize_sparsity = pytest.importorskip("modax._sparsity").normalize_sparsity
-    restrict_pattern = pytest.importorskip("modax._split").restrict_pattern
 
     layout = PerturbationLayout()
-    model, _, sparsity = joint_kernel(layout)
+    model, hierarchy = joint_kernel(layout)
     assert model.nvar == layout.nvar + 5
-    blocks = split_blocks(sparsity, model.nvar)
-    assert blocks.driver == thermal_indices(model)
-    assert blocks.n_main == layout.nvar
-    main = restrict_pattern(normalize_sparsity(sparsity, model.nvar), blocks.main)
+    perturbations, recombination = hierarchy.blocks[-1], hierarchy.blocks[0]
+    assert hierarchy.layout == (perturbations, recombination)  # the thermal states stay last
+    assert recombination.n == 5 and recombination.n_outputs == len(THERMAL_QUANTITIES)
+    assert perturbations.n == layout.nvar and perturbations.reads == (recombination,)
+    assert model.state_indices(THERMAL_STATES) == list(thermal_indices(model))
     # the hierarchy alone, as perturbation_sparsity traces it: 165 entries, 11 colours
+    main = perturbations.sparsity  # normalised by the block: the sorted columns of each row
     assert sum(len(cols) for cols in main) == 165
     assert colour_sparsity(main).n_colours == 11
 

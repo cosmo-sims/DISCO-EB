@@ -502,18 +502,62 @@ def thermal_indices(model) -> tuple[int, ...]:
     return tuple(model.index[n] for n in ("lna", "thermo_0", "thermo_1", "thermo_2", "kappa"))
 
 
+THERMAL_STATES = ("lna", "thermo", "kappa")
+"""The recombination block's states, in model order."""
+
+THERMAL_QUANTITIES = ("a", "opacity", "cs2", "rhonu")
+"""What the hierarchy reads of the recombination block: the scale factor, the
+opacity, the baryon sound speed and the massive-neutrino density ratio, published
+by the block and interpolated by modax between its own steps."""
+
+
+def _restrict(pattern: np.ndarray, indices) -> np.ndarray:
+    """The ``(nnz, 2)`` pattern's rows and columns ``indices``, renumbered."""
+
+    position = {idx: k for k, idx in enumerate(indices)}
+    kept = [(position[r], position[c]) for r, c in pattern.tolist() if r in position and c in position]
+    return np.array(sorted(kept), dtype=np.int64).reshape(-1, 2)
+
+
 @functools.lru_cache(maxsize=None)
 def joint_kernel(layout, extra=()):
-    """``(model, rhs, sparsity)`` of the joint model, built once per layout and ``extra``.
+    """``(model, hierarchy)`` of the joint model, built once per layout and ``extra``.
 
-    The right-hand side closes over nothing that varies between batches, so
-    modax compiles it once; the pattern is block lower triangular, the
-    recombination rows on their own, which modax's ``split=True`` reads as a
-    driver block and a main block.
+    The model is split into a modax :class:`~modax.Hierarchy` of two blocks:
+    the recombination block (:data:`THERMAL_STATES`), which publishes
+    :data:`THERMAL_QUANTITIES`, and the perturbation hierarchy, whose
+    right-hand side takes them as given. modax integrates the recombination
+    block on steps of its own ahead of the hierarchy and hands the quantities
+    down as a quintic Hermite interpolant, so the hierarchy's Jacobian has no
+    thermal columns and the thermal providers run once per *recombination*
+    step. The state keeps the joint model's layout, the thermal states last.
     """
 
+    from modax import Block, Hierarchy
+
     model = joint_model(layout, extra)
-    return model, model.build(PARAM_COLUMNS), model.sparsity()
+    pattern = model.sparsity()
+    thermal = model.state_indices(THERMAL_STATES)
+    others = [name for name in model.states if name not in THERMAL_STATES]
+    hierarchy_idx = model.state_indices(others)
+    recombination = Block(
+        model.build(PARAM_COLUMNS, states=THERMAL_STATES, name="recombination_rhs"),
+        len(thermal),
+        outputs=model.build_function(
+            THERMAL_QUANTITIES, inputs=("y", "tau"), params=PARAM_COLUMNS, states=THERMAL_STATES, name="thermal_quantities"
+        ),
+        n_outputs=len(THERMAL_QUANTITIES),
+        sparsity=_restrict(pattern, thermal),
+        name="recombination",
+    )
+    hierarchy = Block(
+        model.build(PARAM_COLUMNS, states=others, quantities=THERMAL_QUANTITIES, name="hierarchy_rhs"),
+        len(hierarchy_idx),
+        reads=(recombination,),
+        sparsity=_restrict(pattern, hierarchy_idx),
+        name="hierarchy",
+    )
+    return model, Hierarchy(hierarchy, layout=(hierarchy, recombination))
 
 
 def _stack_background_params(cosmologies) -> dict:
@@ -586,8 +630,7 @@ class _PreparedSolve(NamedTuple):
     cosmologies: tuple
     layout: object
     model: object
-    ode_fn: object
-    sparsity: object
+    ode_fn: object  # the modax Hierarchy
     tau0: np.ndarray  # (n_cosmologies,)
     lna_start: np.ndarray
     z_re: np.ndarray
@@ -614,9 +657,9 @@ def _prepared(cosmologies, extra) -> _PreparedSolve:
             "(same dark-energy / massive-neutrino settings)"
         )
     (layout,) = layouts
-    model, rhs, sparsity = joint_kernel(layout, extra)
+    model, hierarchy = joint_kernel(layout, extra)
     tau0, lna_start, z_re = (np.asarray(x) for x in background_endpoints(_stack_background_params(cosmologies)))
-    return _PreparedSolve(cosmologies, layout, model, rhs, sparsity, tau0, lna_start, z_re)
+    return _PreparedSolve(cosmologies, layout, model, hierarchy, tau0, lna_start, z_re)
 
 
 def _row(cosmology, tau_end: float, z_re: float) -> dict:
@@ -731,7 +774,7 @@ def error_weights_for(prepared, n_traj: int, base=None, thermo_weight: float = T
 
 def _launch(prepared, params, y0, t_span, *, rtol, atol, first_step, max_steps,
             error_weights=None, thermo_weight=THERMO_ERROR_WEIGHT, lu_precision="fp32", **extra):
-    """One split modax Rodas5P launch of the prepared solve over the packed trajectories."""
+    """One modax Rodas5P launch of the prepared hierarchy over the packed trajectories."""
 
     from modax.rodas5P import solve as rodas5P_solve
 
@@ -740,7 +783,6 @@ def _launch(prepared, params, y0, t_span, *, rtol, atol, first_step, max_steps,
         y0,
         t_span,
         params,
-        sparsity=prepared.sparsity,
         lu_precision=lu_precision,
         rtol=rtol,
         atol=atol,
@@ -752,7 +794,6 @@ def _launch(prepared, params, y0, t_span, *, rtol, atol, first_step, max_steps,
         tf_index=IX_TAU_END,
         max_registers=CUDA_MAX_REGISTERS,
         error_weights=error_weights_for(prepared, np.shape(params)[0], error_weights, thermo_weight),
-        split=True,
         cache=True,
         **extra,
     )
@@ -801,8 +842,8 @@ def solve_perturbation_history_batch(
     """Solve a batch of cosmologies on a shared ``tau_save`` grid in one launch.
 
     All ``n_cosmologies * n_k`` trajectories are integrated by a single modax
-    launch, the recombination of each one ahead of its hierarchy in every step
-    (modax's ``split``). Each trajectory stops at its *own* ``tau0``; save
+    launch, the recombination block of each one on steps of its own ahead of
+    its hierarchy (:func:`joint_kernel`). Each trajectory stops at its *own* ``tau0``; save
     times beyond it hold its frozen final state. Returns
     ``(history, k_sorted, prepared)`` with ``history`` a device-resident
     ``(n_k, n_cosmologies, len(tau_save), nvar)`` in ascending ``k``.
@@ -909,8 +950,8 @@ def solve_history_jax(
     :data:`THERMAL_COLUMNS`, each defaulting to the cosmology's own; the row
     is built from them so that ``jax.grad`` through this function is the
     derivative of the solve with respect to those nine numbers, recombination
-    included: modax's forward sensitivities run over both blocks of the split
-    solve. The initial state is held fixed (its dependence on the densities is
+    included: modax's forward sensitivities run over both blocks of the
+    hierarchy. The initial state is held fixed (its dependence on the densities is
     of order ``(k tau_start)^2``). Without ``tau_save`` the trajectory stops
     at the conformal age of the densities given, so a finite difference sees
     the end-time dependence that :func:`matter_power_spectrum_jax` carries
@@ -946,7 +987,6 @@ def solve_history_jax(
         jnp.asarray(y0),
         t_span,
         params_j,
-        sparsity=prepared.sparsity,
         lu_precision="fp64",
         rtol=rtol,
         atol=atol,
@@ -964,7 +1004,6 @@ def solve_history_jax(
         error_weights=error_weights_for(prepared, n_traj, error_weights, thermo_weight),
         sens_param_columns=PHYSICAL_COLUMNS,
         sens_error_control=sens_error_control,
-        split=True,
         cache=True,
     )
     return history, densities, thermal, k_sorted, order
