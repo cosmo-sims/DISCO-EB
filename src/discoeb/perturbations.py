@@ -1306,7 +1306,7 @@ def _launch(
     ``lu_precision`` in place of the plain solve's ``"fp32"``).
     """
 
-    from modax.rodas5P import solve as rodas5P_solve
+    from ._modax import solve_rodas5p as rodas5P_solve
 
     prepared.bind()
     options.setdefault("lu_precision", "fp32")
@@ -2056,7 +2056,7 @@ def _history_jax(
     import jax
     import jax.numpy as jnp
 
-    from modax.rodas5P import solve as rodas5P_solve
+    from ._modax import solve_rodas5p as rodas5P_solve
 
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_save)
     prepared.bind()
