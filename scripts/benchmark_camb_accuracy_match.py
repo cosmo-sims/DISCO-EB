@@ -46,24 +46,26 @@ import camb
 
 # DISCO-EB standard cosmology (from test_cmb.py)
 DISCO_COSMOLOGY = {
-    'Omegam': 0.3099,
-    'Omegab': 0.0488911,
-    'H0': 67.742,
-    'n_s': 0.96822,
-    'A_s': 2.1064e-09,
-    'mnu': 0.06,
-    'Tcmb': 2.7255,
-    'YHe': 0.248,
-    'Neff': 2.046,
-    'Nmnu': 1,
-    'w_DE_0': -0.99,
-    'w_DE_a': 0.0,
-    'Omegak': 0.0,
-    'k_p': 0.05,
+    "Omegam": 0.3099,
+    "Omegab": 0.0488911,
+    "H0": 67.742,
+    "n_s": 0.96822,
+    "A_s": 2.1064e-09,
+    "mnu": 0.06,
+    "Tcmb": 2.7255,
+    "YHe": 0.248,
+    "Neff": 2.046,
+    "Nmnu": 1,
+    "w_DE_0": -0.99,
+    "w_DE_a": 0.0,
+    "Omegak": 0.0,
+    "k_p": 0.05,
 }
 
 
-def create_camb_params_disco_matched(params, ellmax=2500, accuracy_level='disco_default'):
+def create_camb_params_disco_matched(
+    params, ellmax=2500, accuracy_level="disco_default"
+):
     """
     Create CAMB parameters matching DISCO-EB accuracy settings.
 
@@ -105,28 +107,28 @@ def create_camb_params_disco_matched(params, ellmax=2500, accuracy_level='disco_
     cpars = camb.CAMBparams()
 
     # Set cosmological parameters
-    h = params['H0'] / 100.0
+    h = params["H0"] / 100.0
     cpars.set_cosmology(
-        H0=params['H0'],
-        ombh2=params['Omegab'] * h**2,
-        omch2=(params['Omegam'] - params['Omegab']) * h**2,
-        omk=params['Omegak'],
+        H0=params["H0"],
+        ombh2=params["Omegab"] * h**2,
+        omch2=(params["Omegam"] - params["Omegab"]) * h**2,
+        omk=params["Omegak"],
         tau=0.0,  # No reionization in DISCO-EB comparison
-        mnu=params['mnu'],
-        num_massive_neutrinos=params['Nmnu'],
-        nnu=params['Neff'] + params['Nmnu'],
-        YHe=params['YHe'],
-        TCMB=params['Tcmb'],
+        mnu=params["mnu"],
+        num_massive_neutrinos=params["Nmnu"],
+        nnu=params["Neff"] + params["Nmnu"],
+        YHe=params["YHe"],
+        TCMB=params["Tcmb"],
     )
 
     # Dark energy
-    cpars.DarkEnergy.w = params['w_DE_0']
-    cpars.DarkEnergy.wa = params['w_DE_a']
+    cpars.DarkEnergy.w = params["w_DE_0"]
+    cpars.DarkEnergy.wa = params["w_DE_a"]
 
     # Initial power spectrum
-    cpars.InitPower.As = params['A_s']
-    cpars.InitPower.ns = params['n_s']
-    cpars.InitPower.pivot_scalar = params['k_p']
+    cpars.InitPower.As = params["A_s"]
+    cpars.InitPower.ns = params["n_s"]
+    cpars.InitPower.pivot_scalar = params["k_p"]
 
     # Set for lmax first (establishes baseline)
     cpars.set_for_lmax(ellmax)
@@ -135,32 +137,34 @@ def create_camb_params_disco_matched(params, ellmax=2500, accuracy_level='disco_
     # Note: set_accuracy() only accepts AccuracyBoost, lSampleBoost, lAccuracyBoost,
     # DoLateRadTruncation, and min_l_logl_sampling. Other parameters must be set
     # directly on cpars.Accuracy.
-    if accuracy_level == 'disco_default':
+    if accuracy_level == "disco_default":
         # Match DISCO-EB default accuracy (lower accuracy, faster)
         # DISCO-EB uses rtol=atol=1e-4 which is looser than CAMB default
         # DISCO-EB uses lmax=11 for photon hierarchy (CAMB default is ~25)
         # DISCO-EB uses nqmax=3 for neutrinos (CAMB default is higher)
         cpars.set_accuracy(
-            AccuracyBoost=0.5,          # Lower overall accuracy to match DISCO-EB
-            lAccuracyBoost=0.4,         # Fewer multipoles in hierarchy (DISCO: lmax=11)
-            lSampleBoost=1.0,           # Standard ell sampling for output
+            AccuracyBoost=0.5,  # Lower overall accuracy to match DISCO-EB
+            lAccuracyBoost=0.4,  # Fewer multipoles in hierarchy (DISCO: lmax=11)
+            lSampleBoost=1.0,  # Standard ell sampling for output
         )
         # Set additional accuracy parameters directly
-        cpars.Accuracy.IntTolBoost = 0.5            # Looser ODE tolerances (DISCO: rtol=atol=1e-4)
-        cpars.Accuracy.TimeStepBoost = 0.5          # Coarser time stepping
+        cpars.Accuracy.IntTolBoost = (
+            0.5  # Looser ODE tolerances (DISCO: rtol=atol=1e-4)
+        )
+        cpars.Accuracy.TimeStepBoost = 0.5  # Coarser time stepping
         cpars.Accuracy.BackgroundTimeStepBoost = 0.5
-        cpars.Accuracy.SourcekAccuracyBoost = 0.8   # k-sampling for sources
-        cpars.Accuracy.IntkAccuracyBoost = 0.8      # k-sampling for integration
-        cpars.Accuracy.TransferkBoost = 0.8         # k-sampling for transfers
-        cpars.Accuracy.neutrino_q_boost = 0.5       # Neutrino momentum bins (DISCO: nqmax=3)
+        cpars.Accuracy.SourcekAccuracyBoost = 0.8  # k-sampling for sources
+        cpars.Accuracy.IntkAccuracyBoost = 0.8  # k-sampling for integration
+        cpars.Accuracy.TransferkBoost = 0.8  # k-sampling for transfers
+        cpars.Accuracy.neutrino_q_boost = 0.5  # Neutrino momentum bins (DISCO: nqmax=3)
 
-    elif accuracy_level == 'disco_high':
+    elif accuracy_level == "disco_high":
         # Match DISCO-EB high-accuracy test settings
         # Uses lmax=31 for all species, nqmax=5
         cpars.set_accuracy(
-            AccuracyBoost=1.0,          # Standard CAMB accuracy
-            lAccuracyBoost=1.2,         # More multipoles (DISCO: lmax=31)
-            lSampleBoost=1.0,           # Standard ell sampling
+            AccuracyBoost=1.0,  # Standard CAMB accuracy
+            lAccuracyBoost=1.2,  # More multipoles (DISCO: lmax=31)
+            lSampleBoost=1.0,  # Standard ell sampling
         )
         cpars.Accuracy.IntTolBoost = 1.0
         cpars.Accuracy.TimeStepBoost = 1.0
@@ -169,12 +173,12 @@ def create_camb_params_disco_matched(params, ellmax=2500, accuracy_level='disco_
         cpars.Accuracy.TransferkBoost = 1.0
         cpars.Accuracy.neutrino_q_boost = 1.0
 
-    elif accuracy_level == 'camb_default':
+    elif accuracy_level == "camb_default":
         # Standard CAMB accuracy (~0.1% at ell>600)
         # No modifications needed - this is the default
         pass
 
-    elif accuracy_level == 'camb_high':
+    elif accuracy_level == "camb_high":
         # High accuracy CAMB settings
         cpars.set_accuracy(
             AccuracyBoost=2.0,
@@ -215,20 +219,19 @@ def benchmark_camb(cpars, n_threads, repeat=3, warmup=1):
         Timing statistics
     """
     # Set thread count
-    os.environ['OMP_NUM_THREADS'] = str(n_threads)
+    os.environ["OMP_NUM_THREADS"] = str(n_threads)
 
     # Warmup runs
     for _ in range(warmup):
         results = camb.get_results(cpars)
-        _ = results.get_cmb_power_spectra(cpars, CMB_unit='muK')
+        _ = results.get_cmb_power_spectra(cpars, CMB_unit="muK")
 
     # Timed runs
     times = []
     for _ in range(repeat):
-
         t0 = time.perf_counter()
         results = camb.get_results(cpars)
-        powers = results.get_cmb_power_spectra(cpars, CMB_unit='muK')
+        powers = results.get_cmb_power_spectra(cpars, CMB_unit="muK")
         t1 = time.perf_counter()
 
         times.append(t1 - t0)
@@ -236,52 +239,59 @@ def benchmark_camb(cpars, n_threads, repeat=3, warmup=1):
     times = np.array(times)
 
     return {
-        'n_threads': n_threads,
-        'times': times,
-        'mean': np.mean(times),
-        'std': np.std(times),
-        'min': np.min(times),
-        'max': np.max(times),
-        'powers': powers,
+        "n_threads": n_threads,
+        "times": times,
+        "mean": np.mean(times),
+        "std": np.std(times),
+        "min": np.min(times),
+        "max": np.max(times),
+        "powers": powers,
     }
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Benchmark CAMB with DISCO-EB matched accuracy settings'
+        description="Benchmark CAMB with DISCO-EB matched accuracy settings"
     )
     parser.add_argument(
-        '--max-threads', type=int, default=None,
-        help='Maximum number of threads to test (default: number of CPUs)'
+        "--max-threads",
+        type=int,
+        default=None,
+        help="Maximum number of threads to test (default: number of CPUs)",
     )
     parser.add_argument(
-        '--thread-counts', type=str, default=None,
-        help='Comma-separated list of thread counts to test (e.g., "1,2,4,8")'
+        "--thread-counts",
+        type=str,
+        default=None,
+        help='Comma-separated list of thread counts to test (e.g., "1,2,4,8")',
     )
     parser.add_argument(
-        '--ellmax', type=int, default=2500,
-        help='Maximum multipole (default: 2500)'
+        "--ellmax", type=int, default=2500, help="Maximum multipole (default: 2500)"
     )
     parser.add_argument(
-        '--repeat', type=int, default=5,
-        help='Number of timed repetitions per configuration (default: 5)'
+        "--repeat",
+        type=int,
+        default=5,
+        help="Number of timed repetitions per configuration (default: 5)",
     )
     parser.add_argument(
-        '--warmup', type=int, default=1,
-        help='Number of warmup runs (default: 1)'
+        "--warmup", type=int, default=1, help="Number of warmup runs (default: 1)"
     )
     parser.add_argument(
-        '--accuracy', type=str, default='all',
-        choices=['disco_default', 'disco_high', 'camb_default', 'camb_high', 'all'],
-        help='Accuracy level to benchmark (default: all)'
+        "--accuracy",
+        type=str,
+        default="all",
+        choices=["disco_default", "disco_high", "camb_default", "camb_high", "all"],
+        help="Accuracy level to benchmark (default: all)",
     )
     args = parser.parse_args()
 
     # Determine thread counts to test
     if args.thread_counts:
-        thread_counts = [int(x) for x in args.thread_counts.split(',')]
+        thread_counts = [int(x) for x in args.thread_counts.split(",")]
     else:
         import multiprocessing
+
         max_threads = args.max_threads or multiprocessing.cpu_count()
         # Test powers of 2 up to max_threads, plus max_threads itself
         thread_counts = []
@@ -293,8 +303,8 @@ def main():
             thread_counts.append(max_threads)
 
     # Determine accuracy levels to test
-    if args.accuracy == 'all':
-        accuracy_levels = ['disco_default', 'disco_high', 'camb_default', 'camb_high']
+    if args.accuracy == "all":
+        accuracy_levels = ["disco_default", "disco_high", "camb_default", "camb_high"]
     else:
         accuracy_levels = [args.accuracy]
 
@@ -347,9 +357,7 @@ Note: DISCO-EB achieves ~10-25% agreement with CAMB at default settings.
 
         # Create CAMB parameters
         cpars = create_camb_params_disco_matched(
-            DISCO_COSMOLOGY,
-            ellmax=args.ellmax,
-            accuracy_level=accuracy_level
+            DISCO_COSMOLOGY, ellmax=args.ellmax, accuracy_level=accuracy_level
         )
 
         # Print actual accuracy settings
@@ -367,23 +375,29 @@ Note: DISCO-EB achieves ~10-25% agreement with CAMB at default settings.
 
         results = {}
 
-        print(f"\n{'Threads':>8} | {'Mean (s)':>10} | {'Std (s)':>10} | {'Min (s)':>10} | {'Max (s)':>10} | {'Speedup':>8}")
+        print(
+            f"\n{'Threads':>8} | {'Mean (s)':>10} | {'Std (s)':>10} | {'Min (s)':>10} | {'Max (s)':>10} | {'Speedup':>8}"
+        )
         print("-" * 72)
 
         baseline_time = None
 
         for n_threads in thread_counts:
-            result = benchmark_camb(cpars, n_threads, repeat=args.repeat, warmup=args.warmup)
+            result = benchmark_camb(
+                cpars, n_threads, repeat=args.repeat, warmup=args.warmup
+            )
             results[n_threads] = result
 
             if baseline_time is None:
-                baseline_time = result['mean']
+                baseline_time = result["mean"]
                 speedup = 1.0
             else:
-                speedup = baseline_time / result['mean']
+                speedup = baseline_time / result["mean"]
 
-            print(f"{n_threads:>8} | {result['mean']:>10.4f} | {result['std']:>10.4f} | "
-                  f"{result['min']:>10.4f} | {result['max']:>10.4f} | {speedup:>8.2f}x")
+            print(
+                f"{n_threads:>8} | {result['mean']:>10.4f} | {result['std']:>10.4f} | "
+                f"{result['min']:>10.4f} | {result['max']:>10.4f} | {speedup:>8.2f}x"
+            )
 
         all_results[accuracy_level] = results
 
@@ -399,10 +413,14 @@ Note: DISCO-EB achieves ~10-25% agreement with CAMB at default settings.
         print(f"{'Accuracy Level':>20} | {'Mean (s)':>10} | {'Relative':>10}")
         print("-" * 46)
 
-        baseline = all_results['camb_default'][max_t]['mean'] if 'camb_default' in all_results else None
+        baseline = (
+            all_results["camb_default"][max_t]["mean"]
+            if "camb_default" in all_results
+            else None
+        )
 
         for acc_level in accuracy_levels:
-            mean_time = all_results[acc_level][max_t]['mean']
+            mean_time = all_results[acc_level][max_t]["mean"]
             if baseline:
                 relative = mean_time / baseline
                 print(f"{acc_level:>20} | {mean_time:>10.4f} | {relative:>10.2f}x")
@@ -416,5 +434,5 @@ Note: DISCO-EB achieves ~10-25% agreement with CAMB at default settings.
     return all_results
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

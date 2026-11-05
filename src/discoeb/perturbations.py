@@ -25,7 +25,6 @@ from .eb_model import (
 from .thermodynamics_recfast import evaluate_thermo
 
 
-
 # Hierarchy truncations. These are the settings of the components in
 # :mod:`discoeb.eb_model` -- ``DISCO_LMAX_G`` etc. in the environment override
 # their defaults when that module is imported -- mirrored here as module-level
@@ -138,6 +137,8 @@ def matter_power_spectrum(
         * primordial_curvature_power(k, A_s, n_s, k_pivot)
         * delta_m**2
     )
+
+
 @dataclass(frozen=True)
 class PerturbationLayout:
     """Enabled components and state-vector indices of the perturbation hierarchy.
@@ -317,6 +318,8 @@ FLAT_MASSLESS_LAYOUT = PerturbationLayout()
 
 Reproduces the fixed index constants of :mod:`discoeb.perturbations`.
 """
+
+
 class _ParamCosmology(NamedTuple):
     """Hashable view of the historical DISCO-EB parameter dictionary."""
 
@@ -404,6 +407,7 @@ def _as_cosmology(cosmology):
         k_pivot=float(cosmology.get("k_p", 0.05)),
         tau_reio=float(cosmology.get("tau_reio", 0.0)),
     )
+
 
 # Solver and grid presets for the accelerated matter-power path.
 N_THERMO_GRID = 2048
@@ -677,13 +681,17 @@ def _thermo_tables_device(stacked, spline_inverse, n_grid: int):
         tau_reio = params["tau_reio"]
         background = evolve_background(
             param={k: v for k, v in params.items() if k != "tau_reio"},
-            thermo_module="RECFAST", num_thermo=n_grid,
+            thermo_module="RECFAST",
+            num_thermo=n_grid,
         )
-        dtauda_values = jax.vmap(dtauda, in_axes=(0, None))(a_background, background["densities"])
+        dtauda_values = jax.vmap(dtauda, in_axes=(0, None))(
+            a_background, background["densities"]
+        )
         steps = 0.5 * (dtauda_values[1:] + dtauda_values[:-1]) * jnp.diff(a_background)
-        tau_background = jnp.concatenate(
-            (jnp.zeros((1,)), jnp.cumsum(steps))
-        ) + jnp.reshape(background["taumin"], (-1,))[0]
+        tau_background = (
+            jnp.concatenate((jnp.zeros((1,)), jnp.cumsum(steps)))
+            + jnp.reshape(background["taumin"], (-1,))[0]
+        )
         tau0 = tau_background[-1]
         log_tau_grid = jnp.linspace(jnp.log(TAU_START), jnp.log(tau0), n_grid)
         tau_grid = jnp.exp(log_tau_grid)
@@ -693,7 +701,9 @@ def _thermo_tables_device(stacked, spline_inverse, n_grid: int):
         xe_spline = background["xe_of_loga_spline"]
         xe_vals = xe_spline.evaluate(loga_eval)[:, 0]
         a_recfast_start = 1.0 / 3501.0
-        xe_recfast_start = xe_spline.evaluate(jnp.log(jnp.asarray([a_recfast_start])))[0, 0]
+        xe_recfast_start = xe_spline.evaluate(jnp.log(jnp.asarray([a_recfast_start])))[
+            0, 0
+        ]
         xe_vals = jnp.where(a_vals < a_recfast_start, xe_recfast_start, xe_vals)
         akthom = (
             2.3038921003709498e-9
@@ -707,7 +717,9 @@ def _thermo_tables_device(stacked, spline_inverse, n_grid: int):
         # tau_reio = int kappa' dtau, found by bisection on the background grid.
         f_he = params["YHe"] / (4.0 * (1.0 - params["YHe"]))  # n_He / n_H
         xe_rec_background = xe_spline.evaluate(jnp.log(a_background))[:, 0]
-        xe_rec_background = jnp.where(a_background < a_recfast_start, xe_recfast_start, xe_rec_background)
+        xe_rec_background = jnp.where(
+            a_background < a_recfast_start, xe_recfast_start, xe_rec_background
+        )
         dtau_background = jnp.gradient(tau_background)
 
         def xe_reio(a, xe_rec, z_re):
@@ -719,7 +731,12 @@ def _thermo_tables_device(stacked, spline_inverse, n_grid: int):
             return (1.0 + f_he - xe_rec) * step + f_he * he3
 
         def tau_of(z_re):
-            return jnp.sum(xe_reio(a_background, xe_rec_background, z_re) * akthom / a_background**2 * dtau_background)
+            return jnp.sum(
+                xe_reio(a_background, xe_rec_background, z_re)
+                * akthom
+                / a_background**2
+                * dtau_background
+            )
 
         def bisect(carry, _):
             lo, hi = carry
@@ -727,9 +744,13 @@ def _thermo_tables_device(stacked, spline_inverse, n_grid: int):
             too_much = tau_of(mid) > tau_reio
             return (jnp.where(too_much, lo, mid), jnp.where(too_much, mid, hi)), None
 
-        (lo, hi), _ = jax.lax.scan(bisect, (jnp.asarray(1.0), jnp.asarray(40.0)), None, length=40)
+        (lo, hi), _ = jax.lax.scan(
+            bisect, (jnp.asarray(1.0), jnp.asarray(40.0)), None, length=40
+        )
         z_re = 0.5 * (lo + hi)
-        xe_vals = xe_vals + jnp.where(tau_reio > 0.0, xe_reio(a_vals, xe_vals, z_re), 0.0)
+        xe_vals = xe_vals + jnp.where(
+            tau_reio > 0.0, xe_reio(a_vals, xe_vals, z_re), 0.0
+        )
         opacity_vals = xe_vals * akthom / a_vals**2
         cs2_vals = background["cs2a_of_loga_spline"].evaluate(loga_eval)[:, 0] / a_vals
         rhonu_vals = jnp.exp(
@@ -752,7 +773,9 @@ THERMO_ATOL = 1e-7
 
 
 @partial(jax.jit, static_argnames=("n_grid", "rtol", "atol"))
-def _solve_thermal_histories(stacked, n_grid: int, rtol: float = THERMO_RTOL, atol: float = THERMO_ATOL):
+def _solve_thermal_histories(
+    stacked, n_grid: int, rtol: float = THERMO_RTOL, atol: float = THERMO_ATOL
+):
     """The RECFAST solve of ``evolve_background`` alone, one vmap lane per cosmology."""
 
     def one(params):
@@ -766,7 +789,10 @@ def _stack_background_params(cosmologies) -> dict:
     """The cosmologies' background parameters stacked by name, one vmap lane each."""
 
     rows = [c.to_background_params() for c in cosmologies]
-    return {key: jnp.asarray([row[key] for row in rows], dtype=jnp.float64) for key in rows[0]}
+    return {
+        key: jnp.asarray([row[key] for row in rows], dtype=jnp.float64)
+        for key in rows[0]
+    }
 
 
 def thermal_history_batch(cosmologies, n_grid: int = N_THERMO_GRID) -> dict:
@@ -782,7 +808,9 @@ def thermal_history_batch(cosmologies, n_grid: int = N_THERMO_GRID) -> dict:
 
     cosmologies = tuple(_as_cosmology(cosmology) for cosmology in cosmologies)
     stacked = _stack_background_params(cosmologies)
-    a, cs2, Tm, mu, xe, dxeda = _solve_thermal_histories(stacked, n_grid, rtol=THERMO_RTOL, atol=THERMO_ATOL)
+    a, cs2, Tm, mu, xe, dxeda = _solve_thermal_histories(
+        stacked, n_grid, rtol=THERMO_RTOL, atol=THERMO_ATOL
+    )
     return {
         "a": np.asarray(a)[0],
         "xe": np.asarray(xe)[:, :, 0],
@@ -806,9 +834,7 @@ def _build_thermo_tables_batch(cosmologies, n_grid: int = N_THERMO_GRID):
         np.asarray(x)
         for x in _thermo_tables_device(stacked, _not_a_knot_inverse(n_grid), n_grid)
     )
-    return tuple(
-        (tau_grid[i], values[i], seconds[i], float(tau0[i])) for i in range(n)
-    )
+    return tuple((tau_grid[i], values[i], seconds[i], float(tau0[i])) for i in range(n))
 
 
 def make_params(cosmology, k_values: np.ndarray, tau_end: float) -> np.ndarray:
@@ -1017,7 +1043,9 @@ class DeviceTableSlot:
         from numba_cuda_mlir import cuda
 
         self._cuda = cuda
-        self.buffers = tuple(cuda.device_array(shape, dtype) for shape, dtype in shapes_dtypes)
+        self.buffers = tuple(
+            cuda.device_array(shape, dtype) for shape, dtype in shapes_dtypes
+        )
         self.device_function = build(*self.buffers)
         self.loaded = None
 
@@ -1079,7 +1107,9 @@ def _stack_thermo_tables(tables):
         dtype=np.float64,
     )
     values = np.stack([t[1] for t in tables])
-    rescaled_seconds = np.stack([t[2]*(np.log(t[0][1]) - np.log(t[0][0]))**2/6.0 for t in tables])
+    rescaled_seconds = np.stack(
+        [t[2] * (np.log(t[0][1]) - np.log(t[0][0])) ** 2 / 6.0 for t in tables]
+    )
     tau0 = np.array([t[3] for t in tables], dtype=np.float64)
     return tau_min, inv_dtau, values, rescaled_seconds, tau0
 
@@ -1300,10 +1330,17 @@ def solve_perturbation_history(
     """
 
     hist, k_sorted, prepared = solve_perturbation_history_batch(
-        k_values, (cosmology,), tau_save=tau_save, rtol=rtol, atol=atol,
-        first_step=first_step, max_steps=max_steps,
+        k_values,
+        (cosmology,),
+        tau_save=tau_save,
+        rtol=rtol,
+        atol=atol,
+        first_step=first_step,
+        max_steps=max_steps,
     )
-    inv_order = np.argsort(np.argsort(np.asarray(k_values, dtype=np.float64), kind="stable"))
+    inv_order = np.argsort(
+        np.argsort(np.asarray(k_values, dtype=np.float64), kind="stable")
+    )
     history = hist[:, 0][jnp.asarray(inv_order)]
     if not as_jax:
         history = np.asarray(history)
@@ -1350,7 +1387,16 @@ def solve_perturbation_history_batch(
 
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_save)
     n_k = len(k_sorted)
-    sol = _launch(prepared, params, y0, t_span, rtol=rtol, atol=atol, first_step=first_step, max_steps=max_steps)
+    sol = _launch(
+        prepared,
+        params,
+        y0,
+        t_span,
+        rtol=rtol,
+        atol=atol,
+        first_step=first_step,
+        max_steps=max_steps,
+    )
     # Rows are packed k-major (row = k_idx * n_cosmo + cosmology_idx), so this
     # reshape is a free view -- no copy of the (potentially multi-GB) history.
     hist = jnp.asarray(sol).reshape(n_k, n_cosmo, len(t_span), layout.nvar)
@@ -1466,9 +1512,9 @@ def matter_power_spectrum_jax(
 
     grhoc_val = densities[2]
     grhob_val = densities[3]
-    delta_m = (
-        grhoc_val * y_final[:, IX_CLXC] + grhob_val * y_final[:, IX_CLXB]
-    ) / (grhoc_val + grhob_val)
+    delta_m = (grhoc_val * y_final[:, IX_CLXC] + grhob_val * y_final[:, IX_CLXB]) / (
+        grhoc_val + grhob_val
+    )
     ks = jnp.asarray(k_sorted)
     pk_sorted = (
         2.0
@@ -1550,8 +1596,10 @@ def _history_jax(
     t_span_j = jnp.asarray(t_span)
 
     def with_densities(base, d):
-        return jnp.asarray(base).at[:, jnp.asarray(columns)].set(
-            jnp.broadcast_to(d, (base.shape[0], n_dir))
+        return (
+            jnp.asarray(base)
+            .at[:, jnp.asarray(columns)]
+            .set(jnp.broadcast_to(d, (base.shape[0], n_dir)))
         )
 
     if not one_column_per_trajectory:
@@ -1612,7 +1660,6 @@ def _history_jax(
     return history, densities, k_sorted, order
 
 
-
 def solve_matter_power_spectrum_batch(
     k_values,
     cosmologies,
@@ -1642,7 +1689,16 @@ def solve_matter_power_spectrum_batch(
 
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values)
     n_k = len(k_sorted)
-    sol = _launch(prepared, params, y0, t_span, rtol=rtol, atol=atol, first_step=first_step, max_steps=max_steps)
+    sol = _launch(
+        prepared,
+        params,
+        y0,
+        t_span,
+        rtol=rtol,
+        atol=atol,
+        first_step=first_step,
+        max_steps=max_steps,
+    )
     y_final = np.asarray(sol)[:, -1, :].reshape(n_k, n_cosmo, layout.nvar)
 
     pk_sorted = np.empty((n_cosmo, n_k), dtype=np.float64)
@@ -1655,7 +1711,11 @@ def solve_matter_power_spectrum_batch(
                 grhoc_val, yv[IX_CLXC], grhob_val, yv[IX_CLXB]
             )
             pk_sorted[ci, ki] = matter_power_spectrum(
-                float(k_sorted[ki]), delta_m, cosmology.A_s, cosmology.n_s, cosmology.k_pivot
+                float(k_sorted[ki]),
+                delta_m,
+                cosmology.A_s,
+                cosmology.n_s,
+                cosmology.k_pivot,
             )
 
     pk = np.empty_like(pk_sorted)

@@ -33,7 +33,9 @@ LAYOUTS = {
 
 HOST = dict(
     jit=lambda f: f,
-    cuda=SimpleNamespace(local=SimpleNamespace(array=lambda shape, dtype: np.zeros(shape))),
+    cuda=SimpleNamespace(
+        local=SimpleNamespace(array=lambda shape, dtype: np.zeros(shape))
+    ),
     float64=np.float64,
 )
 
@@ -62,7 +64,9 @@ def finite_difference_pattern(layout, seed=0) -> set[tuple[int, int]]:
     model = perturbation_model(layout, ConstantThermalHistory())
     rhs = model.build(PARAM_COLUMNS, **HOST)
     rng = np.random.default_rng(seed)
-    p = rng.uniform(0.5, 1.5, N_PARAM)  # order one, curvature and sensitivity direction included
+    p = rng.uniform(
+        0.5, 1.5, N_PARAM
+    )  # order one, curvature and sensitivity direction included
     p[PARAM_COLUMNS["w_DE_0"]] = -0.9
     y = rng.standard_normal(layout.nvar)
 
@@ -121,7 +125,9 @@ def test_the_pattern_is_the_jacobians(name):
     assert pattern.ndim == 2 and pattern.shape[1] == 2 and pattern.dtype == np.int64
     assert pattern.min() >= 0 and pattern.max() < layout.nvar
     assert entries(pattern) == finite_difference_pattern(layout)
-    assert not diagonal(layout) <= entries(pattern), "an undamped multipole has no diagonal"
+    assert not diagonal(layout) <= entries(pattern), (
+        "an undamped multipole has no diagonal"
+    )
 
 
 @pytest.mark.parametrize("name", list(LAYOUTS))
@@ -145,7 +151,9 @@ def test_the_pattern_has_the_physics_structure(name):
             if i + 1 < len(tail):
                 neighbours.add(tail[i + 1])
             assert {c for r, c in found if r == idx} <= neighbours, f"{name}: row {idx}"
-            assert (idx, tail[i - 1] if i else tail[0] - 1) in found, f"{name}: row {idx}"
+            assert (idx, tail[i - 1] if i else tail[0] - 1) in found, (
+                f"{name}: row {idx}"
+            )
     # Every variable couples to something and something couples to it: a
     # state index the pattern never mentions is one the sparse solver would
     # silently drop.
@@ -169,9 +177,19 @@ def test_the_flat_lcdm_pattern_is_the_expected_size():
     """
     layout = LAYOUTS["flat-lcdm"]
     assert layout.nvar == 50
-    assert len(perturbation_sparsity(layout)) == (
-        8 + 5 + 6 + 3 + (6 + 4 + 11 + 12 * 3 + 2) + (3 + 12 * 3 + 2) + (6 + 2 + 9 + 12 * 2 + 2)
-    ) == 165
+    assert (
+        len(perturbation_sparsity(layout))
+        == (
+            8
+            + 5
+            + 6
+            + 3
+            + (6 + 4 + 11 + 12 * 3 + 2)
+            + (3 + 12 * 3 + 2)
+            + (6 + 2 + 9 + 12 * 2 + 2)
+        )
+        == 165
+    )
 
 
 @pytest.mark.parametrize("name", list(LAYOUTS))
@@ -203,12 +221,20 @@ def test_amd_fills_in_only_the_core(name):
 def test_the_solver_and_the_kernel_share_one_layout():
     """The slots the sweeps write are the slots the factorisation reads; the fill has its own."""
     layout = LAYOUTS["flat-lcdm"]
-    solver = sparse_direct.sparse_direct_solver(perturbation_sparsity(layout), layout.nvar)
+    solver = sparse_direct.sparse_direct_solver(
+        perturbation_sparsity(layout), layout.nvar
+    )
     pattern = normalize_sparsity(perturbation_sparsity(layout), layout.nvar)
 
-    assert solver.compressed.n_colours == 11  # 12 Enzyme sweeps, not 51; the dense core needed 13
-    assert solver.compressed.size == solver.nnz == 198  # 165 entries, 14 undeclared diagonals, 19 of fill
-    slots = [solver.compressed.slot(r, c) for r, cols in enumerate(pattern) for c in cols]
+    assert (
+        solver.compressed.n_colours == 11
+    )  # 12 Enzyme sweeps, not 51; the dense core needed 13
+    assert (
+        solver.compressed.size == solver.nnz == 198
+    )  # 165 entries, 14 undeclared diagonals, 19 of fill
+    slots = [
+        solver.compressed.slot(r, c) for r, cols in enumerate(pattern) for c in cols
+    ]
     assert len(set(slots)) == len(slots) == 165, "every entry has a slot of its own"
     assert set(slots) <= set(range(198))
 
@@ -227,10 +253,16 @@ def test_undeclared_diagonals_get_the_factorisations_slots(name):
     layout = LAYOUTS[name]
     pattern = normalize_sparsity(perturbation_sparsity(layout), layout.nvar)
     table = sparse_direct.analyse(pattern, "amd").slot_table()
-    compressed = sparse_direct.sparse_direct_solver(perturbation_sparsity(layout), layout.nvar).compressed
+    compressed = sparse_direct.sparse_direct_solver(
+        perturbation_sparsity(layout), layout.nvar
+    ).compressed
 
     undeclared = [i for i in range(layout.nvar) if i not in pattern[i]]
-    taken = [i for i in undeclared if compressed.packed[i * compressed.n_colours + compressed.colour[i]] >= 0]
+    taken = [
+        i
+        for i in undeclared
+        if compressed.packed[i * compressed.n_colours + compressed.colour[i]] >= 0
+    ]
     assert taken, "the case the grid lookup got wrong"
     assert all(compressed.slot(i, i) == table[i, i] for i in range(layout.nvar))
     assert compressed.diagonal == tuple(table[i, i] for i in range(layout.nvar))
@@ -239,7 +271,9 @@ def test_undeclared_diagonals_get_the_factorisations_slots(name):
 @pytest.mark.parametrize("name", list(LAYOUTS))
 def test_the_exact_pattern_needs_no_more_colours_than_the_dense_core(name):
     layout = LAYOUTS[name]
-    exact = colour_sparsity(normalize_sparsity(perturbation_sparsity(layout), layout.nvar))
+    exact = colour_sparsity(
+        normalize_sparsity(perturbation_sparsity(layout), layout.nvar)
+    )
     declared = colour_sparsity(
         normalize_sparsity(np.array(sorted(dense_core_pattern(layout))), layout.nvar)
     )

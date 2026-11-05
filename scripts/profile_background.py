@@ -1,8 +1,9 @@
 import time
 
 import jax
+
 jax.config.update("jax_enable_x64", True)
-jax.config.update('jax_platform_name', 'gpu')
+jax.config.update("jax_platform_name", "gpu")
 
 from discoeb.eb_model import evolve_background
 
@@ -13,21 +14,21 @@ print(f"Devices: {jax.devices()}")
 
 # Define cosmological parameters
 cosmo_params = {
-    'Omegam': 0.3099,            # Total matter density
-    'Omegab': 0.0488911,         # Baryon density
-    'H0': 67.742,                # Hubble constant (km/s/Mpc)
-    'n_s': 0.96822,              # Spectral index
-    'A_s': 2.1064e-09,           # Primordial amplitude
-    'mnu': 0.06,                 # Neutrino mass (eV)
-    'Tcmb': 2.7255,              # CMB temperature (K)
-    'YHe': 0.248,                # Helium mass fraction
-    'Neff': 2.046,               # Effective relativistic species
-    'Nmnu': 1,                   # Massive neutrino species
-    'w_DE_0': -0.99,             # Dark energy EOS today
-    'w_DE_a': 0.0,               # Dark energy EOS derivative
-    'cs2_DE': 1.0,               # Dark energy sound speed squared
-    'Omegak': 0.0,               # Curvature
-    'k_p': 0.05,                 # Pivot scale (1/Mpc)
+    "Omegam": 0.3099,  # Total matter density
+    "Omegab": 0.0488911,  # Baryon density
+    "H0": 67.742,  # Hubble constant (km/s/Mpc)
+    "n_s": 0.96822,  # Spectral index
+    "A_s": 2.1064e-09,  # Primordial amplitude
+    "mnu": 0.06,  # Neutrino mass (eV)
+    "Tcmb": 2.7255,  # CMB temperature (K)
+    "YHe": 0.248,  # Helium mass fraction
+    "Neff": 2.046,  # Effective relativistic species
+    "Nmnu": 1,  # Massive neutrino species
+    "w_DE_0": -0.99,  # Dark energy EOS today
+    "w_DE_a": 0.0,  # Dark energy EOS derivative
+    "cs2_DE": 1.0,  # Dark energy sound speed squared
+    "Omegak": 0.0,  # Curvature
+    "k_p": 0.05,  # Pivot scale (1/Mpc)
 }
 
 # Clear JAX compilation cache
@@ -45,4 +46,4 @@ jax.block_until_ready(result)
 end = time.time()
 
 print(f"\nSUCCESS!")
-print(f"Total time: {end-start:.2f} seconds (including compilation)")
+print(f"Total time: {end - start:.2f} seconds (including compilation)")

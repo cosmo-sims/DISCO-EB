@@ -13,7 +13,7 @@ import optimistix
 import time
 
 jax.config.update("jax_enable_x64", True)
-jax.config.update('jax_platform_name', 'gpu')
+jax.config.update("jax_platform_name", "gpu")
 
 print("=" * 70)
 print("Collocation Method: 1024 Points, 3D Vector ODE")
@@ -22,7 +22,7 @@ print("=" * 70)
 # Verify GPU is being used
 print(f"\nJAX backend: {jax.default_backend()}")
 print(f"Devices: {jax.devices()}")
-if jax.default_backend() != 'gpu':
+if jax.default_backend() != "gpu":
     print("WARNING: Not running on GPU! Results may not be representative.")
 print()
 
@@ -39,6 +39,7 @@ print()
 # Initial conditions: y(0) = [0, 0, 0]
 
 k1, k2, k3 = 100.0, 150.0, 200.0  # Stiffness parameters (different scales)
+
 
 def f(t, y):
     """
@@ -58,6 +59,7 @@ def f(t, y):
     dy3_dt = -k3 * (y3 - y2)
 
     return jnp.array([dy1_dt, dy2_dt, dy3_dt])
+
 
 # Time domain and grid
 t0, t1 = 0.0, 1.0
@@ -84,6 +86,7 @@ dt = t_grid[1] - t_grid[0]
 print("\n" + "=" * 70)
 print("Method 1: Sequential Solving (current DISCO-EB approach)")
 print("=" * 70)
+
 
 def solve_sequential():
     """Solve vector ODE sequentially using implicit Euler"""
@@ -117,6 +120,7 @@ def solve_sequential():
     Y_values, _ = jax.lax.fori_loop(1, n_points, body_fun, (Y_values, y_current))
     return Y_values
 
+
 # JIT compile
 solve_sequential_jit = jax.jit(solve_sequential)
 
@@ -134,8 +138,10 @@ for _ in range(10):
 time_sequential = (time.time() - start) / 10
 
 print("✓ Sequential method")
-print(f"  Time: {time_sequential*1000:.2f} ms (averaged over 10 runs)")
-print(f"  Final values: y({t1}) = [{Y_sequential[-1, 0]:.6f}, {Y_sequential[-1, 1]:.6f}, {Y_sequential[-1, 2]:.6f}]")
+print(f"  Time: {time_sequential * 1000:.2f} ms (averaged over 10 runs)")
+print(
+    f"  Final values: y({t1}) = [{Y_sequential[-1, 0]:.6f}, {Y_sequential[-1, 1]:.6f}, {Y_sequential[-1, 2]:.6f}]"
+)
 print("  Characteristics:")
 print(f"    - {n_points} sequential solves")
 print(f"    - Each solve: {n_vars}×{n_vars} Newton iteration")
@@ -149,6 +155,7 @@ print(f"    - On GPU: {n_points} small kernel launches → poor utilization")
 print("\n" + "=" * 70)
 print("Method 2: Collocation with optimistix Newton + lineax GMRES")
 print("=" * 70)
+
 
 def solve_collocation_optimistix():
     """
@@ -172,7 +179,7 @@ def solve_collocation_optimistix():
         Y = Y_flat.reshape(n_points, n_vars)
         R = jnp.zeros((n_points, n_vars))
         R = R.at[0].set(Y[0])
-        rhs = jax.vmap(f)(t_grid[1:], Y[1:])          # vectorised over time
+        rhs = jax.vmap(f)(t_grid[1:], Y[1:])  # vectorised over time
         R = R.at[1:].set(Y[1:] - Y[:-1] - dt * rhs)
         return R.reshape(-1)
 
@@ -186,9 +193,9 @@ def solve_collocation_optimistix():
 
     @residual_fn.defjvp
     def _(primals, tangents):
-        Y_flat, = primals
-        v,      = tangents
-        Y   = Y_flat.reshape(n_points, n_vars)
+        (Y_flat,) = primals
+        (v,) = tangents
+        Y = Y_flat.reshape(n_points, n_vars)
         v_r = v.reshape(n_points, n_vars)
 
         primal_out = residual(Y_flat)
@@ -197,11 +204,11 @@ def solve_collocation_optimistix():
         # (D[0] = I is not needed: dR[0] = v[0] directly)
         D = jax.vmap(
             lambda i: jnp.eye(n_vars) - dt * jax.jacfwd(lambda y: f(t_grid[i], y))(Y[i])
-        )(jnp.arange(1, n_points))                              # (N-1, k, k)
+        )(jnp.arange(1, n_points))  # (N-1, k, k)
 
         # dR[0] = v[0]
         # dR[i] = D[i-1] @ v[i] - v[i-1]   for i = 1..N-1
-        t_rest = jnp.einsum('ijk,ik->ij', D, v_r[1:]) - v_r[:-1]
+        t_rest = jnp.einsum("ijk,ik->ij", D, v_r[1:]) - v_r[:-1]
         tangent_out = jnp.concatenate([v_r[:1], t_rest]).reshape(-1)
 
         return primal_out, tangent_out
@@ -213,11 +220,12 @@ def solve_collocation_optimistix():
     # ------------------------------------------------------------------
     linear_solver = lineax.GMRES(rtol=1e-10, atol=1e-10, restart=50, max_steps=100)
     newton_solver = optimistix.Newton(
-        rtol=1e-8, atol=1e-8,
+        rtol=1e-8,
+        atol=1e-8,
         linear_solver=linear_solver,
     )
 
-    y0     = jnp.zeros(n_points * n_vars)
+    y0 = jnp.zeros(n_points * n_vars)
     result = optimistix.root_find(
         lambda y, _: residual_fn(y),
         newton_solver,
@@ -227,6 +235,7 @@ def solve_collocation_optimistix():
     )
 
     return result.value.reshape(n_points, n_vars)
+
 
 # JIT compile
 solve_collocation_jit = jax.jit(solve_collocation_optimistix)
@@ -245,15 +254,17 @@ for _ in range(10):
 time_collocation = (time.time() - start) / 10
 
 print("✓ Collocation method (optimistix Newton + lineax GMRES + custom matvec)")
-print(f"  Time: {time_collocation*1000:.2f} ms (averaged over 10 runs)")
-print(f"  Final values: y({t1}) = [{Y_collocation[-1, 0]:.6f}, {Y_collocation[-1, 1]:.6f}, {Y_collocation[-1, 2]:.6f}]")
-print(f"  Speedup vs sequential: {time_sequential/time_collocation:.2f}x")
+print(f"  Time: {time_collocation * 1000:.2f} ms (averaged over 10 runs)")
+print(
+    f"  Final values: y({t1}) = [{Y_collocation[-1, 0]:.6f}, {Y_collocation[-1, 1]:.6f}, {Y_collocation[-1, 2]:.6f}]"
+)
+print(f"  Speedup vs sequential: {time_sequential / time_collocation:.2f}x")
 print("  Characteristics:")
 print("    - optimistix.Newton outer loop (max 10 steps, rtol=1e-8)")
 print("    - lineax.GMRES inner linear solver (restart=50, rtol=1e-10)")
 print("    - custom_jvp: matvec(v) returned directly as tangent output")
 print("    - custom_jvp injects our O(N*k^2) matvec into the Newton linearisation")
-print(f"    - Never builds full {n_points*n_vars}x{n_points*n_vars} Jacobian!")
+print(f"    - Never builds full {n_points * n_vars}x{n_points * n_vars} Jacobian!")
 
 # Verify solutions match
 max_error = jnp.max(jnp.abs(Y_sequential - Y_collocation))
@@ -267,20 +278,24 @@ print("\n" + "=" * 70)
 print("Jacobian Matrix Analysis")
 print("=" * 70)
 
+
 # Compute Jacobian at solution to analyze structure
 def residual_for_jacobian(Y_flat):
     Y = Y_flat.reshape(n_points, n_vars)
     R = jnp.zeros((n_points, n_vars))
     R = R.at[0].set(Y[0])
     for i in range(1, n_points):
-        R = R.at[i].set(Y[i] - Y[i-1] - dt * f(t_grid[i], Y[i]))
+        R = R.at[i].set(Y[i] - Y[i - 1] - dt * f(t_grid[i], Y[i]))
     return R.reshape(-1)
+
 
 Y_test = jnp.zeros(n_points * n_vars)
 J = jax.jacfwd(residual_for_jacobian)(Y_test)
 
 print("\nJacobian dimensions:")
-print(f"  Full size: {n_points * n_vars}x{n_points * n_vars} = {(n_points * n_vars)**2:,} elements")
+print(
+    f"  Full size: {n_points * n_vars}x{n_points * n_vars} = {(n_points * n_vars) ** 2:,} elements"
+)
 print(f"  Block structure: {n_points} blocks of {n_vars}x{n_vars}")
 
 # Count non-zero elements (with tolerance)
@@ -309,7 +324,9 @@ for i in range(min(30, n_points * n_vars)):
     print(row)
 
 print("\n  → Block-tridiagonal pattern clearly visible!")
-print(f"  → Each {n_vars}×{n_vars} block represents coupling within/between time points")
+print(
+    f"  → Each {n_vars}×{n_vars} block represents coupling within/between time points"
+)
 
 # ============================================================================
 # Comparison with DISCO-EB
@@ -328,16 +345,16 @@ This demonstration matches DISCO-EB structure:
 
 Key findings:
 
-1. Sequential solving: {time_sequential*1000:.2f} ms
+1. Sequential solving: {time_sequential * 1000:.2f} ms
    - {n_points} small {n_vars}×{n_vars} Newton solves
    - Many kernel launches → poor GPU utilization
    - Matches current DISCO-EB approach
 
-2. Collocation (optimistix + lineax): {time_collocation*1000:.2f} ms
+2. Collocation (optimistix + lineax): {time_collocation * 1000:.2f} ms
    - optimistix.Newton outer loop (converges in a few steps)
    - lineax.GMRES inner solve; matvec injected via custom_jvp
    - custom_jvp returns matvec(v) directly as the tangent output
-   - Speedup: {time_sequential/time_collocation:.2f}×
+   - Speedup: {time_sequential / time_collocation:.2f}×
    - O(N) memory, fully vectorised operations!
 
 3. Jacobian structure:
@@ -366,17 +383,17 @@ Vector ODE demonstration ({n_vars}D system, {n_points} points):
 
 1. Problem scale: {n_points * n_vars} total unknowns (same as DISCO-EB)
 
-2. Sequential approach: {time_sequential*1000:.2f} ms
+2. Sequential approach: {time_sequential * 1000:.2f} ms
    - Standard implicit Euler with sequential Newton solves
    - Each step: 5 iterations × {n_vars}×{n_vars} linear solve
 
-3. Collocation (optimistix + lineax): {time_collocation*1000:.2f} ms
+3. Collocation (optimistix + lineax): {time_collocation * 1000:.2f} ms
    - optimistix.Newton: outer root-finding loop
    - lineax.GMRES: inner linear solve (restart=50, rtol=1e-10)
    - jax.custom_jvp: returns matvec(v) directly as the tangent
    - Matvec: O(N·k²) = O({n_points}·{n_vars}²) per GMRES iteration
    - Memory: O(N·k²) — never builds the full Jacobian!
-   - Speedup: {time_sequential/time_collocation:.2f}×
+   - Speedup: {time_sequential / time_collocation:.2f}×
 
 4. Accuracy: max |collocation - sequential| = {max_error:.2e}
 

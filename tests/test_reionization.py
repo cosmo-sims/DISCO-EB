@@ -22,7 +22,10 @@ from test_perturbations import REFERENCE_COSMOLOGY, _perturbed_cosmologies
 TAU_REIO = 0.0544
 
 # Multipoles of the spectrum check: the reionization bumps (l < 20) and the peaks.
-TT_ELLS = np.asarray([2, 3, 4, 6, 8, 10, 15, 20, 30, 40, 80, 120, 180, 240, 320, 500, 800, 1200], dtype=np.int64)
+TT_ELLS = np.asarray(
+    [2, 3, 4, 6, 8, 10, 15, 20, 30, 40, 80, 120, 180, 240, 320, 500, 800, 1200],
+    dtype=np.int64,
+)
 
 
 def _cuda_available() -> bool:
@@ -77,7 +80,9 @@ def test_reionization_optical_depth():
     """exp(-kappa) today is exp(-tau_reio), and the bump sits where CLASS puts z_reio."""
 
     tau_grid, values, tau0, g, emk = _tables(TAU_REIO)
-    late = tau_grid > 0.3 * tau0  # z < ~30: the reionization step; the recombination tail adds ~1e-4
+    late = (
+        tau_grid > 0.3 * tau0
+    )  # z < ~30: the reionization step; the recombination tail adds ~1e-4
     tau_late = np.trapezoid(values[1][late], tau_grid[late])
     assert abs(tau_late - TAU_REIO) < 1.0e-3, tau_late
 
@@ -112,16 +117,22 @@ def test_power_spectra_with_reionization_match_class():
 
     jax.config.update("jax_enable_x64", True)
     cosmologies = [
-        {**c, "tau_reio": t} for c, t in zip(_perturbed_cosmologies(4), np.linspace(0.04, 0.07, 4))
+        {**c, "tau_reio": t}
+        for c, t in zip(_perturbed_cosmologies(4), np.linspace(0.04, 0.07, 4))
     ]
     k_values = cmb_k_grid(cosmologies[0], n=128, mode="ode", k_min=1.0e-5, k_max=0.5)
-    grids = cmb_grids(cosmologies[0], k_values=k_values, ells=TT_ELLS, n_save=1000, n_k_fine=1500)
+    grids = cmb_grids(
+        cosmologies[0], k_values=k_values, ells=TT_ELLS, n_save=1000, n_k_fine=1500
+    )
     _, _, dl = compute_cl_power_spectrum_batch(cosmologies, grids=grids)
     dl = jax.block_until_ready(dl)
 
     dl_class = []
     for cosmology in cosmologies:
-        c = _class(cosmology, {"output": "tCl,pCl", "modes": "s", "lensing": "no", "l_max_scalars": 2500})
+        c = _class(
+            cosmology,
+            {"output": "tCl,pCl", "modes": "s", "lensing": "no", "l_max_scalars": 2500},
+        )
         try:
             raw = c.raw_cl(int(TT_ELLS.max()) + 1)
         finally:
@@ -129,7 +140,12 @@ def test_power_spectra_with_reionization_match_class():
             c.empty()
         ell = raw["ell"]
         factor = ell * (ell + 1.0) * (cosmology["Tcmb"] * 1.0e6) ** 2 / (2.0 * np.pi)
-        dl_class.append({name: (raw[name] * factor)[TT_ELLS] for name in ("tt", "te", "ee")})
+        dl_class.append(
+            {name: (raw[name] * factor)[TT_ELLS] for name in ("tt", "te", "ee")}
+        )
     _assert_matches_class(
-        dl, dl_class, TT_ELLS, who=lambda i: f"cosmology {i} (tau_reio {cosmologies[i]['tau_reio']:.3f})"
+        dl,
+        dl_class,
+        TT_ELLS,
+        who=lambda i: f"cosmology {i} (tau_reio {cosmologies[i]['tau_reio']:.3f})",
     )

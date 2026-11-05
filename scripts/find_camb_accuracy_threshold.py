@@ -20,17 +20,19 @@ import argparse
 import os
 import sys
 
+
 # Parse threads argument early, before importing CAMB
 # OMP_NUM_THREADS must be set before CAMB is imported
 def _get_threads_from_args():
     for i, arg in enumerate(sys.argv):
-        if arg == '--threads' and i + 1 < len(sys.argv):
+        if arg == "--threads" and i + 1 < len(sys.argv):
             return int(sys.argv[i + 1])
-        if arg.startswith('--threads='):
-            return int(arg.split('=')[1])
+        if arg.startswith("--threads="):
+            return int(arg.split("=")[1])
     return 1  # default
 
-os.environ['OMP_NUM_THREADS'] = str(_get_threads_from_args())
+
+os.environ["OMP_NUM_THREADS"] = str(_get_threads_from_args())
 
 import time
 import numpy as np
@@ -40,27 +42,27 @@ import camb
 
 # Cosmology parameters (matching DISCO-Notebook)
 COSMOLOGY = {
-    'Omegam': 0.3099,
-    'Omegab': 0.0488911,
-    'H0': 67.742,
-    'n_s': 0.96822,
-    'A_s': 2.1064e-09,
-    'mnu': 0.06,
-    'Tcmb': 2.7255,
-    'YHe': 0.248,
-    'Neff': 2.046,
-    'Nmnu': 1,
-    'w_DE_0': -0.99,
-    'w_DE_a': 0.0,
-    'Omegak': 0.0,
-    'k_p': 0.05,
+    "Omegam": 0.3099,
+    "Omegab": 0.0488911,
+    "H0": 67.742,
+    "n_s": 0.96822,
+    "A_s": 2.1064e-09,
+    "mnu": 0.06,
+    "Tcmb": 2.7255,
+    "YHe": 0.248,
+    "Neff": 2.046,
+    "Nmnu": 1,
+    "w_DE_0": -0.99,
+    "w_DE_a": 0.0,
+    "Omegak": 0.0,
+    "k_p": 0.05,
 }
 
 
 def load_reference_data(csv_path="tests/resources/camb_benchmarks/DISCO-Notebook.csv"):
     """Load reference CAMB benchmark data."""
     df = pd.read_csv(csv_path)
-    return df['ell'].values, df['D_ell'].values
+    return df["ell"].values, df["D_ell"].values
 
 
 def create_camb_params(params, ellmax, accuracy_boost, lsample_boost=50.0):
@@ -85,28 +87,28 @@ def create_camb_params(params, ellmax, accuracy_boost, lsample_boost=50.0):
     cpars = camb.CAMBparams()
 
     # Cosmological parameters
-    h = params['H0'] / 100.0
+    h = params["H0"] / 100.0
     cpars.set_cosmology(
-        H0=params['H0'],
-        ombh2=params['Omegab'] * h**2,
-        omch2=(params['Omegam'] - params['Omegab']) * h**2,
-        omk=params['Omegak'],
+        H0=params["H0"],
+        ombh2=params["Omegab"] * h**2,
+        omch2=(params["Omegam"] - params["Omegab"]) * h**2,
+        omk=params["Omegak"],
         tau=0.0,
-        mnu=params['mnu'],
-        num_massive_neutrinos=params['Nmnu'],
-        nnu=params['Neff'] + params['Nmnu'],
-        YHe=params['YHe'],
-        TCMB=params['Tcmb'],
+        mnu=params["mnu"],
+        num_massive_neutrinos=params["Nmnu"],
+        nnu=params["Neff"] + params["Nmnu"],
+        YHe=params["YHe"],
+        TCMB=params["Tcmb"],
     )
 
     # Dark energy
-    cpars.DarkEnergy.w = params['w_DE_0']
-    cpars.DarkEnergy.wa = params['w_DE_a']
+    cpars.DarkEnergy.w = params["w_DE_0"]
+    cpars.DarkEnergy.wa = params["w_DE_a"]
 
     # Initial power spectrum
-    cpars.InitPower.As = params['A_s']
-    cpars.InitPower.ns = params['n_s']
-    cpars.InitPower.pivot_scalar = params['k_p']
+    cpars.InitPower.As = params["A_s"]
+    cpars.InitPower.ns = params["n_s"]
+    cpars.InitPower.pivot_scalar = params["k_p"]
 
     # Set for lmax and accuracy
     cpars.set_for_lmax(ellmax)
@@ -125,12 +127,12 @@ def run_camb(cpars):
     """
     t0 = time.perf_counter()
     results = camb.get_results(cpars)
-    powers = results.get_cmb_power_spectra(cpars, CMB_unit='muK')
+    powers = results.get_cmb_power_spectra(cpars, CMB_unit="muK")
     elapsed = time.perf_counter() - t0
 
     # Extract TT spectrum (D_ell in μK²)
-    ell_full = np.arange(powers['unlensed_total'].shape[0])
-    D_ell_full = powers['unlensed_total'][:, 0]
+    ell_full = np.arange(powers["unlensed_total"].shape[0])
+    D_ell_full = powers["unlensed_total"][:, 0]
 
     # Only keep ell >= 2
     mask = ell_full >= 2
@@ -153,27 +155,34 @@ def compute_mean_abs_relative_error(D_ell_test, D_ell_ref, ell_test, ell_ref):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Find CAMB AccuracyBoost threshold for target error'
+        description="Find CAMB AccuracyBoost threshold for target error"
     )
     parser.add_argument(
-        '--start', type=float, default=0.5,
-        help='Starting AccuracyBoost value (default: 0.5, lower values may crash especially with multiple threads)'
+        "--start",
+        type=float,
+        default=0.5,
+        help="Starting AccuracyBoost value (default: 0.5, lower values may crash especially with multiple threads)",
     )
     parser.add_argument(
-        '--step', type=float, default=0.1,
-        help='AccuracyBoost increment step (default: 0.1)'
+        "--step",
+        type=float,
+        default=0.1,
+        help="AccuracyBoost increment step (default: 0.1)",
     )
     parser.add_argument(
-        '--max', type=float, default=10.0,
-        help='Maximum AccuracyBoost to try (default: 10.0)'
+        "--max",
+        type=float,
+        default=10.0,
+        help="Maximum AccuracyBoost to try (default: 10.0)",
     )
     parser.add_argument(
-        '--target', type=float, default=0.7,
-        help='Target mean absolute relative error in percent (default: 0.7)'
+        "--target",
+        type=float,
+        default=0.7,
+        help="Target mean absolute relative error in percent (default: 0.7)",
     )
     parser.add_argument(
-        '--threads', type=int, default=1,
-        help='Number of OMP threads (default: 1)'
+        "--threads", type=int, default=1, help="Number of OMP threads (default: 1)"
     )
     args = parser.parse_args()
 
@@ -181,7 +190,9 @@ def main():
     print("=" * 80)
     print("CAMB ACCURACY THRESHOLD FINDER")
     print("=" * 80)
-    print(f"\nFinding AccuracyBoost value that achieves ≤{args.target}% mean absolute relative error")
+    print(
+        f"\nFinding AccuracyBoost value that achieves ≤{args.target}% mean absolute relative error"
+    )
     print("Reference: tests/resources/camb_benchmarks/DISCO-Notebook.csv")
     print("Settings: lSampleBoost=50 (computes all ells)")
     print(f"Starting from AccuracyBoost={args.start}, step={args.step}")
@@ -196,7 +207,9 @@ def main():
 
     # Table header
     print("-" * 80)
-    print(f"{'AccuracyBoost':>14} | {'Time (s)':>10} | {'Mean Abs Rel Error':>20} | {'Status':>10}")
+    print(
+        f"{'AccuracyBoost':>14} | {'Time (s)':>10} | {'Mean Abs Rel Error':>20} | {'Status':>10}"
+    )
     print("-" * 80)
 
     results = []
@@ -210,7 +223,7 @@ def main():
                 COSMOLOGY,
                 ellmax=ellmax,
                 accuracy_boost=accuracy_boost,
-                lsample_boost=50.0
+                lsample_boost=50.0,
             )
 
             # Run CAMB
@@ -227,15 +240,19 @@ def main():
                 status = ""
 
             # Print row
-            print(f"{accuracy_boost:>14.1f} | {elapsed:>10.3f} | {error_pct:>19.4f}% | {status:>10}")
+            print(
+                f"{accuracy_boost:>14.1f} | {elapsed:>10.3f} | {error_pct:>19.4f}% | {status:>10}"
+            )
 
             # Store result
-            results.append({
-                'accuracy_boost': accuracy_boost,
-                'time_s': elapsed,
-                'mean_abs_rel_error': error,
-                'mean_abs_rel_error_pct': error_pct,
-            })
+            results.append(
+                {
+                    "accuracy_boost": accuracy_boost,
+                    "time_s": elapsed,
+                    "mean_abs_rel_error": error,
+                    "mean_abs_rel_error_pct": error_pct,
+                }
+            )
 
             # Check if target reached
             if error <= target_error:
@@ -247,13 +264,15 @@ def main():
 
         except Exception as e:
             print(f"{accuracy_boost:>14.1f} | {'ERROR':>10} | {str(e)[:20]:>20} |")
-            results.append({
-                'accuracy_boost': accuracy_boost,
-                'time_s': float('nan'),
-                'mean_abs_rel_error': float('nan'),
-                'mean_abs_rel_error_pct': float('nan'),
-                'error': str(e),
-            })
+            results.append(
+                {
+                    "accuracy_boost": accuracy_boost,
+                    "time_s": float("nan"),
+                    "mean_abs_rel_error": float("nan"),
+                    "mean_abs_rel_error_pct": float("nan"),
+                    "error": str(e),
+                }
+            )
 
         # Increment accuracy boost
         accuracy_boost += args.step
@@ -275,5 +294,5 @@ def main():
     return results
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

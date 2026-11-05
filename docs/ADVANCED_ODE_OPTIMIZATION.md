@@ -132,22 +132,21 @@ def solve_ionization_collocation(a_grid, y0, param):
 
         # Midpoint rule for interior points
         for i in range(1, n_points):
-            da = a_grid[i] - a_grid[i-1]
-            a_mid = (a_grid[i] + a_grid[i-1]) / 2
-            y_mid = (Y[i] + Y[i-1]) / 2
+            da = a_grid[i] - a_grid[i - 1]
+            a_mid = (a_grid[i] + a_grid[i - 1]) / 2
+            y_mid = (Y[i] + Y[i - 1]) / 2
 
             # Residual: (Y[i] - Y[i-1])/da - f(a_mid, y_mid) = 0
             f_mid = ionization(a_mid, y_mid, (param,))
-            R = R.at[i].set((Y[i] - Y[i-1]) / da - f_mid)
+            R = R.at[i].set((Y[i] - Y[i - 1]) / da - f_mid)
 
         return R.flatten()
 
     # Solve using Newton's method with JAX autodiff for Jacobian
     from jax.scipy.optimize import minimize
+
     solution = minimize(
-        lambda y: jnp.sum(residual(y)**2),
-        Y_guess.flatten(),
-        method='BFGS'
+        lambda y: jnp.sum(residual(y) ** 2), Y_guess.flatten(), method="BFGS"
     )
 
     return solution.x.reshape(n_points, n_vars)
