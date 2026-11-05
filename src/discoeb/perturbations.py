@@ -353,6 +353,13 @@ N_THERMO_GRID = 2048
 N_BACKGROUND_GRID = 4096
 THERMO_BATCH_CHUNK = 128
 """Cosmologies per lane-padded RECFAST launch in :func:`thermal_history_batch`."""
+MATTER_THERMO_WEIGHT = 0.1
+"""Thermal error weight (:data:`discoeb.recombination.THERMO_ERROR_WEIGHT`) of the
+matter power spectrum solves: a recombination history ten times looser than the
+hierarchy's tolerance moves ``P(k)`` by 6e-4 at most against the weight of 1
+the CMB solves keep for the visibility, and takes 150 driver steps a
+trajectory instead of 225 (0.47 s against 0.62 s for 128 cosmologies x 128
+modes on an RTX 4070 SUPER)."""
 PERTURB_RTOL = 1.0e-4
 PERTURB_ATOL = 1.0e-4
 PERTURB_FIRST_STEP = 1.0e-2
@@ -841,12 +848,16 @@ def solve_matter_power_spectrum_batch(
     atol: float = PERTURB_ATOL,
     first_step: float = PERTURB_FIRST_STEP,
     max_steps: int = PERTURB_MAX_STEPS,
+    thermo_weight: float = MATTER_THERMO_WEIGHT,
 ) -> np.ndarray:
     """Return ``P(k)`` in Mpc^3, shape ``(n_cosmologies, n_k)``, for a batch in one launch."""
 
     prepared = _prepare_solve(tuple(cosmologies))
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values)
-    sol = _launch(prepared, params, y0, t_span, rtol=rtol, atol=atol, first_step=first_step, max_steps=max_steps)
+    sol = _launch(
+        prepared, params, y0, t_span, rtol=rtol, atol=atol, first_step=first_step, max_steps=max_steps,
+        thermo_weight=thermo_weight,
+    )
     y_final = np.asarray(sol)[:, -1, :].reshape(len(k_sorted), len(prepared.cosmologies), prepared.model.nvar)
     return _power_spectrum_from_final(y_final, k_sorted, prepared.cosmologies, k_values)
 
@@ -961,7 +972,7 @@ def matter_power_spectrum_jax(
     first_step: float = PERTURB_FIRST_STEP,
     max_steps: int = PERTURB_MAX_STEPS,
     sens_error_control: bool = False,
-    thermo_weight: float = THERMO_ERROR_WEIGHT,
+    thermo_weight: float = MATTER_THERMO_WEIGHT,
 ):
     """``P(k)`` as a JAX array, differentiable in the densities and the thermal inputs.
 

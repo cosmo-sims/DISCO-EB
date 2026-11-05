@@ -66,9 +66,9 @@ with those functions good to 1e-7 instead of 1e-16, on a card whose fp64
 transcendentals run at 1/64 rate. Only where the argument range allows it:
 ``(CR T)^{3/2}`` reaches 1e42 and the Boltzmann factor ``e^{680}``, so those
 stay double; the ``e^{-E/T}`` factors stay inside fp32's range wherever the
-term they weight matters. This is what puts the fused solve ahead of the
-table pipeline at 128 cosmologies x 128 modes (0.53 s against 0.61 s) at the
-same P(k) and thermal accuracy."""
+term they weight matters. The scale factor ``exp(ln a)`` and the
+powers of the reionization step are single precision too: the hierarchy reads
+them at every evaluation, and 1e-7 of either is far inside its tolerance."""
 
 if FP32_MATH:
 
@@ -305,7 +305,8 @@ class Recombination(Component):
     # -- what the hierarchy reads -----------------------------------------------------
 
     def a(self, lna):
-        return math.exp(lna)
+        """``exp(ln a)`` in single precision (:data:`FP32_MATH`): 6e-8 of ``a`` is far inside the solve's tolerance."""
+        return exp_(lna)
 
     def rhonu(self, a, amnu):
         """``rho_nu / rho_nu(massless)`` of one flavour, 1 when massless."""
@@ -335,9 +336,9 @@ class Recombination(Component):
     def xe_reio(self, inv_a, xe_rec, fHe, z_re):
         """CAMB's reionization step, zero when ``z_re = 0``."""
         z = inv_a - 1.0
-        y = math.sqrt(1.0 + z) * (1.0 + z)
-        y_re = math.sqrt(1.0 + z_re) * (1.0 + z_re)
-        delta_y = 0.75 * math.sqrt(1.0 + z_re)
+        y = pow_(1.0 + z, 1.5)
+        y_re = pow_(1.0 + z_re, 1.5)
+        delta_y = 0.75 * pow_(1.0 + z_re, 0.5)
         step = logistic((y_re - y) / delta_y)
         he3 = logistic((3.5 - z) / 0.5)
         on = min(max(z_re, 0.0), 1.0)
