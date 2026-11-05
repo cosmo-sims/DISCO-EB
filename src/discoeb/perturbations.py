@@ -1305,7 +1305,7 @@ def _launch(
     ``save_hook`` with its ``hook_size`` and ``save_history``).
     """
 
-    from modax.rodas5P import solve as rodas5P_solve
+    from ._modax import solve_rodas5p as rodas5P_solve
 
     prepared.bind()
     return rodas5P_solve(
@@ -1785,7 +1785,7 @@ def _history_jax(
     import jax
     import jax.numpy as jnp
 
-    from modax.rodas5P import solve as rodas5P_solve
+    from ._modax import solve_rodas5p as rodas5P_solve
 
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_save)
     prepared.bind()

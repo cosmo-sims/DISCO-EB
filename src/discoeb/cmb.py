@@ -1071,7 +1071,7 @@ def _solve_with_hook(prepared, k_values, tau_save, hook, hook_size, solve_kwargs
     :func:`polarization_error_weights`.
     """
 
-    from modax.rodas5P import solve as rodas5P_solve
+    from ._modax import solve_rodas5p as rodas5P_solve
 
     from .perturbations import _pack_batch
 

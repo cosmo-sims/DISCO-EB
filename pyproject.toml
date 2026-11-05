@@ -58,12 +58,14 @@ constraint-dependencies = [
 override-dependencies = ["numba>=0.61", "llvmlite>=0.44"]
 
 [tool.uv.sources]
-modax-solvers = { path = "../modax", editable = true }
-# The checkout, not PyPI: the kernels need commit eaf056d (the O3 prepasses that
-# fold numba-cuda-mlir's bounds checks before Enzyme sees them), which no
-# release carries. An editable install also keeps `uv sync` from writing a
-# release's files over the checkout, as it did through a bare symlink.
-numba-enzyme-cuda = { path = "../numba-enzyme", editable = true }
+# The sparse solver must put undeclared Jacobian diagonals in their own LU
+# slots; the PyPI 0.0.4 release otherwise leaves perturbations at their initial
+# state. Pin the fix without requiring a sibling modax checkout.
+modax-solvers = { git = "https://github.com/lawrenceberry/modax", rev = "9f54d12a5d33eb721f7c0afc281abce76ad6f8ca" }
+# The kernels need the O3 prepasses that fold numba-cuda-mlir's bounds checks
+# before Enzyme sees them. No PyPI release carries this fix yet; pin the source
+# so a fresh checkout does not require a sibling numba-enzyme repository.
+numba-enzyme-cuda = { git = "https://github.com/lawrenceberry/numba-enzyme", rev = "eaf056de543c7f9748c78ac5c22f91bd1913cb7c" }
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-benchmark", "pytest-regressions", "camb>=1.6.0", "classy>=3.3.4.0", "ipykernel>=6.31.0", "matplotlib>=3.9.4", "pandas"]
