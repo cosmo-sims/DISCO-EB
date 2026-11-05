@@ -25,9 +25,10 @@ and ``LMAX_POL`` on :class:`Photons`, ``LMAX_NR`` on
 environment or by a constructor argument, and read by the equations as
 ``self.NQMAX`` like any attribute. Each state also carries its
 adiabatic initial condition (CAMB's ``initial()`` series at ``k tau << 1``,
-with the growing-mode quantities of :class:`AdiabaticMode`) and its place in
-the Jacobian's sparsity pattern (``tail_from``), so the layout, the initial
-state and the sparse solver are all read off the components. The photon
+with the growing-mode quantities of :class:`AdiabaticMode`), and the
+Jacobian's sparsity pattern is traced through the equations themselves
+(:meth:`Model.sparsity`), so the layout, the initial state and the sparse
+solver are all read off the components. The photon
 monopole, dipole and quadrupole are ``theta[0]``, ``theta[1]``, ``theta[2]``;
 the scalar names ``clxg``, ``qg``, ``pig`` and ``E2`` are published for the
 equations that read them.
@@ -241,8 +242,7 @@ class Photons(Species):
     hierarchy couples upwards with ``(l+3)(l-1)/(l+1)`` in place of ``l+1``
     and closes with ``k L E_{L-1} / (2L+1) - (L+3) E_L / tau``. Both
     hierarchies stream freely above their lowest three (``theta``) or one
-    (``e``) multipoles, which is their sparsity role; the E-modes start at
-    zero.
+    (``e``) multipoles; the E-modes start at zero.
     """
 
     LMAX_G = Setting(15)
@@ -253,8 +253,8 @@ class Photons(Species):
         output[0] = x * x / 3.0 * (1.0 - omtau / 5.0)
         output[1] = x**3 / 27.0 * (1.0 - omtau / 5.0)
 
-    theta = State(lambda self: self.LMAX_G + 1, tail_from=3, initial=_theta_initial)
-    e = State(lambda self: self.LMAX_POL - 1, tail_from=1)
+    theta = State(lambda self: self.LMAX_G + 1, initial=_theta_initial)
+    e = State(lambda self: self.LMAX_POL - 1)
 
     def __init__(self, **settings):
         super().__init__(**settings)
@@ -355,7 +355,7 @@ class MasslessNeutrinos(Species):
         output[2] = -4.0 / 3.0 * x * x / Rp15 * (1.0 + omtau / 4.0 * (4.0 * Rv - 5.0) / (2.0 * Rv + 15.0))
         output[3] = -4.0 / 21.0 / Rp15 * x**3
 
-    n = State(lambda self: self.LMAX_NR + 1, tail_from=3, initial=_n_initial)
+    n = State(lambda self: self.LMAX_NR + 1, initial=_n_initial)
 
     def __init__(self, **settings):
         super().__init__(**settings)
@@ -418,7 +418,7 @@ class MassiveNeutrinos(Species):
             for l in range(4):
                 output[i, l] = -0.25 * n[l] * self.dlnf0[i]
 
-    psi = State(lambda self: (self.NQMAX, self.LMAX_NU + 1), tail_from=3, initial=_psi_initial)
+    psi = State(lambda self: (self.NQMAX, self.LMAX_NU + 1), initial=_psi_initial)
 
     def __init__(self, **settings):
         super().__init__(**settings)
@@ -587,16 +587,25 @@ def perturbation_sparsity(layout) -> np.ndarray:
     ``n_colours + 1`` Enzyme sweeps rather than ``nvar + 1``; and it hands the
     pattern to ``modax._sparse_direct``, which orders it, factorises it
     symbolically and compiles a sparse LU and a pair of sparse triangular
-    solves for that exact structure. Neither needs to know any physics -- only
-    the states do, through ``State(..., tail_from=l)``: everything below ``l``
-    is densely coupled core (the metric, the fluids, the lowest multipoles,
-    reaching each other through the Einstein constraints), and from ``l`` on
-    each hierarchy is a tridiagonal free-streaming tail meeting the core only
-    through the multipole it streams out of. Declaring the core dense makes
-    this a superset of the true Jacobian, which is what a colouring needs: a
-    subset would silently corrupt the entries where two columns of a colour
-    group overlap. The pattern need not include fill-in; on this structure
-    minimum degree peels each tail from its truncated end and produces none.
+    solves for that exact structure. Nothing declares the pattern: it is
+    traced through the equations by :meth:`Model.sparsity`, which resolves the
+    providers on values that carry the state elements they depend on, so the
+    tridiagonal free-streaming tails of :func:`stream` and the Einstein
+    constraints tying the metric, the fluids and the lowest multipoles to each
+    other come out of the code that writes them. The pattern is exact, so it
+    is the superset a colouring needs (a subset would silently corrupt the
+    entries where two columns of a colour group overlap) and no more: at the
+    default layout 165 entries, 11 colours and 198 slots of ``L + U`` after
+    AMD's fill-in, against 238, 12 and 238 for the dense core the states used
+    to declare (``tests/test_eb_sparsity.py``).
+
+    The diagonal of the matrix the kernel factorises, ``I/(h gamma) - J``, is
+    modax's business: its packed layout keeps a slot for every diagonal, and
+    since 2026-11-01 resolves ``slot(i, i)`` through that table whether or
+    not ``J`` has an entry there (an undamped free-streaming multipole has
+    none). Before that fix the lookup went through the ``(row, colour)`` grid
+    and, where another column of the same colour held the row's cell, put the
+    ``1/(h gamma)`` on that entry instead; this pattern needs the fixed modax.
     """
 
     return perturbation_model(layout).sparsity()

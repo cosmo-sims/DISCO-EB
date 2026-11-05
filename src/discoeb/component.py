@@ -20,7 +20,7 @@ depend on**::
 
     class MasslessNeutrinos(Species):
         LMAX_NR = Setting(15)                               # DISCO_LMAX_NR overrides
-        n = State(lambda self: self.LMAX_NR + 1, tail_from=3)   # N_0 .. N_LMAX_NR
+        n = State(lambda self: self.LMAX_NR + 1)   # N_0 .. N_LMAX_NR
 
         def d_n(self, k, z, sigma, n, inv_tau, output):
             output[0] = -k * ((4.0 / 3.0) * z + n[1])
@@ -49,21 +49,26 @@ a keyword argument (``Photons(LMAX_G=11)``). A provider reads it as
 shape may be a function of the component instance when it depends on its
 settings. The flat state vector holds the components' states in declaration
 order, a vector ``theta`` as the elements ``theta_0, theta_1, ...``
-(``psi_0_0, psi_0_1, ...``). A state carries two more things about itself:
+(``psi_0_0, psi_0_1, ...``). A state also carries its *initial condition*,
+``State(..., initial=fn)``, a function (a lambda for a scalar, a
+``_``-prefixed function defined just above for a vector) whose parameters are
+injected like a provider's (:meth:`Model.evaluate` is the same resolution for
+any quantity, on floats or JAX arrays), from the quantities
+:meth:`Model.initial_state` is given (``k``, ``tau``, the background
+densities), from other states' initial values, and from providers that can be
+evaluated on the host (``clxg`` for ``theta[0]``). A scalar's returns the
+value; a vector's takes ``output``, zero-filled, and writes into it. A state
+without one starts at zero.
 
-* its *initial condition*, ``State(..., initial=fn)``, a function (a lambda
-  for a scalar, a ``_``-prefixed function defined just above for a vector)
-  whose parameters are injected like a provider's (:meth:`Model.evaluate` is
-  the same resolution for any quantity, on floats or JAX arrays), from the quantities
-  :meth:`Model.initial_state` is given (``k``, ``tau``, the background
-  densities), from other states' initial values, and from providers that can
-  be evaluated on the host (``clxg`` for ``theta[0]``). A scalar's returns the
-  value; a vector's takes ``output``, zero-filled, and writes into it. A state
-  without one starts at zero.
-* its *sparsity role*, ``tail_from=l``: elements from ``l`` on form a
-  free-streaming tail, tridiagonal in the Jacobian and coupled to the core
-  only through element ``l - 1``; everything else is densely coupled core.
-  :meth:`Model.sparsity` is the Jacobian pattern this implies.
+**Sparsity.** Nothing declares which state a derivative depends on: the
+Jacobian's sparsity pattern is read off the providers. :meth:`Model.sparsity`
+resolves the same dependency graph as a build, but on values that carry the
+set of state elements they depend on instead of numbers (a state element its
+own index, the time and the parameters nothing, every operation the union of
+its operands'), so ``output[l] = kv * (l * x[l - 1] - (l + 1) * x[l + 1])``
+is traced as the tridiagonal band it is, with no one saying so. The pattern
+is exact; a data-dependent branch, the one construct that could hide a
+dependency, is refused.
 
 **Providers.** Every method of a component is a provider, named after the
 quantity it provides, and so is a function stored on the instance in
@@ -162,16 +167,21 @@ cuda = _Ambient("cuda")
 float64 = _Ambient("float64")
 """``numba_cuda_mlir.types.float64`` inside a compiled provider."""
 
+float32 = _Ambient("float32")
+"""``numba_cuda_mlir.types.float32`` inside a compiled provider: ``float32(x)`` rounds
+``x`` to single precision, so that a transcendental of it runs at single rate."""
+
 
 def _device_names():
     from numba_cuda_mlir import cuda as cuda_module, types as cuda_types
 
-    return {"cuda": cuda_module, "float64": cuda_types.float64}
+    return {"cuda": cuda_module, "float64": cuda_types.float64, "float32": cuda_types.float32}
 
 
 _HOST_NAMES = {
     "cuda": types.SimpleNamespace(local=types.SimpleNamespace(array=lambda shape, dtype: np.zeros(shape))),
     "float64": np.float64,
+    "float32": np.float32,
 }
 """What the device names mean when a provider runs as plain Python on the host."""
 
@@ -250,31 +260,12 @@ class State:
 
     ``shape`` is ``()`` for a scalar, ``n`` for a vector, ``(n, m)`` for a
     matrix, or a function of the component instance returning one of those.
-    ``tail_from`` marks the elements from that index on (of every row, for a
-    matrix) as a free-streaming tail of the Jacobian's sparsity pattern.
-    ``driver`` marks a state that evolves on its own and drives the rest: its
-    rows of the Jacobian hold only the driver states' columns, and its columns
-    may appear in every row (the expansion and recombination history of
-    :mod:`discoeb.fused`, which the whole hierarchy reads and which reads
-    nothing of the hierarchy). ``initial`` is the initial condition; see the
-    module docstring.
+    ``initial`` is the initial condition; see the module docstring.
     """
 
-    def __init__(
-        self,
-        shape=(),
-        tail_from: int | None = None,
-        initial: Callable | None = None,
-        driver: bool = False,
-    ):
+    def __init__(self, shape=(), initial: Callable | None = None):
         self.shape = shape
-        self.tail_from = tail_from
         self.initial_fn = initial
-        self.driver = bool(driver)
-        if tail_from is not None and tail_from < 1:
-            raise ValueError("tail_from must leave at least one core element for the tail to couple to")
-        if driver and tail_from is not None:
-            raise ValueError("a driver state is densely coupled to itself; it has no tail")
         if initial is not None and not callable(initial):
             raise TypeError("initial must be a function of the quantities the initial condition reads")
 
@@ -394,20 +385,6 @@ class _State:
         self.shape = declared.resolve(component)
         self.elements = _elements(name, self.shape)
         self.size = len(self.elements)
-        if declared.tail_from is not None:
-            width = self.shape[-1] if self.shape else 0
-            if declared.tail_from >= width:
-                raise ValueError(
-                    f"{name!r}: tail_from={declared.tail_from} needs rows longer than that; got {self.shape}"
-                )
-
-    def rows(self) -> list[list[int]]:
-        """The flat indices of each row (one row for a scalar or a vector)."""
-
-        if len(self.shape) < 2:
-            return [list(range(self.offset, self.offset + self.size))]
-        n, m = self.shape
-        return [list(range(self.offset + i * m, self.offset + (i + 1) * m)) for i in range(n)]
 
 
 # --- providers ------------------------------------------------------------------------
@@ -576,6 +553,154 @@ class _HostValues:
         return result
 
 
+# --- sparsity -------------------------------------------------------------------------
+
+
+class _Traced:
+    """A value standing in for a number while the providers are traced for the Jacobian pattern.
+
+    It carries ``on``, the set of state elements (flat indices) it depends on:
+    a state element carries its own index, an input nothing, and every
+    operation on traced values gives one carrying the union of its operands',
+    so a derivative's value ends up carrying exactly the columns of its row.
+    Indexing is a no-op (a state-free provider is not run, and the one value
+    standing in for its result may be indexed as the array it would have
+    been). A branch on a traced value and a conversion to a number are the
+    only ways a dependency could be lost, so both raise -- even on an input,
+    since the branches taken might read different states -- and the provider
+    is then taken to read every input for everything it writes
+    (:meth:`_TracedValues._call`).
+    """
+
+    __slots__ = ("on",)
+
+    def __init__(self, on: frozenset[int] = frozenset()):
+        self.on = on
+
+    def _join(self, other):
+        if isinstance(other, _Traced):
+            return _Traced(self.on | other.on)
+        if isinstance(other, np.ndarray):
+            return NotImplemented  # numpy applies the operation element by element
+        return self  # a number, a bool: nothing to add
+
+    def _same(self, *_):
+        return self
+
+    __add__ = __radd__ = __sub__ = __rsub__ = __mul__ = __rmul__ = _join
+    __truediv__ = __rtruediv__ = __floordiv__ = __rfloordiv__ = __mod__ = __rmod__ = _join
+    __pow__ = __rpow__ = _join
+    __lt__ = __le__ = __gt__ = __ge__ = __eq__ = __ne__ = _join
+    __neg__ = __pos__ = __abs__ = __getitem__ = __round__ = _same
+    __hash__ = object.__hash__
+
+    def __bool__(self):
+        raise TypeError(
+            "a provider branches on a traced value (an if, a comparison, max or min), "
+            "which the sparsity tracing cannot follow: write it branch-free, or compute "
+            "the branching quantity in a provider of inputs alone, which is not traced"
+        )
+
+    def __float__(self):
+        raise TypeError("a provider converts a state-dependent value to a number; it must stay an expression")
+
+    __int__ = __index__ = __complex__ = __float__
+
+    def __repr__(self):
+        return f"_Traced({sorted(self.on)})"
+
+
+class _TracingMath:
+    """``math`` for traced values: every function returns the union of its arguments' dependencies."""
+
+    def __getattr__(self, name):
+        attr = getattr(math, name)
+        if not callable(attr):
+            return attr  # pi, e, inf, ...
+
+        def traced(*args):
+            return _Traced(frozenset().union(*(a.on for a in args if isinstance(a, _Traced))))
+
+        return traced
+
+
+def _traced_array(shape, first: int | None = None) -> np.ndarray:
+    """An object array of traced values: state-free, or the elements ``first, first + 1, ...``."""
+
+    arr = np.empty(shape, dtype=object)
+    for n, index in enumerate(np.ndindex(*arr.shape)):
+        arr[index] = _Traced() if first is None else _Traced(frozenset({first + n}))
+    return arr
+
+
+def _depends(value) -> frozenset[int]:
+    """The state elements a traced value, or an array of them, depends on."""
+
+    if isinstance(value, _Traced):
+        return value.on
+    if isinstance(value, np.ndarray) and value.dtype == object:
+        return frozenset().union(*(v.on for v in value.flat if isinstance(v, _Traced)))
+    return frozenset()
+
+
+def _reads_state(value) -> bool:
+    return bool(_depends(value))
+
+
+_TRACING_NAMES = {
+    "cuda": types.SimpleNamespace(local=types.SimpleNamespace(array=lambda shape, dtype: _traced_array(shape))),
+    "float64": lambda x: x,  # a cast carries its operand's dependencies
+    "float32": lambda x: x,
+    "math": _TracingMath(),
+}
+
+
+class _TracedValues(_HostValues):
+    """The pool of :meth:`Model.sparsity`: every quantity as the state elements it depends on.
+
+    The states are the base values, each element carrying its own index; a
+    name nothing provides (the time, a parameter, a thermodynamic table) is an
+    input and carries nothing; a provider is resolved like any other. One
+    thing differs from a numeric evaluation: a provider none of whose inputs
+    depends on the state is not called, since its result cannot either -- so
+    a table lookup, a ``max`` against a floor or an ``int()`` of a tag never
+    sees a traced value. A provider that does branch on the state (RECFAST's
+    rates switch between regimes) depends on all of its inputs.
+    """
+
+    def __init__(self, model):
+        base = {}
+        for s in model.states.values():
+            base[s.name] = _Traced(frozenset({s.offset})) if not s.shape else _traced_array(s.shape, s.offset)
+        super().__init__(model, base, _TRACING_NAMES)
+
+    def __getitem__(self, name):
+        if (
+            name not in self.values
+            and name not in self.model.states
+            and name not in self.model.sums
+            and name not in self.providers
+        ):
+            self.values[name] = _Traced()  # an input
+        return super().__getitem__(name)
+
+    def _call(self, fn, component, takes_self, args):
+        if not any(_reads_state(a) for a in args):
+            return _Traced()
+        try:
+            return super()._call(fn, component, takes_self, args)
+        except TypeError:
+            # The provider branches on a traced value (an if, max or min, a
+            # conversion to a number), so the trace cannot tell which inputs
+            # each result reads: everything it writes depends on everything
+            # it reads. A superset of the pattern, never a miss.
+            on = frozenset().union(*(_depends(a) for a in args))
+            for a in args:
+                if isinstance(a, np.ndarray) and a.dtype == object and not _reads_state(a):
+                    a[...] = _Traced(on)  # the output buffer it fills
+            return _Traced(on)
+
+
 class Model:
     """Components, their state in declaration order, and what is built from them."""
 
@@ -632,60 +757,38 @@ class Model:
             self._host_provider_table = (providers, contributions)
         return self._host_provider_table
 
-    # -- what the components declare about their state ------------------------------
-
-    def blocks(self) -> tuple[list[int], list[tuple[int, list[int]]]]:
-        """``(core, tails)`` of the flat state: the core indices, and each tail with its parent.
-
-        Every element not in a tail is core; a tail is the run of a row from
-        its state's ``tail_from`` on, and its parent the element before it.
-        Driver states (:meth:`drivers`) belong to neither.
-        """
-
-        core: list[int] = []
-        tails: list[tuple[int, list[int]]] = []
-        for s in self.states.values():
-            if s.declared.driver:
-                continue
-            cut = s.declared.tail_from
-            for row in s.rows():
-                if cut is None:
-                    core += row
-                else:
-                    core += row[:cut]
-                    tails.append((row[cut - 1], row[cut:]))
-        return core, tails
-
-    def drivers(self) -> list[int]:
-        """The flat indices of the driver states (``State(..., driver=True)``)."""
-
-        return [i for s in self.states.values() if s.declared.driver for row in s.rows() for i in row]
+    # -- the Jacobian's sparsity pattern ----------------------------------------------
 
     def sparsity(self) -> np.ndarray:
-        """The ``(nnz, 2)`` index array of the Jacobian's nonzeros.
+        """The ``(nnz, 2)`` index array of the Jacobian's nonzeros, traced through the providers.
 
-        The core couples densely to itself; a tail is tridiagonal and meets the
-        core only through its parent. A driver state's columns are declared in
-        every row and its rows hold the driver columns alone: the Jacobian is
-        block lower triangular, the drivers' block in the corner, and the
-        elimination fills nothing whichever end it starts from. This is a
-        superset of the true Jacobian, which is what a colouring needs.
+        The same resolution as :meth:`evaluate`, on values that carry the set
+        of state elements they depend on instead of numbers
+        (:class:`_TracedValues`): each contribution to ``d_<state>`` comes back
+        carrying the columns of that row, a vector's element by element through
+        the ``output`` it fills. The pattern is exact up to data-dependent
+        branches, where a provider counts as reading all of its inputs, so it
+        is the superset a colouring needs and no more; the diagonal the Rosenbrock matrix ``I/(h gamma) - J``
+        adds is the solver's business, not the pattern's. Rows are sorted.
         """
 
-        core, tails = self.blocks()
-        drivers = self.drivers()
-        entries = {(r, c) for r in core for c in core}
-        entries |= {(r, c) for r in range(self.nvar) for c in drivers}
-        for parent, tail in tails:
-            for i, idx in enumerate(tail):
-                entries.add((idx, idx))
-                if i:
-                    entries.add((idx, tail[i - 1]))
-                if i + 1 < len(tail):
-                    entries.add((idx, tail[i + 1]))
-            entries.add((tail[0], parent))
-            entries.add((parent, tail[0]))
-        return np.array(sorted(entries), dtype=np.int64)
+        values = _TracedValues(self)
+        entries: set[tuple[int, int]] = set()
+        for c in self.components:
+            for p in _providers(c, self.states):
+                s = p.written
+                if s is None:
+                    continue
+                if s.shape:
+                    buffer = _traced_array(s.shape)
+                    args = [buffer if n == OUTPUT else values[n] for n in p.signature]
+                    values._call(p.fn, p.component, p.takes_self, args)
+                    rows = enumerate(buffer.reshape(-1))  # row-major, the order of the elements
+                else:
+                    rows = [(0, values._call(p.fn, p.component, p.takes_self, [values[d] for d in p.params]))]
+                for i, traced in rows:
+                    entries.update((s.offset + i, column) for column in traced.on)
+        return np.array(sorted(entries), dtype=np.int64).reshape(-1, 2)
 
     def evaluate(self, *quantities, math=math, **base):
         """Evaluate ``quantities`` on the host from the ``base`` values.
@@ -809,7 +912,7 @@ class Model:
         elif cuda is None or float64 is None:
             raise TypeError("a custom jit needs cuda and float64 stand-ins too")
         else:
-            names = {"cuda": cuda, "float64": float64}
+            names = {"cuda": cuda, "float64": float64, "float32": float64}
         return jit, names
 
     def _state_reads(self):

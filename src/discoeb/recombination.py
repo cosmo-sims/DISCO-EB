@@ -5,11 +5,10 @@ for statement), ``ln a`` from the model's own Friedmann sum and the optical dept
 ``kappa = int kappa' dtau`` ride in front of the Einstein-Boltzmann hierarchy as
 five more states of the joint system, and :class:`Recombination` provides the
 hierarchy with ``a``, the Thomson opacity, ``c_s^2`` and the massive-neutrino
-density ratio from them. These states read nothing of the hierarchy; they are
-declared drivers (``State(..., driver=True)``), so the Jacobian pattern is block
-lower triangular and modax (``split=True``) integrates them as a block of their
-own ahead of the hierarchy in every step, handing them over as a quintic
-polynomial of time. Nothing is tabulated and no device buffer is refilled: the
+density ratio from them. These states read nothing of the hierarchy, so the
+Jacobian pattern traced through the providers is block lower triangular, and
+modax (``split=True``) finds the block in the pattern and integrates it ahead of
+the hierarchy in every step, handing it over as a quintic polynomial of time. Nothing is tabulated and no device buffer is refilled: the
 right-hand side is compiled once per layout and serves every batch.
 
 RECFAST's equations are unaltered. Two implementation choices sit beside them:
@@ -32,7 +31,7 @@ import os
 
 import numpy as np
 
-from .component import Component, State
+from .component import Component, State, float32, float64
 from .eb_model import neutrino_momentum_bins
 from .thermodynamics_recfast import (
     A2P_s, A2P_t, AGauss1, AGauss2, Bfact, CB1, CB1_He1, CDB, CDB_He, CK, CK_He, CL, CL_He, CL_PSt,
@@ -72,18 +71,15 @@ table pipeline at 128 cosmologies x 128 modes (0.53 s against 0.61 s) at the
 same P(k) and thermal accuracy."""
 
 if FP32_MATH:
-    from numba_cuda_mlir import types as _nb_types
-
-    _f32 = _nb_types.float32
 
     def exp_(x):
-        return float(math.exp(_f32(x)))
+        return float64(math.exp(float32(x)))
 
     def pow_(x, y):
-        return float(_f32(x) ** _f32(y))
+        return float64(float32(x) ** float32(y))
 
     def log_(x):
-        return float(math.log(_f32(x)))
+        return float64(math.log(float32(x)))
 
 else:
 
@@ -294,9 +290,9 @@ class Recombination(Component):
     ``NQ_NU_BACKGROUND``-node quadrature of the RECFAST kernel).
     """
 
-    lna = State(initial=lambda lna_start: lna_start, driver=True)
-    thermo = State(3, initial=_thermo_initial, driver=True)
-    kappa = State(driver=True)
+    lna = State(initial=lambda lna_start: lna_start)
+    thermo = State(3, initial=_thermo_initial)
+    kappa = State()
 
     def __init__(self, **settings):
         super().__init__(**settings)

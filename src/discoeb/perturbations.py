@@ -38,9 +38,11 @@ from .thermodynamics_recfast import evaluate_thermo
 # component's class attribute (``Photons.LMAX_G = 11``) before the first solve,
 # since the GPU pipeline builds its layout from the classes at solve time
 # (:func:`_layout_for`). At the defaults the flat-LambdaCDM + massless-neutrino
-# layout has NVAR == 50: an 11-variable densely coupled core bordered by three
-# 13-variable free-streaming hierarchies, which is the structure
-# :func:`discoeb.eb_model.perturbation_sparsity` declares and the sparse direct solver exploits.
+# layout has NVAR == 50: an 11-variable core (the metric, the fluids and the
+# lowest multipoles, coupled through the Einstein constraints) bordered by three
+# 13-variable tridiagonal free-streaming hierarchies, which is the structure
+# :func:`discoeb.eb_model.perturbation_sparsity` traces through the equations
+# and the sparse direct solver exploits.
 LMAX_G = Photons.LMAX_G
 """Photon temperature hierarchy truncation (``Theta_0 ... Theta_LMAX_G``)."""
 

@@ -18,6 +18,6 @@ def test_the_recombination_states_are_the_driver_block():
     assert blocks.driver == thermal_indices(model)
     assert blocks.n_main == layout.nvar
     main = restrict_pattern(normalize_sparsity(sparsity, model.nvar), blocks.main)
-    # the hierarchy alone: 11 x 11 core and three 13-variable tails, 12 colours
-    assert sum(len(cols) for cols in main) == 238
-    assert colour_sparsity(main).n_colours == 12
+    # the hierarchy alone, as perturbation_sparsity traces it: 165 entries, 11 colours
+    assert sum(len(cols) for cols in main) == 165
+    assert colour_sparsity(main).n_colours == 11

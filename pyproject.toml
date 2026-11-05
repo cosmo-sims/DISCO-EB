@@ -23,6 +23,7 @@ dependencies = [
     "camb>=1.6.0",
     "pandas>=2.3.3",
     "matplotlib>=3.9.4",
+    "numba-enzyme-cuda",
 ]
 authors = [{ name = "Oliver Hahn", email = "oliver.hahn@univie.ac.at" }]
 
@@ -49,8 +50,20 @@ constraint-dependencies = [
     "cuda-toolkit==13.2.1; python_version >= '3.11'",
 ]
 
+# numba-enzyme caps numba below 0.62 and llvmlite below 0.45 for its CPU
+# pipeline, which hands llvmlite's IR to its vendored LLVM 15 tools. This
+# project only uses its CUDA backend, where numba-cuda-mlir emits the IR, so
+# the cap is lifted here rather than letting it drag numba and numpy back to
+# the LLVM 15 releases (numba 0.61, numpy 2.2).
+override-dependencies = ["numba>=0.61", "llvmlite>=0.44"]
+
 [tool.uv.sources]
 modax-solvers = { path = "../modax", editable = true }
+# The checkout, not PyPI: the kernels need commit eaf056d (the O3 prepasses that
+# fold numba-cuda-mlir's bounds checks before Enzyme sees them), which no
+# release carries. An editable install also keeps `uv sync` from writing a
+# release's files over the checkout, as it did through a bare symlink.
+numba-enzyme-cuda = { path = "../numba-enzyme", editable = true }
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-benchmark", "pytest-regressions", "camb>=1.6.0", "classy>=3.3.4.0", "ipykernel>=6.31.0", "matplotlib>=3.9.4", "pandas"]
