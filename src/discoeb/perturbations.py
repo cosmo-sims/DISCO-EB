@@ -1452,6 +1452,25 @@ class EBSolution:
         return self.values[:, self.names.index(name)]
 
 
+def eps_sensitivity(nvar: int):
+    """The sensitivity spec of a joint launch along the parameter row's ``eps``.
+
+    One column ``S = dy / d eps`` after the state, out of step control: the
+    densities enter the right-hand side as ``grho_i_nominal + eps dir_grho_i``,
+    so ``S`` is the derivative along the row's ``dir``.
+    """
+    from modax.rodas5P import SensitivitySpec
+
+    return SensitivitySpec(
+        nvar,
+        N_PARAM,
+        wrt_y0=False,
+        wrt_params=True,
+        error_control=False,
+        param_columns=(IX_EPS,),
+    )
+
+
 def build_keep_hook(model, names, *, tangent: bool = False):
     """A modax save hook storing the quantities ``names`` of every save in the trajectory's row.
 
@@ -1463,22 +1482,21 @@ def build_keep_hook(model, names, *, tangent: bool = False):
     state, the time and the parameter row as its inputs. The time the
     quantities see is clamped to the trajectory's own ``tau_end``: a save
     past a cosmology's ``tau0`` holds its frozen final state, which the
-    background of ``tau0`` goes with. The generated text is
-    ``hook._generated_source``.
+    background of ``tau0`` goes with. The generated device function of
+    ``(y, tau, p)`` returning them is ``hook._generated_source``; modax's
+    :func:`~modax.rodas5P.quantity_hook` makes it the hook.
 
     With ``tangent`` the hook is for a joint launch carrying one sensitivity
-    column ``S = dy/d eps`` after the state (modax's ``sensitivity`` with
-    ``param_columns=(IX_EPS,)``): it stores each quantity and, after the
-    quantities of the save, its total derivative along the column,
-    ``dq/d eps = (dq/dy) S + dq/d eps``, by one Enzyme forward sweep of the
-    compiled quantities seeded with ``(S, 0, e_eps)`` -- the sweep modax
-    runs on the right-hand side for the sensitivity equations -- and a state
-    element's derivative straight out of ``S``. The densities enter the
-    quantities through the parameter row as ``grho_i = grho_i_nominal + eps
-    dir_grho_i``, so this is the derivative along the row's ``dir``.
+    column ``S = dy/d eps`` after the state (:func:`eps_sensitivity`): it
+    stores each quantity and, after the quantities of the save, its total
+    derivative along the column, ``dq/d eps = (dq/dy) S + dq/d eps``, which
+    modax forms by one Enzyme forward sweep of the quantities seeded with
+    ``(S, 0, e_eps)``, built for the kernel's own target. The densities enter
+    the quantities through the parameter row as ``grho_i = grho_i_nominal +
+    eps dir_grho_i``, so this is the derivative along the row's ``dir``.
     """
 
-    from numba_cuda_mlir import cuda
+    from modax.rodas5P import quantity_hook
 
     names = tuple(names)
     if not names:
@@ -1489,69 +1507,38 @@ def build_keep_hook(model, names, *, tangent: bool = False):
             f"{vectors} are vector states: name their elements "
             f"({', '.join(model.states[vectors[0]].elements[:3])}, ...)"
         )
-    quantities = [n for n in names if n not in model.index]
-    nvar = model.nvar
+    provided = [n for n in names if n not in model.index]
     namespace: dict = {}
-    if quantities:
-        # Enzyme's forward sweep wants a tuple-valued primal; a lone quantity
-        # is returned beside the time, which costs nothing.
-        outputs = quantities if len(quantities) > 1 else [*quantities, "tau"]
-        namespace["kept"] = model.build_function(
-            outputs, inputs=("y", "tau"), params=PARAM_COLUMNS, name="kept"
-        )
-    width = (2 if tangent else 1) * len(names)
     lines = [
-        "def hook(save_idx, y, tau, p, acc):",
+        "def quantities(y, tau, p):",
         f"    t = p[{IX_TAU_END}]",
         "    if tau < t:",
         "        t = tau",
-        f"    base = {width} * save_idx",
     ]
-    if quantities:
+    if provided:
+        # build_function returns a lone output bare; beside the time it is a tuple.
+        outputs = provided if len(provided) > 1 else [*provided, "tau"]
+        namespace["kept"] = model.build_function(
+            outputs, inputs=("y", "tau"), params=PARAM_COLUMNS, name="kept"
+        )
         targets = ", ".join(f"q_{i}" for i in range(len(outputs)))
         lines.append(f"    {targets} = kept(y, t, p)")
-    for j, name in enumerate(names):
-        if name in model.index:
-            lines.append(f"    acc[base + {j}] = y[{model.index[name]}]")
-        else:
-            lines.append(f"    acc[base + {j}] = q_{quantities.index(name)}")
-    if tangent:
-        if quantities:
-            from numba_cuda_mlir import types
-            from numba_enzyme import jvp
-
-            signature = types.UniTuple(types.float64, len(outputs))(
-                types.UniTuple(types.float64, nvar),
-                types.float64,
-                types.UniTuple(types.float64, N_PARAM),
-            )
-            namespace["kept_tangent"] = jvp(namespace["kept"], signature=signature)
-            # A one-hot direction over the parameter row, as a window into a
-            # constant table so its index is static (modax's seed_table).
-            seeds = np.zeros(2 * N_PARAM, dtype=np.float64)
-            seeds[N_PARAM] = 1.0
-            namespace["seeds"] = seeds
-            namespace["cuda"] = cuda
-            namespace["float64"] = types.float64
-            start = N_PARAM - IX_EPS
-            lines += [
-                "    seed = cuda.const.array_like(seeds)",
-                f"    dq = cuda.local.array({len(outputs)}, float64)",
-                f"    kept_tangent(dq, y[0:{nvar}], t, p, y[{nvar}:{2 * nvar}], 0.0,"
-                f" seed[{start}:{start + N_PARAM}])",
-            ]
-        for j, name in enumerate(names):
-            if name in model.index:
-                lines.append(
-                    f"    acc[base + {len(names) + j}] = y[{nvar + model.index[name]}]"
-                )
-            else:
-                lines.append(
-                    f"    acc[base + {len(names) + j}] = dq[{quantities.index(name)}]"
-                )
-    hook = _compile("hook", "\n".join(lines) + "\n", namespace)
-    source = hook._generated_source
-    hook = cuda.jit(device=True)(hook)
+    values = [
+        f"y[{model.index[name]}]"
+        if name in model.index
+        else f"q_{provided.index(name)}"
+        for name in names
+    ]
+    lines.append(f"    return ({', '.join(values)},)")
+    quantities = _compile("quantities", "\n".join(lines) + "\n", namespace)
+    source = quantities._generated_source
+    hook = quantity_hook(
+        quantities,
+        len(names),
+        model.nvar,
+        N_PARAM,
+        eps_sensitivity(model.nvar) if tangent else None,
+    )
     hook._generated_source = source
     return hook
 
@@ -1714,8 +1701,6 @@ def _kept_values(
 
     @of_densities.defjvp
     def of_densities_jvp(primals, tangents):
-        from modax.rodas5P import SensitivitySpec
-
         (d,), (dd,) = primals, tangents
         # Replica j of trajectory i is row i * n_dir + j, along the unit
         # direction e_j; each carries the single column S = dy / d eps.
@@ -1735,14 +1720,7 @@ def _kept_values(
             hook_size=2 * n_keep * n_grid,
             save_history=False,
             lu_precision="fp64",
-            sensitivity=SensitivitySpec(
-                layout.nvar,
-                N_PARAM,
-                wrt_y0=False,
-                wrt_params=True,
-                error_control=False,
-                param_columns=(IX_EPS,),
-            ),
+            sensitivity=eps_sensitivity(layout.nvar),
             **settings,
         )
         out = out.reshape(n_k * n_cosmo, n_dir, n_grid, 2, n_keep)

@@ -40,7 +40,8 @@ uv run python examples/solve_eb_comoving_curvature.py
 ```
 
 On Blackwell GPUs (compute capability 10.0 and up) modax compiles Rodas5P and
-its Enzyme derivatives for `sm_90` and links the result for the actual GPU,
+its Enzyme derivatives, including the tangents of the quantities `solve_eb`
+keeps, for `sm_90` and links the result for the actual GPU,
 which keeps both on the LLVM 7 dialect Enzyme's LLVM 15 toolchain reads.
 `NUMBA_ENZYME_CUDA_CC`, set before the first solve, chooses that target for
 both instead.

@@ -13,8 +13,9 @@ dependencies = [
     # The perturbation solve runs on modax's sparse direct linear solver, whose
     # fill-reducing ordering is SuiteSparse's AMD (through cvxopt's wheel since
     # modax-solvers 0.0.3; the `sparse` extra is kept for older checkouts).
-    # 0.0.6 for Blackwell, solve(..., sensitivity=) and the packed-diagonal fix.
-    "modax-solvers[sparse]>=0.0.6",
+    # 0.0.7 for quantity_hook, whose Enzyme tangents solve_eb's derivatives use
+    # (built for sm_90 on Blackwell with the kernels, as since 0.0.6).
+    "modax-solvers[sparse]>=0.0.7",
     "equinox>=0.13",
     "xprof>=2.21.6",
     "tensorflow>=2.20.0",
