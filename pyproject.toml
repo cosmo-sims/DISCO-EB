@@ -13,7 +13,8 @@ dependencies = [
     # The perturbation solve runs on modax's sparse direct linear solver, whose
     # fill-reducing ordering is SuiteSparse's AMD (through cvxopt's wheel since
     # modax-solvers 0.0.3; the `sparse` extra is kept for older checkouts).
-    "modax-solvers[sparse]",
+    # 0.0.5 for solve(..., sensitivity=) and the packed-diagonal fix.
+    "modax-solvers[sparse]>=0.0.5",
     "equinox>=0.13",
     "xprof>=2.21.6",
     "tensorflow>=2.20.0",
@@ -23,7 +24,8 @@ dependencies = [
     "camb>=1.6.0",
     "pandas>=2.3.3",
     "matplotlib>=3.9.4",
-    "numba-enzyme-cuda",
+    # 0.3.0 for the O3 prepasses the kernels need and Blackwell support.
+    "numba-enzyme-cuda>=0.3.0",
 ]
 authors = [{ name = "Oliver Hahn", email = "oliver.hahn@univie.ac.at" }]
 
@@ -43,11 +45,15 @@ classifiers = [
 # numba-cuda-mlir and linked by nvjitlink, and 0.5.2 with CUDA 13.4 emits a
 # `.smax` that ptxas rejects when building the 50-variable Enzyme kernel. On
 # Python 3.10 modax runs the whole stack on CUDA 12 instead, so the 13.x toolkit
-# pin applies only above it.
+# pin applies only above it. nvJitLink is pinned with it because JAX would
+# otherwise pull the newest, and nvJitLink 13.4+ rejects numba-cuda-mlir 0.5.1's
+# Blackwell (sm_100+) LTO IR ("Target-incompatible DataLayout"); from the same
+# release as libNVVM, it links for Blackwell and for everything older.
 [tool.uv]
 constraint-dependencies = [
     "numba-cuda-mlir==0.5.1",
     "cuda-toolkit==13.2.1; python_version >= '3.11'",
+    "nvidia-nvjitlink==13.2.*; python_version >= '3.11'",
 ]
 
 # numba-enzyme caps numba below 0.62 and llvmlite below 0.45 for its CPU
@@ -56,14 +62,6 @@ constraint-dependencies = [
 # the cap is lifted here rather than letting it drag numba and numpy back to
 # the LLVM 15 releases (numba 0.61, numpy 2.2).
 override-dependencies = ["numba>=0.61", "llvmlite>=0.44"]
-
-[tool.uv.sources]
-modax-solvers = { path = "../modax", editable = true }
-# The checkout, not PyPI: the kernels need commit eaf056d (the O3 prepasses that
-# fold numba-cuda-mlir's bounds checks before Enzyme sees them), which no
-# release carries. An editable install also keeps `uv sync` from writing a
-# release's files over the checkout, as it did through a bare symlink.
-numba-enzyme-cuda = { path = "../numba-enzyme", editable = true }
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-benchmark", "pytest-regressions", "camb>=1.6.0", "classy>=3.3.4.0", "ipykernel>=6.31.0", "matplotlib>=3.9.4", "pandas"]
