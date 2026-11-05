@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .component import Component
+from .component import Component, _compile
 from .eb_model import (
     MassiveNeutrinos,
     MasslessNeutrinos,
@@ -670,7 +670,7 @@ def _thermo_tables_device(stacked, spline_inverse, n_grid: int):
     Runs :func:`evolve_background` and then the resampling onto the layout the
     numba-CUDA callbacks read -- the conformal-time quadrature, the uniform
     ``log(tau)`` grid to each cosmology's own ``tau0``, the spline evaluations
-    of ``a``, ``kappa'``, ``c_s^2`` and ``rho_nu`` on it, and their not-a-knot
+    of ``a``, ``kappa'``, ``c_s^2``, ``rho_nu`` and ``p_nu`` on it, and their not-a-knot
     second derivatives (:func:`_not_a_knot_inverse`) -- as one program. Returns
     ``(tau_grid, values, seconds, tau0)`` stacked over the lanes.
     """
@@ -753,11 +753,15 @@ def _thermo_tables_device(stacked, spline_inverse, n_grid: int):
         )
         opacity_vals = xe_vals * akthom / a_vals**2
         cs2_vals = background["cs2a_of_loga_spline"].evaluate(loga_eval)[:, 0] / a_vals
-        rhonu_vals = jnp.exp(
-            background["logrhonu_of_loga_spline"].evaluate(loga_eval)[:, 0]
-        )
+        logrhonu_spline = background["logrhonu_of_loga_spline"]
+        rhonu_vals = jnp.exp(logrhonu_spline.evaluate(loga_eval)[:, 0])
+        # The pressure of a Fermi-Dirac species of mass m at fixed temperature:
+        # rho - 3p = y d(rho)/dy with y = a m / T, so p = (rho - d rho / d ln a) / 3
+        # (a third of rho while relativistic, zero once non-relativistic).
+        dlnrhonu_dlna = logrhonu_spline.derivative(loga_eval)[:, 0]
+        pnu_vals = rhonu_vals * (1.0 - dlnrhonu_dlna) / 3.0
 
-        values = jnp.stack((a_vals, opacity_vals, cs2_vals, rhonu_vals))
+        values = jnp.stack((a_vals, opacity_vals, cs2_vals, rhonu_vals, pnu_vals))
         h = log_tau_grid[1] - log_tau_grid[0]
         second_difference = values[:, 2:] - 2.0 * values[:, 1:-1] + values[:, :-2]
         rhs = jnp.zeros_like(values).at[:, 1:-1].set(6.0 * second_difference / h**2)
@@ -896,7 +900,7 @@ def make_initial_states(cosmology, k_values: np.ndarray, layout) -> np.ndarray:
 
 
 class ThermalHistory(Component):
-    """``a``, ``opacity``, ``cs2`` and ``rhonu`` at ``tau``, read off device spline tables.
+    """``a``, ``opacity``, ``cs2``, ``rhonu`` and ``pnu`` at ``tau``, read off device spline tables.
 
     The tables are stacked over cosmologies: ``values`` and ``rescaled_seconds``
     (the spline's second derivatives times ``h^2 / 6`` for the uniform step
@@ -969,8 +973,17 @@ class ThermalHistory(Component):
         def rhonu(log_tau, cosmology_idx):
             return uniform_spline_eval(log_tau, cosmology_idx, 3)
 
+        def pnu(log_tau, cosmology_idx):
+            return uniform_spline_eval(log_tau, cosmology_idx, 4)
+
         self.spline = uniform_spline_eval
-        self.a, self.opacity, self.cs2, self.rhonu = a, opacity, cs2, rhonu
+        self.a, self.opacity, self.cs2, self.rhonu, self.pnu = (
+            a,
+            opacity,
+            cs2,
+            rhonu,
+            pnu,
+        )
 
     @staticmethod
     def log_tau(self, tau):
@@ -1048,6 +1061,9 @@ class DeviceTableSlot:
         )
         self.device_function = build(*self.buffers)
         self.loaded = None
+        self.functions: dict = {}
+        """Other device functions compiled against the buffers (the save hooks of
+        :func:`solve_eb`), by key; they go when the slot does."""
 
     def load(self, key, *tables) -> None:
         """Make ``tables`` (host arrays, one per buffer) the slot's contents, under ``key``."""
@@ -1280,8 +1296,14 @@ def clear_prepared_solve_cache() -> None:
     _TABLE_SLOTS.clear()
 
 
-def _launch(prepared, params, y0, t_span, *, rtol, atol, first_step, max_steps):
-    """One modax Rodas5P launch of the prepared solve over the packed trajectories."""
+def _launch(
+    prepared, params, y0, t_span, *, rtol, atol, first_step, max_steps, **options
+):
+    """One modax Rodas5P launch of the prepared solve over the packed trajectories.
+
+    ``options`` are further modax settings (``error_weights``, or a
+    ``save_hook`` with its ``hook_size`` and ``save_history``).
+    """
 
     from modax.rodas5P import solve as rodas5P_solve
 
@@ -1302,6 +1324,7 @@ def _launch(prepared, params, y0, t_span, *, rtol, atol, first_step, max_steps):
         trajectories_per_block=TRAJECTORIES_PER_BLOCK,
         tf_index=IX_TAU_END,
         max_registers=CUDA_MAX_REGISTERS,
+        **options,
     )
 
 
@@ -1401,6 +1424,207 @@ def solve_perturbation_history_batch(
     # reshape is a free view -- no copy of the (potentially multi-GB) history.
     hist = jnp.asarray(sol).reshape(n_k, n_cosmo, len(t_span), layout.nvar)
     return hist, k_sorted, prepared
+
+
+@dataclass(frozen=True)
+class EBSolution:
+    """What :func:`solve_eb` kept: the selected quantities on the requested grid.
+
+    ``values`` is ``(n_cosmologies, len(names), n_k, n_tau)`` on the device,
+    with the wave modes and times in the caller's order, and ``solution[name]``
+    is that quantity's ``(n_cosmologies, n_k, n_tau)`` block. ``tau0`` is each
+    cosmology's conformal age, past which its column holds the state today.
+    """
+
+    names: tuple[str, ...]
+    k: np.ndarray
+    tau: np.ndarray
+    tau0: np.ndarray
+    values: jax.Array
+    layout: PerturbationLayout
+
+    def __getitem__(self, name: str) -> jax.Array:
+        if name not in self.names:
+            raise KeyError(f"{name!r} was not kept; the solution holds {self.names}")
+        return self.values[:, self.names.index(name)]
+
+
+def build_keep_hook(model, names):
+    """A modax save hook storing the quantities ``names`` of every save in the trajectory's row.
+
+    A name is a state element (``clxc``, ``theta_2``, ``psi_0_1``: the
+    :func:`~discoeb.eb_model.layout_state_names`), copied straight out of the
+    state, or any quantity the model provides (``R``, ``sigma``, ``phi``
+    with the line-of-sight sources appended), compiled from the components'
+    equations by :meth:`~discoeb.component.Model.build_function` with the
+    state, the time and the parameter row as its inputs. The time the
+    quantities see is clamped to the trajectory's own ``tau_end``: a save
+    past a cosmology's ``tau0`` holds its frozen final state, which the
+    background of ``tau0`` goes with. The generated text is
+    ``hook._generated_source``.
+    """
+
+    from numba_cuda_mlir import cuda
+
+    names = tuple(names)
+    if not names:
+        raise ValueError("keep at least one quantity")
+    vectors = [n for n in names if n in model.states and n not in model.index]
+    if vectors:
+        raise ValueError(
+            f"{vectors} are vector states: name their elements "
+            f"({', '.join(model.states[vectors[0]].elements[:3])}, ...)"
+        )
+    quantities = [n for n in names if n not in model.index]
+    namespace: dict = {}
+    if quantities:
+        namespace["kept"] = model.build_function(
+            quantities, inputs=("y", "tau"), params=PARAM_COLUMNS, name="kept"
+        )
+    lines = [
+        "def hook(save_idx, y, tau, p, acc):",
+        f"    t = p[{IX_TAU_END}]",
+        "    if tau < t:",
+        "        t = tau",
+        f"    base = {len(names)} * save_idx",
+    ]
+    if quantities:
+        targets = ", ".join(f"q_{i}" for i in range(len(quantities)))
+        lines.append(f"    {targets} = kept(y, t, p)")
+    for j, name in enumerate(names):
+        if name in model.index:
+            lines.append(f"    acc[base + {j}] = y[{model.index[name]}]")
+        else:
+            lines.append(f"    acc[base + {j}] = q_{quantities.index(name)}")
+    hook = _compile("hook", "\n".join(lines) + "\n", namespace)
+    source = hook._generated_source
+    hook = cuda.jit(device=True)(hook)
+    hook._generated_source = source
+    return hook
+
+
+def solve_eb(
+    cosmologies,
+    k_values,
+    tau,
+    *,
+    keep=None,
+    extra=(),
+    rtol: float = PERTURB_RTOL,
+    atol: float = PERTURB_ATOL,
+    first_step: float = PERTURB_FIRST_STEP,
+    max_steps: int = PERTURB_MAX_STEPS,
+    error_weights=None,
+) -> EBSolution:
+    """Solve the Einstein-Boltzmann system of ``cosmologies`` and keep ``keep`` at ``tau``.
+
+    One modax Rodas5P launch over every (wave mode, cosmology) pair, as
+    :func:`solve_perturbation_history_batch`, but the launch records only the
+    quantities named in ``keep`` at the requested times, through modax's save
+    hook: the kernel evaluates them from the dense-output state at each save
+    and stores ``len(keep)`` numbers, so the device holds ``n_k *
+    n_cosmologies * len(tau) * len(keep)`` values and never the history. A
+    1000-time, 128-mode, 128-cosmology solve that keeps the comoving
+    curvature perturbation alone stores 130 MB instead of the 6.5 GB of the
+    50-variable history.
+
+    Parameters
+    ----------
+    cosmologies
+        One cosmology (a parameter dictionary or a cosmology object) or a
+        sequence of them, all of one perturbation layout.
+    k_values
+        Wave numbers in 1/Mpc, in any order.
+    tau
+        Strictly increasing conformal times in Mpc, above ``TAU_START``, at
+        which to record. A cosmology whose conformal age ``tau0`` is below a
+        time holds its state today there (its trajectory ends at ``tau0``), so
+        a last time past every ``tau0`` returns the present-day values of the
+        whole batch.
+    keep
+        Names of the quantities to record: state elements
+        (:func:`~discoeb.eb_model.layout_state_names`) or quantities the
+        model provides, such as the comoving curvature perturbation ``R``, the
+        shear ``sigma`` or the expansion rate ``adotoa``. Default: every state
+        element, i.e. the full history.
+    extra
+        Components appended to the model for the hook (the line-of-sight
+        sources of :mod:`discoeb.cmb` make ``phi`` available); stateless, and
+        told apart by class when the compiled hook is cached.
+    rtol, atol, first_step, max_steps, error_weights
+        The solver settings of :func:`solve_perturbation_history_batch`;
+        ``error_weights`` are modax's, ``(n_k * n_cosmologies, nvar)`` in
+        launch order (wave modes ascending, cosmologies within).
+
+    The hook is compiled once per batch shape and set of names, like the
+    right-hand side, and the launch is not differentiable (modax's hooked
+    solves support neither ``vmap`` nor JVPs); :func:`matter_power_spectrum_jax`
+    and :func:`discoeb.cmb.cl_power_spectrum_jax` are the differentiable paths.
+    """
+
+    if isinstance(cosmologies, dict) or hasattr(cosmologies, "Omegam"):
+        cosmologies = (cosmologies,)
+    prepared = _prepare_solve(tuple(cosmologies))
+    layout = prepared.layout
+    n_cosmo = len(prepared.cosmologies)
+
+    tau = np.asarray(tau, dtype=np.float64).reshape(-1)
+    if tau.size == 0 or not np.all(np.isfinite(tau)):
+        raise ValueError("tau must be a non-empty array of finite conformal times")
+    if tau[0] <= TAU_START or np.any(np.diff(tau) <= 0.0):
+        raise ValueError(
+            f"tau must be strictly increasing and above TAU_START = {TAU_START}"
+        )
+    # The launch starts at TAU_START, so it is the first save; the hook
+    # records it too and the row is dropped below.
+    tau_grid = np.concatenate(([TAU_START], tau))
+
+    names = tuple(layout_state_names(layout) if keep is None else keep)
+    if len(set(names)) != len(names):
+        raise ValueError(f"keep names a quantity twice: {names}")
+    extra = tuple(extra)
+    hook_key = (names, tuple(type(c) for c in extra))
+    hook = prepared.slot.functions.get(hook_key)
+    if hook is None:
+        # The hook reads the same thermodynamics buffers as the right-hand side.
+        model = perturbation_model(
+            layout, ThermalHistory(*prepared.slot.buffers), extra=extra
+        )
+        if model.nvar != layout.nvar:
+            raise ValueError("the extra components must not own state")
+        hook = prepared.slot.functions[hook_key] = build_keep_hook(model, names)
+
+    params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_grid)
+    n_k = len(k_sorted)
+    _, out = _launch(
+        prepared,
+        params,
+        y0,
+        t_span,
+        rtol=rtol,
+        atol=atol,
+        first_step=first_step,
+        max_steps=max_steps,
+        error_weights=error_weights,
+        save_hook=hook,
+        hook_size=len(names) * len(tau_grid),
+        save_history=False,
+    )
+    # Rows are packed k-major (row = k_idx * n_cosmo + cosmology_idx) and the
+    # hook row save-major, so this reshape is a view; the transpose to a
+    # cosmology-major layout copies only what was kept.
+    values = jnp.asarray(out).reshape(n_k, n_cosmo, len(tau_grid), len(names))
+    values = jnp.transpose(values[:, :, 1:, :], (1, 3, 0, 2))
+    if np.any(order != np.arange(n_k)):
+        values = values[:, :, jnp.asarray(np.argsort(order)), :]
+    return EBSolution(
+        names=names,
+        k=np.asarray(k_values, dtype=np.float64).reshape(-1),
+        tau=tau,
+        tau0=np.asarray(prepared.tau0, dtype=np.float64),
+        values=values,
+        layout=layout,
+    )
 
 
 def solve_perturbations(k_values, cosmology, **solve_kwargs):

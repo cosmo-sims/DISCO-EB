@@ -216,3 +216,135 @@ def test_matter_power_spectrum_derivatives(one_column_per_trajectory, benchmark)
             f"d(sum P)/d{name}: sensitivity {grad[i]:.8e} against central "
             f"difference {finite:.8e}, relative {rel:.3g}"
         )
+
+
+def _device_spline_on_host(stacked, ci, channel, tau):
+    """The kernel's thermodynamics spline (``ThermalHistory``) evaluated on the host.
+
+    The device reads the tables as float32 and runs the Horner form in float64;
+    this does the same from the host copies, so the comparison below is left
+    with float32 rounding of the table values only.
+    """
+
+    tau_min, inv_dtau, values, seconds = stacked
+    values = values.astype(np.float32).astype(np.float64)
+    seconds = seconds.astype(np.float32).astype(np.float64)
+    n_grid = values.shape[-1]
+    i = (np.log(tau) - tau_min[ci]) * inv_dtau[ci]
+    idx = np.clip(i.astype(np.int64), 0, n_grid - 2)
+    t = i - idx
+    y0, y1 = values[ci, channel, idx], values[ci, channel, idx + 1]
+    k0, k1 = seconds[ci, channel, idx], seconds[ci, channel, idx + 1]
+    c1 = (y1 - y0) - (2.0 * k0 + k1)
+    return y0 + t * (c1 + t * (3.0 * k0 + (k1 - k0) * t))
+
+
+SOLVE_EB_K = MATTER_POWER_K[::16][::-1]  # descending, to exercise the reordering
+SOLVE_EB_TAU = np.geomspace(1.0, 2.0e4, 48)  # the last few lie past every tau0
+
+
+def test_solve_eb_keeps_what_the_history_holds():
+    """The hooked launch records exactly what the full history evaluates to.
+
+    State elements are copied from the same dense-output states the history
+    launch saves; the derived quantities (the comoving curvature perturbation,
+    the shear, the expansion rate) are the components' equations compiled into
+    the hook, checked here against the same equations evaluated on the host
+    over the saved history. Times past a cosmology's ``tau0`` hold its state
+    today, so the CDM and baryon contrasts at the last time give the batch's
+    ``P(k)``.
+    """
+
+    from discoeb.eb_model import perturbation_model
+    from discoeb.perturbations import (
+        PARAM_COLUMNS,
+        TAU_START,
+        density_coefficients,
+        make_params,
+        matter_power_spectrum,
+        solve_eb,
+        solve_matter_power_spectrum_batch,
+        solve_perturbation_history_batch,
+        total_matter_density_contrast,
+    )
+
+    cosmologies = _perturbed_cosmologies(2)
+    names = ("R", "clxc", "clxb", "theta_2", "n_15", "sigma", "adotoa")
+    solution = solve_eb(cosmologies, SOLVE_EB_K, SOLVE_EB_TAU, keep=names)
+    n_k, n_tau = len(SOLVE_EB_K), len(SOLVE_EB_TAU)
+    assert solution.names == names
+    assert solution.values.shape == (2, len(names), n_k, n_tau)
+    assert solution["R"].shape == (2, n_k, n_tau)
+    assert np.all(solution.tau0 < SOLVE_EB_TAU[-1])
+
+    hist, k_sorted, prepared = solve_perturbation_history_batch(
+        SOLVE_EB_K, cosmologies, tau_save=np.concatenate(([TAU_START], SOLVE_EB_TAU))
+    )
+    hist = np.asarray(hist)[:, :, 1:, :]  # (n_k, n_c, n_tau, nvar), ascending k
+    order = np.argsort(SOLVE_EB_K)
+    kept = np.asarray(solution.values)[:, :, order, :]  # ascending k too
+    layout = prepared.layout
+    model = perturbation_model(layout)
+
+    for ci, cosmology in enumerate(prepared.cosmologies):
+        for name in ("clxc", "clxb", "theta_2", "n_15"):
+            j = names.index(name)
+            expected = hist[:, ci, :, model.index[name]]
+            np.testing.assert_allclose(kept[ci, j], expected, rtol=1e-9, atol=1e-14)
+
+        # The hook sees the time clamped to the trajectory's own tau0.
+        tau = np.minimum(SOLVE_EB_TAU, float(prepared.tau0[ci]))[None, :]
+        row = make_params(cosmology, k_sorted, float(prepared.tau0[ci]))
+        base = {name: row[:, col][:, None] for name, col in PARAM_COLUMNS.items()}
+        base.update(model.state_values(hist[:, ci]))
+        base.update(tau=tau, k=k_sorted[:, None])
+        for channel, quantity in enumerate(("a", "opacity", "cs2", "rhonu", "pnu")):
+            base[quantity] = _device_spline_on_host(prepared.stacked, ci, channel, tau)
+        R, sigma, adotoa = model.evaluate("R", "sigma", "adotoa", math=np, **base)
+        for name, expected in (("R", R), ("sigma", sigma), ("adotoa", adotoa)):
+            j = names.index(name)
+            np.testing.assert_allclose(kept[ci, j], expected, rtol=2e-6, atol=1e-12)
+
+    pk_batch = solve_matter_power_spectrum_batch(SOLVE_EB_K, cosmologies)
+    for ci, cosmology in enumerate(prepared.cosmologies):
+        grhoc, grhob = density_coefficients(cosmology)[2:4]
+        clxc = np.asarray(solution["clxc"][ci, :, -1])
+        clxb = np.asarray(solution["clxb"][ci, :, -1])
+        pk = [
+            matter_power_spectrum(
+                float(k),
+                total_matter_density_contrast(grhoc, dc, grhob, db),
+                cosmology.A_s,
+                cosmology.n_s,
+                cosmology.k_pivot,
+            )
+            for k, dc, db in zip(SOLVE_EB_K, clxc, clxb)
+        ]
+        np.testing.assert_allclose(pk, pk_batch[ci], rtol=1e-9)
+
+
+def test_solve_eb_comoving_curvature_is_conserved_outside_the_horizon():
+    """``R`` starts at unity and stays there until the mode enters the horizon.
+
+    The adiabatic initial conditions set ``R = 1``; on super-horizon scales it
+    is conserved up to ``O((k tau)^2)`` (0.13 (k tau)^2 in radiation
+    domination with no neutrinos), and once inside the horizon it decays with
+    the potentials. A one-quantity solve stores ``n_k * n_tau`` numbers.
+    """
+
+    from discoeb.perturbations import solve_eb
+
+    k = np.array([1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1])
+    tau = np.geomspace(1.0, 2.0e4, 64)
+    solution = solve_eb(_perturbed_cosmologies(1)[0], k, tau, keep=("R",))
+    assert solution.values.shape == (1, 1, len(k), len(tau))
+    R = np.asarray(solution["R"][0])
+    assert np.isfinite(R).all()
+
+    assert abs(R[0, 0] - 1.0) < 1.0e-6  # k tau = 1e-4
+    super_horizon = tau[None, :] * k[:, None] < 0.1
+    assert np.all(np.abs(R[super_horizon] - 1.0) < 5.0e-3), np.abs(
+        R[super_horizon] - 1.0
+    ).max()
+    # k = 0.1 Mpc^-1 entered the horizon long before today and R has decayed.
+    assert abs(R[-1, -1]) < 0.5

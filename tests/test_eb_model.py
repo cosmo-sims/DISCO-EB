@@ -47,11 +47,12 @@ LAYOUTS = {
 class ConstantThermalHistory(Component):
     """A thermal history frozen at one epoch, standing in for the spline tables."""
 
-    def __init__(self, a=1e-3, opacity=50.0, cs2=1e-8, rhonu=3.0):
+    def __init__(self, a=1e-3, opacity=50.0, cs2=1e-8, rhonu=3.0, pnu=0.5):
         self.a = lambda: a
         self.opacity = lambda: opacity
         self.cs2 = lambda: cs2
         self.rhonu = lambda: rhonu
+        self.pnu = lambda: pnu
 
 
 def build(layout):
@@ -234,3 +235,47 @@ def test_make_initial_states_uses_the_model():
     y0 = make_initial_states(cosmology, np.array([1e-2, 1e-1]), PerturbationLayout())
     assert y0.shape == (2, 50) and np.isfinite(y0).all()
     np.testing.assert_allclose(y0[:, 0], [-1e-2, -1e-1], rtol=1e-3)  # etak ~ -k
+
+
+def test_the_pressure_sums_over_the_species_and_gives_the_comoving_curvature():
+    """``gpres`` is left out of the right-hand side and read by ``R`` alone."""
+
+    for name in ("flat-lcdm", "ragged-blocks"):
+        model, _ = build(LAYOUTS[name])
+        assert "gpres" not in model.source
+    model = perturbation_model(LAYOUTS["ragged-blocks"], ConstantThermalHistory())
+    fn = model.build_function(
+        ("R", "gpres", "grho", "adotoa"),
+        inputs=("y", "tau"),
+        params=PARAM_COLUMNS,
+        **HOST,
+    )
+    lines = [l.strip() for l in fn._generated_source.splitlines()]
+    assert (
+        "gpres = Photons__gpres(Photons_self, grhog_t) + MasslessNeutrinos__gpres(MasslessNeutrinos_self, grhor_t)"
+        " + DarkEnergy__gpres(DarkEnergy_self, grhov_t, w_Q) + MassiveNeutrinos__gpres(MassiveNeutrinos_self, nu_norm, pnu)"
+    ) in lines
+
+    # Flat LCDM with the fluids at rest: R is the curvature eta alone, and
+    # the velocity term is the total momentum over rho + p.
+    layout = LAYOUTS["flat-lcdm"]
+    model = perturbation_model(layout, ConstantThermalHistory(a=1.0))
+    fn = model.build_function(
+        ("R", "gpres", "grho", "adotoa"),
+        inputs=("y", "tau"),
+        params=PARAM_COLUMNS,
+        **HOST,
+    )
+    p = np.zeros(N_PARAM)
+    grhog, grhor, grhoc, grhob, grhov = 1.5e-7, 1.0e-7, 1.1e-4, 1.9e-5, 2.0e-7
+    p[:5] = [grhog, grhor, grhoc, grhob, grhov]
+    p[PARAM_COLUMNS["k"]] = 0.05
+    p[PARAM_COLUMNS["w_DE_0"]] = -1.0
+    y = np.zeros(layout.nvar)
+    y[layout.ix_etak] = -0.05
+    y[layout.ix_vb] = 0.3
+    R, gpres, grho, adotoa = fn(y, 100.0, p)
+    assert gpres == pytest.approx((grhog + grhor) / 3.0 - grhov)
+    assert grho == pytest.approx(grhog + grhor + grhoc + grhob + grhov)
+    dgq = grhob * 0.3
+    assert R == pytest.approx(1.0 - adotoa * dgq / (0.05 * (grho + gpres)))

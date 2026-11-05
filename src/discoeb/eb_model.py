@@ -56,11 +56,14 @@ from .component import Component, Interaction, Model, Setting, Species, State
 from .spline_interpolation import FastUniformCubicSpline1D, spline_interpolation
 from .util import generalized_gauss_laguerre_weights, integrate_trapz
 
-SUMS = ("grho", "dgrho", "dgq", "dgpi")
-"""The quantities summed over species: the Friedmann density, the sources of
-the Einstein constraints ``dgrho = Sum grho_i_t delta_i`` and
-``dgq = Sum grho_i_t q_i``, and the anisotropic stress ``dgpi = Sum grho_i_t pi_i``
-the Weyl potential of the line-of-sight sources needs."""
+SUMS = ("grho", "gpres", "dgrho", "dgq", "dgpi")
+"""The quantities summed over species: the Friedmann density, the pressure
+``gpres = Sum 8 pi G p_i a^2`` (CAMB's, so the comoving curvature perturbation
+can divide by ``rho + p``), the sources of the Einstein constraints
+``dgrho = Sum grho_i_t delta_i`` and ``dgq = Sum grho_i_t q_i``, and the
+anisotropic stress ``dgpi = Sum grho_i_t pi_i`` the Weyl potential of the
+line-of-sight sources needs. Spatial curvature enters ``grho`` through
+``grhok`` but, not being a fluid, contributes no pressure."""
 
 
 def _needs_octupole(**lmax):
@@ -157,6 +160,23 @@ class Metric(Component):
 
     def sigma(self, z, dgq, inv_k2, inv_s2):
         return (z + 1.5 * dgq * inv_k2) * inv_s2
+
+    def R(self, etak, k, adotoa, dgq, grho, gpres, grhok):
+        """The comoving curvature perturbation ``R``, unity for the adiabatic mode.
+
+        The curvature perturbation of the slices on which the total momentum
+        density vanishes, a gauge invariant: from synchronous gauge the slicing
+        shifts by ``T = theta / k^2`` with ``theta = k dgq / (grho_fluid +
+        gpres)`` the total velocity divergence (``dgq = 8 pi G a^2 (rho + p)
+        theta / k``), under which the curvature ``eta`` becomes ``eta + aH T``.
+        The sign is CAMB's, in which the initial conditions set ``R = 1``
+        (``etak = -k`` at ``k tau << 1``); Ma & Bertschinger's ``phi``
+        convention is the negative, so in matter domination the Newtonian
+        potentials are ``phi = psi = -3 R / 5`` outside the horizon. ``R`` is
+        conserved on super-horizon scales up to ``O((k tau)^2)``; through
+        horizon entry it decays as the mode's potentials do.
+        """
+        return -etak / k - adotoa * dgq / (k * (grho - grhok + gpres))
 
     def d_etak(self, dgq, Kcurv, z, inv_s2):
         return (0.5 * dgq + Kcurv * z) * inv_s2
@@ -273,6 +293,9 @@ class Photons(Species):
     def grho(self, grhog_t):
         return grhog_t
 
+    def gpres(self, grhog_t):
+        return grhog_t * (1.0 / 3.0)
+
     def clxg(self, theta):
         return theta[0]
 
@@ -386,6 +409,9 @@ class MasslessNeutrinos(Species):
     def grho(self, grhor_t):
         return grhor_t
 
+    def gpres(self, grhor_t):
+        return grhor_t * (1.0 / 3.0)
+
     def dgrho(self, grhor_t, n):
         return grhor_t * n[0]
 
@@ -418,7 +444,7 @@ class MassiveNeutrinos(Species):
 
     and the free-streaming tail above. The bins' moments ``Sum w psi0 / v``,
     ``Sum w psi1`` and ``Sum w v psi2`` enter the Einstein sources; the background density
-    ratio ``rhonu`` comes from the tables. Deep in radiation domination the
+    ratio ``rhonu`` and pressure ratio ``pnu`` come from the tables. Deep in radiation domination the
     neutrinos are still relativistic, so each bin starts as the massless
     hierarchy, ``psi_l = -(1/4) N_l dlnf0/dlnq``. The quadrature nodes and
     weights are constants of the instance, which the providers read through
@@ -451,6 +477,10 @@ class MassiveNeutrinos(Species):
 
     def grho(self, nu_norm, rhonu):
         return nu_norm * rhonu
+
+    def gpres(self, nu_norm, pnu):
+        """The background pressure, from the tabulated ``pnu = (rhonu - d rhonu / d ln a) / 3``."""
+        return nu_norm * pnu
 
     def dgrho(self, nu_norm, a, amnu, psi):
         total = 0.0
@@ -502,6 +532,9 @@ class CosmologicalConstant(Species):
     def grho(self, grhov_t):
         return grhov_t
 
+    def gpres(self, grhov_t):
+        return -grhov_t
+
 
 class DarkEnergy(Species):
     """A CPL fluid ``w = w_0 + w_a (1 - a)`` with rest-frame sound speed ``cs2_DE``.
@@ -540,6 +573,9 @@ class DarkEnergy(Species):
     def grho(self, grhov_t):
         return grhov_t
 
+    def gpres(self, grhov_t, w_Q):
+        return w_Q * grhov_t
+
     def dgrho(self, grhov_t, clxq):
         return grhov_t * clxq
 
@@ -573,8 +609,9 @@ def perturbation_model(
 ) -> Model:
     """The components a :class:`~discoeb.perturbations.PerturbationLayout` enables.
 
-    ``thermal_history`` provides ``a``, ``opacity``, ``cs2`` and ``rhonu`` as
-    functions of ``tau`` (on the device, spline tables; in a test, anything);
+    ``thermal_history`` provides ``a``, ``opacity``, ``cs2``, ``rhonu`` and
+    ``pnu`` as functions of ``tau`` (on the device, spline tables; in a test,
+    anything);
     without it the model still gives the state layout, the initial conditions
     and the sparsity pattern. ``extra`` components (the line-of-sight sources
     of :mod:`discoeb.cmb`) are appended. The layout's truncations are passed to the
