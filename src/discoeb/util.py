@@ -1,17 +1,8 @@
-"""Numerical helpers: the trapezoid rule and the generalised Gauss-Laguerre rule the
-massive-neutrino momentum quadrature is built on.
-"""
+"""The generalised Gauss-Laguerre rule the massive-neutrino momentum quadrature is built on."""
 
 import jax
 import jax.numpy as jnp
 import jax.scipy
-
-# the trapz integration has been moved from jnp to jax.scipy
-# in newer versions of jax, and might disappear altogether
-if hasattr(jnp,'trapz'):
-  integrate_trapz = jnp.trapz
-else:
-  integrate_trapz = jax.scipy.integrate.trapezoid
 
 def generalized_gauss_laguerre_weights(n, alpha):
     """

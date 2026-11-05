@@ -186,6 +186,23 @@ _HOST_NAMES = {
 """What the device names mean when a provider runs as plain Python on the host."""
 
 
+def _host_names(math_module) -> dict:
+    """The host names for providers evaluated with ``math_module`` as ``math``.
+
+    On arrays (``numpy``, ``jax.numpy``) a provider's ``max`` and ``min`` are
+    the module's elementwise ``maximum`` and ``minimum``, so the clamps of the
+    recombination block broadcast like the rest of its algebra.
+    """
+
+    names = {**_HOST_NAMES, "math": math_module}
+    if hasattr(math_module, "maximum"):
+        names.update(
+            max=math_module.maximum, min=math_module.minimum,
+            float32=math_module.float32, float64=math_module.float64,
+        )
+    return names
+
+
 # --- settings -------------------------------------------------------------------------
 
 
@@ -460,7 +477,8 @@ def _bound_function(fn: Callable, jit: Callable, names: Mapping[str, object], me
     copy of its globals in which the device-name placeholders are the real
     objects (``names``), ``math`` is whatever ``names["math"]`` says (``math``
     itself on the device, ``jax.numpy`` when a quantity is evaluated on JAX
-    arrays), and the plain helpers it calls are bound the same way,
+    arrays), ``max`` and ``min`` are the array module's elementwise ones when
+    ``names`` says so, and the plain helpers it calls are bound the same way,
     recursively. With an identity ``jit`` this is how a function runs on the
     host.
     """
@@ -477,6 +495,8 @@ def _bound_function(fn: Callable, jit: Callable, names: Mapping[str, object], me
             rebound[name] = names.get("math", math)
         elif isinstance(value, types.FunctionType) and value.__module__ != "builtins":
             rebound[name] = _bound_function(value, jit, names, memo)
+        elif value is None and name in names:
+            rebound[name] = names[name]  # a builtin the names override: max and min on arrays
     fn_bound = types.FunctionType(fn.__code__, rebound, fn.__name__, fn.__defaults__, fn.__closure__)
     compiled = jit(fn_bound)
     memo[fn] = compiled
@@ -610,18 +630,18 @@ class _Traced:
         return f"_Traced({sorted(self.on)})"
 
 
+def _traced_call(*args):
+    """A function of traced values: the union of its arguments' dependencies."""
+
+    return _Traced(frozenset().union(*(_depends(a) for a in args)))
+
+
 class _TracingMath:
     """``math`` for traced values: every function returns the union of its arguments' dependencies."""
 
     def __getattr__(self, name):
         attr = getattr(math, name)
-        if not callable(attr):
-            return attr  # pi, e, inf, ...
-
-        def traced(*args):
-            return _Traced(frozenset().union(*(a.on for a in args if isinstance(a, _Traced))))
-
-        return traced
+        return attr if not callable(attr) else _traced_call  # pi, e, inf, ... stay numbers
 
 
 def _traced_array(shape, first: int | None = None) -> np.ndarray:
@@ -652,6 +672,8 @@ _TRACING_NAMES = {
     "float64": lambda x: x,  # a cast carries its operand's dependencies
     "float32": lambda x: x,
     "math": _TracingMath(),
+    "max": _traced_call,
+    "min": _traced_call,
 }
 
 
@@ -802,7 +824,7 @@ class Model:
         """
 
         memo = self.__dict__.setdefault("_host_memo", {}).setdefault(id(math), {})
-        values = _HostValues(self, base, {**_HOST_NAMES, "math": math}, memo)
+        values = _HostValues(self, base, _host_names(math), memo)
         results = tuple(values[q] for q in quantities)
         return results[0] if len(quantities) == 1 else results
 
@@ -826,7 +848,7 @@ class Model:
         k_values = np.asarray(k_values, dtype=np.float64)
         n_k = len(k_values)
         memo = self.__dict__.setdefault("_host_memo", {}).setdefault(id(np), {})
-        values = _HostValues(self, dict(base, k=k_values), {**_HOST_NAMES, "math": np}, memo, batch_shape=(n_k,))
+        values = _HostValues(self, dict(base, k=k_values), _host_names(np), memo, batch_shape=(n_k,))
         y0 = np.zeros((n_k, self.nvar), dtype=np.float64)
         for s in self.states.values():
             value = np.broadcast_to(np.asarray(values[s.name], dtype=np.float64), s.shape + (n_k,))

@@ -54,7 +54,7 @@ import numpy as np
 
 from .component import Component, Interaction, Model, Setting, Species, State
 from .spline_interpolation import FastUniformCubicSpline1D, spline_interpolation
-from .util import generalized_gauss_laguerre_weights, integrate_trapz
+from .util import generalized_gauss_laguerre_weights
 
 SUMS = ("grho", "dgrho", "dgq", "dgpi")
 """The quantities summed over species: the Friedmann density, the sources of
@@ -161,16 +161,13 @@ class Metric(Component):
 
 
 # --- matter -------------------------------------------------------------------------
-# The density parameters are read through the trajectory's sensitivity
-# direction, ``grho_i = grho_i_nominal + eps * dir_grho_i``: ``eps`` is zero in
-# every primal solve and d/d(eps) is the derivative along ``dir``.
+# The density coefficients ``grho_i = 8 pi G rho_i a^2`` today are inputs of the
+# row; derivatives with respect to them are modax's sensitivities over their
+# columns (:data:`discoeb.perturbations.PHYSICAL_COLUMNS`).
 
 
 class ColdDarkMatter(Species):
     clxc = State(initial=lambda clxg: 0.75 * clxg)  # the adiabatic mode: 3/4 of the photon density
-
-    def grhoc(self, grhoc_nominal, eps, dir_grhoc):
-        return grhoc_nominal + eps * dir_grhoc
 
     def grhoc_t(self, grhoc, inv_a):
         return grhoc * inv_a
@@ -191,9 +188,6 @@ class Baryons(Species):
 
     clxb = State(initial=lambda clxg: 0.75 * clxg)
     vb = State(initial=lambda qg: 0.75 * qg)
-
-    def grhob(self, grhob_nominal, eps, dir_grhob):
-        return grhob_nominal + eps * dir_grhob
 
     def grhob_t(self, grhob, inv_a):
         return grhob * inv_a
@@ -259,9 +253,6 @@ class Photons(Species):
     def __init__(self, **settings):
         super().__init__(**settings)
         _needs_octupole(LMAX_G=self.LMAX_G, LMAX_POL=self.LMAX_POL)
-
-    def grhog(self, grhog_nominal, eps, dir_grhog):
-        return grhog_nominal + eps * dir_grhog
 
     def grhog_t(self, grhog, inv_a2):
         return grhog * inv_a2
@@ -360,9 +351,6 @@ class MasslessNeutrinos(Species):
     def __init__(self, **settings):
         super().__init__(**settings)
         _needs_octupole(LMAX_NR=self.LMAX_NR)
-
-    def grhornomass(self, grhornomass_nominal, eps, dir_grhornomass):
-        return grhornomass_nominal + eps * dir_grhornomass
 
     def grhor_t(self, grhornomass, inv_a2):
         return grhornomass * inv_a2
@@ -472,9 +460,6 @@ class MassiveNeutrinos(Species):
 class CosmologicalConstant(Species):
     """A cosmological constant: density only, no perturbations."""
 
-    def grhov(self, grhov_nominal, eps, dir_grhov):
-        return grhov_nominal + eps * dir_grhov
-
     def grhov_t(self, grhov, a2):
         return grhov * a2
 
@@ -498,9 +483,6 @@ class DarkEnergy(Species):
 
     clxq = State(initial=lambda w_DE_0, clxc: (1.0 + w_DE_0) * clxc)  # adiabatic, at rest
     thetaq = State()
-
-    def grhov(self, grhov_nominal, eps, dir_grhov):
-        return grhov_nominal + eps * dir_grhov
 
     def w_Q(self, a, w_DE_0, w_DE_a):
         return w_DE_0 + w_DE_a * (1.0 - a)
@@ -810,20 +792,6 @@ def dtauda(a, densities):
     return 1.0 / (a * expansion_rate(a, densities))
 
 
-def get_aprimeoa(*, densities, a):
-    """The conformal Hubble rate ``a'/a = a H`` at scalar ``a``."""
-
-    return expansion_rate(a, densities)
-
-
-def compute_angular_diameter_distance(*, aexp, param):
-    """The angular diameter distance to ``aexp``, from ``param['densities']``."""
-
-    aexpv = jnp.linspace(aexp, 1.0, 1000)
-    aH = jax.vmap(lambda a: expansion_rate(a, param["densities"]))(aexpv) * aexpv
-    return aexp * integrate_trapz(1 / aH, aexpv)
-
-
 def setup_background_evolution(*, amin, amax, param):
     """Mean densities, the massive-neutrino spline and ``tau(a)`` of ``param``.
 
@@ -863,12 +831,6 @@ def setup_background_evolution(*, amin, amax, param):
     integrator = FastUniformCubicSpline1D(loga, dtauda_values * a)
     param["tau"] = param["taumin"] + jax.vmap(integrator.integral)(loga)
     param["taumax"] = param["tau"][-1]
-    return param
-
-
-def batch_dimensions(param):
-    for x in param:
-        param[x] = jnp.atleast_1d(param[x])
     return param
 
 

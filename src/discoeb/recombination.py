@@ -47,13 +47,13 @@ columns of the parameter row after the hierarchy's own
 (:data:`discoeb.perturbations.PARAM_COLUMNS`). ``z_re = 0`` means no reionization."""
 
 THERMO_ERROR_WEIGHT = 1.0
-"""Weight of ``ln a`` and the three RECFAST states in the step-size error norm
-(their error is held to ``rtol / weight``). ``P(k)`` is unchanged from 0.3 to
-100; the weight sets the thermal state's own accuracy and the step count
-(opacity to 4e-2 at 0.3, 2e-2 at 1, 2e-4 at 100, against 3e-4 for the
-2048-point spline tables this replaced), and 0.1 or 0 blows up. The optical
-depth is excluded from the norm: its increments are integrated to the state's
-accuracy whatever its magnitude."""
+"""Weight of ``ln a`` and the three RECFAST states in the error norm of the
+recombination block's own steps (their error is held to ``rtol / weight``).
+The block steps ahead of the hierarchy on steps of its own, so the weight sets
+the thermal state's accuracy and the number of RECFAST evaluations, not the
+hierarchy's steps; ``P(k)`` is unchanged from 0.3 to 100, and 0 leaves the
+block's steps uncontrolled. The optical depth is excluded from the norm: its
+increments are integrated to the state's accuracy whatever its magnitude."""
 
 AKTHOM_PER_OMEGAB_H0SQ = 2.3038921003709498e-9
 """``n_H sigma_T c / (H_0 units)``: ``kappa' = x_e akthom / a^2`` with ``akthom = this (1 - Y_He) Omega_b H_0^2``."""
@@ -254,15 +254,17 @@ def matter_temperature_rate(Tmat, xe, fHe, zred, Hz, H0, Tcmb):
 
 
 
-def tanh_(x):
-    """``tanh`` through ``exp``: Enzyme has no forward rule for libdevice's ``tanh``.
+def logistic(x):
+    """``(1 + tanh x) / 2 = 1 / (1 + e^{-2x})``, the step of the reionization history.
 
-    ``1 - 2 / (1 + e^{2x})`` goes to ``1`` as ``e^{2x}`` overflows and to ``-1`` as it
-    underflows, so the step functions stay finite at every redshift; the argument is
-    capped where the host's ``exp`` would raise instead of returning ``inf``.
+    Through ``exp`` (Enzyme has no forward rule for libdevice's ``tanh``) in
+    single precision where the rates' transcendentals are. The argument is
+    capped so the exponential stays finite: an overflow to infinity would make
+    the derivative ``2 e^{-2x} / (1 + e^{-2x})^2`` infinity over infinity in the
+    Jacobian sweeps, and that is the optical depth's row.
     """
 
-    return 1.0 - 2.0 / (1.0 + math.exp(min(2.0 * x, 700.0)))
+    return 1.0 / (1.0 + exp_(min(-2.0 * x, 80.0)))
 
 
 # --- the component ------------------------------------------------------------------
@@ -336,8 +338,8 @@ class Recombination(Component):
         y = math.sqrt(1.0 + z) * (1.0 + z)
         y_re = math.sqrt(1.0 + z_re) * (1.0 + z_re)
         delta_y = 0.75 * math.sqrt(1.0 + z_re)
-        step = 0.5 * (1.0 + tanh_((y_re - y) / delta_y))
-        he3 = 0.5 * (1.0 + tanh_((3.5 - z) / 0.5))
+        step = logistic((y_re - y) / delta_y)
+        he3 = logistic((3.5 - z) / 0.5)
         on = min(max(z_re, 0.0), 1.0)
         return ((1.0 + fHe - xe_rec) * step + fHe * he3) * on
 
@@ -389,3 +391,21 @@ class Recombination(Component):
 
     def d_kappa(self, opacity):
         return opacity
+
+
+_ALONE: list = []
+
+
+def recombination_model():
+    """:class:`Recombination` as a model of its own, for evaluating its providers on the host.
+
+    The reionization fraction, the opacity and the sound speed are then one
+    piece of code wherever they are needed: the device kernel, the background
+    solve for ``z_re`` and the diagnostics' thermal histories.
+    """
+
+    from .component import Model
+
+    if not _ALONE:
+        _ALONE.append(Model([Recombination()]))
+    return _ALONE[0]

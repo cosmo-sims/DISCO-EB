@@ -79,6 +79,7 @@ contraction, whose flop count is a few percent of the FFT's.
 
 from __future__ import annotations
 
+import functools
 import math
 from typing import NamedTuple
 
@@ -94,7 +95,6 @@ from .perturbations import (
     BATCH_CACHE_SIZE,
     PARAM_COLUMNS,
     PHYSICAL_DENSITY_COLUMNS,
-    BoundedCache,
     IX_K,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
@@ -169,7 +169,7 @@ class LineOfSightSources(Component):
 def source_model(layout):
     """The joint model of ``layout`` (hierarchy and recombination) with the :class:`LineOfSightSources` appended."""
 
-    return joint_model(layout, extra=[LineOfSightSources()])
+    return joint_model(layout, extra=(LineOfSightSources,))
 
 
 class Spectra(NamedTuple):
@@ -254,12 +254,6 @@ def polarization_error_weights(k, layout):
             weights[:, layout.ix_psi(l, q)] = w
     return jnp.asarray(weights)
 
-_BESSEL_CACHE: BoundedCache = BoundedCache(BATCH_CACHE_SIZE)
-_CMB_GRID_CACHE: BoundedCache = BoundedCache(4096)
-_VISIBILITY_PEAK_CACHE: BoundedCache = BoundedCache(4096)
-_OPERATOR_CACHE: BoundedCache = BoundedCache(BATCH_CACHE_SIZE)
-_HOOKS: dict = {}
-"""The compiled source hook per layout."""
 
 
 # =============================================================================
@@ -353,6 +347,20 @@ def weight_channels(channels, tau_save, tau0):
     return jnp.stack([g * m0, g * m1, g * m2, phi, emk], axis=1)
 
 
+def visibility_peak_times(channels, tau_save, tau0):
+    """``tau_star`` of every cosmology: where its visibility peaks on the save grid.
+
+    From the hook's opacity and optical-depth channels of the first wave mode
+    (the recombination states are the same on every mode of a cosmology), so
+    no stand-alone thermal solve is needed per cosmology. ``(n_cosmo,)``.
+    """
+
+    kappa_prime, kappa = channels[:, 4, 0], channels[:, 5, 0]
+    live = jnp.asarray(tau_save)[None, :] <= jnp.asarray(tau0)[:, None]
+    g = jnp.where(live, kappa_prime * jnp.exp(-(kappa[:, -1:] - kappa)), 0.0)
+    return jnp.asarray(tau_save)[jnp.argmax(g, axis=1)]
+
+
 def assemble_sources(channels, tau):
     """``(S, S_j1, S_j2)`` from the five weighted channels, with the ISW term by centered differences.
 
@@ -375,35 +383,24 @@ def source_channels_jax(model, history, k_sorted, tau_save, tau0, row):
     combinations and the background expansion rate, the thermal inputs through
     the opacity, and both paths are part of the total derivative of ``C_l``.
     ``row`` is the parameter row of :data:`~discoeb.perturbations.PARAM_COLUMNS`
-    by name, with the traced values in place; ``a``, the opacity and the
-    optical depth are read from the recombination states of the history.
-    Returns ``(5, n_k, n_tau)``.
+    by name, with the traced values in place; the opacity and ``a`` are the
+    recombination component's own providers on the thermal states of the
+    history, the optical depth one of those states.
+    Returns the channels, ``(5, n_k, n_tau)``, and ``tau_star``, where the
+    visibility peaks on the save grid.
     """
 
-    from .recombination import AKTHOM_PER_OMEGAB_H0SQ, const_mHe_mH
-
     history = jnp.asarray(history)
-    lna, x_h, x_he, t_m, kappa = thermal_indices(model)
-    a = jnp.exp(history[..., lna])
-    f_he = row["YHe"] / (const_mHe_mH * (1.0 - row["YHe"]))
-    xe_rec = jnp.clip(history[..., x_h], 0.0, 1.0) + f_he * jnp.clip(history[..., x_he], 0.0, 2.0)
-    z = 1.0 / a - 1.0
-    z_re = row["z_re"]
-    y, y_re = (1.0 + z) ** 1.5, (1.0 + z_re) ** 1.5
-    step = 0.5 * (1.0 + jnp.tanh((y_re - y) / (0.75 * jnp.sqrt(1.0 + z_re))))
-    he3 = 0.5 * (1.0 + jnp.tanh((3.5 - z) / 0.5))
-    xe = xe_rec + ((1.0 + f_he - xe_rec) * step + f_he * he3) * jnp.clip(z_re, 0.0, 1.0)
-    akthom = AKTHOM_PER_OMEGAB_H0SQ * (1.0 - row["YHe"]) * row["Omegab"] * row["H0"] ** 2
-    kappa_prime = xe * akthom / a**2
-    live = jnp.asarray(tau_save)[None, :] <= tau0
-    emk = jnp.where(live, jnp.exp(-(history[:, -1:, kappa] - history[..., kappa])), 0.0)
-    g = kappa_prime * emk
-
+    kappa = history[..., thermal_indices(model)[-1]]
     base = dict(row)
     base.update(model.state_values(history, xp=jnp))
-    base.update(k=jnp.asarray(k_sorted)[:, None], a=a)
-    m0, m1, m2, phi = model.evaluate("m0", "m1", "m2", "phi", math=jnp, **base)
-    return jnp.stack([g * m0, g * m1, g * m2, phi, emk], axis=0)
+    base["k"] = jnp.asarray(k_sorted)[:, None]
+    m0, m1, m2, phi, kappa_prime = model.evaluate("m0", "m1", "m2", "phi", "opacity", math=jnp, **base)
+    live = jnp.asarray(tau_save)[None, :] <= tau0
+    emk = jnp.where(live, jnp.exp(-(kappa[:, -1:] - kappa)), 0.0)
+    g = kappa_prime * emk
+    tau_star = jnp.asarray(tau_save)[jnp.argmax(g[0])]
+    return jnp.stack([g * m0, g * m1, g * m2, phi, emk], axis=0), tau_star
 
 
 # =============================================================================
@@ -439,19 +436,16 @@ def _bessel_row(ell: int, n_x: int, dx: float, over_x2: bool = False) -> np.ndar
 def _build_bessel_tables(ells, x_max: float, dx: float):
     """Return cached uniform ``j_ell``, ``j_{ell+1}`` and ``j_ell / x^2`` interpolation tables."""
 
-    key = (
-        tuple(np.asarray(ells, dtype=np.int64)),
-        float(np.ceil(x_max / 250.0) * 250.0),
-        float(dx),
-    )
-    if key in _BESSEL_CACHE:
-        return _BESSEL_CACHE[key]
+    return _bessel_tables(tuple(np.asarray(ells, dtype=np.int64)), float(np.ceil(x_max / 250.0) * 250.0), float(dx))
 
+
+@functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
+def _bessel_tables(ells, x_max, dx):
     ell_arr = np.asarray(ells, dtype=np.int64)
-    n_x = int(np.ceil(key[1] / dx)) + 2
+    n_x = int(np.ceil(x_max / dx)) + 2
     unique = np.unique(np.concatenate([ell_arr, ell_arr + 1]))
     rows = {int(ell): _bessel_row(int(ell), n_x, dx) for ell in unique}
-    result = (
+    return (
         0.0,
         1.0 / dx,
         n_x,
@@ -459,8 +453,6 @@ def _build_bessel_tables(ells, x_max: float, dx: float):
         jnp.asarray(np.stack([rows[int(ell) + 1] for ell in ell_arr])),
         jnp.asarray(np.stack([_bessel_row(int(ell), n_x, dx, over_x2=True) for ell in ell_arr])),
     )
-    _BESSEL_CACHE[key] = result
-    return result
 
 
 def _interp_uniform_table(x, x0, inv_dx, n_x, vals):
@@ -549,17 +541,14 @@ def projection_operator(ells, k_values, k_fine, tau_save, tau0_ref, dtype=jnp.fl
     k_values = np.asarray(k_values, dtype=np.float64)
     k_fine = np.asarray(k_fine, dtype=np.float64)
     tau_save = np.asarray(tau_save, dtype=np.float64)
-    key = (
-        ells.tobytes(),
-        k_values.tobytes(),
-        k_fine.tobytes(),
-        tau_save.tobytes(),
-        float(tau0_ref),
-        dtype,
-    )
-    if key in _OPERATOR_CACHE:
-        return _OPERATOR_CACHE[key]
+    return _projection_operator(ells.tobytes(), k_values.tobytes(), k_fine.tobytes(), tau_save.tobytes(), float(tau0_ref), dtype)
 
+
+@functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
+def _projection_operator(ells, k_values, k_fine, tau_save, tau0_ref, dtype):
+    ells, k_values, k_fine, tau_save = (
+        np.frombuffer(b, dtype=d) for b, d in ((ells, np.int64), (k_values, np.float64), (k_fine, np.float64), (tau_save, np.float64))
+    )
     interp = spline_interpolation(
         jnp.log(jnp.asarray(k_values)), jnp.eye(len(k_values))
     ).evaluate(jnp.log(jnp.asarray(k_fine)))
@@ -599,9 +588,7 @@ def projection_operator(ells, k_values, k_fine, tau_save, tau0_ref, dtype=jnp.fl
     lnk_weights[1:] += 0.5 * dlnk
     lnk_weights[:-1] += 0.5 * dlnk
 
-    op = ProjectionOperator(interp.astype(dtype), bessel, bessel_e, jnp.asarray(lnk_weights))
-    _OPERATOR_CACHE[key] = op
-    return op
+    return ProjectionOperator(interp.astype(dtype), bessel, bessel_e, jnp.asarray(lnk_weights))
 
 
 @jax.jit
@@ -687,6 +674,11 @@ def _dtau_da(a, *dens):
 
 
 def _cmb_grid_summary(cosmology) -> dict[str, float]:
+    return _grid_summary(_as_cosmology(cosmology))
+
+
+@functools.lru_cache(maxsize=4096)
+def _grid_summary(cosmology) -> dict[str, float]:
     """Return the characteristic scales that set the adaptive ``k`` / ``tau`` grids.
 
     ``tau_star`` is the visibility peak and ``delta_tau_rec`` its Gaussian
@@ -695,10 +687,6 @@ def _cmb_grid_summary(cosmology) -> dict[str, float]:
     wavenumber (which sets their envelope). Together they say where the CMB
     sources have structure, and hence where the grids must be dense.
     """
-
-    cosmology = _as_cosmology(cosmology)
-    if cosmology in _CMB_GRID_CACHE:
-        return _CMB_GRID_CACHE[cosmology]
 
     dens = density_coefficients(cosmology)
     tau_grid, values, tau0 = host_thermal_history(cosmology)
@@ -759,26 +747,7 @@ def _cmb_grid_summary(cosmology) -> dict[str, float]:
         "r_s": r_s,
         "k_D": k_D,
     }
-    _CMB_GRID_CACHE[cosmology] = out
     return out
-
-
-def _visibility_peak(cosmology) -> float:
-    """The conformal time of the visibility maximum, ``tau_star``.
-
-    The one number of :func:`_cmb_grid_summary` the batched spectrum needs per
-    cosmology (for the ``k`` band of :func:`_k_band`), without the sound-horizon
-    and Silk-damping quadratures the grids need only from their fiducial.
-    """
-
-    cosmology = _as_cosmology(cosmology)
-    cached = _VISIBILITY_PEAK_CACHE.get(cosmology)
-    if cached is None:
-        tau_grid, values, tau0 = host_thermal_history(cosmology)
-        _, vis, _ = visibility_on_grid(tau_grid, values[1], tau_grid, float(tau0))
-        cached = float(tau_grid[int(np.argmax(vis))])
-        _VISIBILITY_PEAK_CACHE[cosmology] = cached
-    return cached
 
 
 def _resample_from_density(x, density, n):
@@ -1027,13 +996,11 @@ def build_source_hook(sources):
     return hook
 
 
+@functools.cache
 def source_hook(layout):
     """The compiled source hook of a layout, built once."""
 
-    hook = _HOOKS.get(layout)
-    if hook is None:
-        hook = _HOOKS[layout] = build_source_hook(build_source_device_function(source_model(layout)))
-    return hook
+    return build_source_hook(build_source_device_function(source_model(layout)))
 
 
 def _solve_with_hook(prepared, k_values, tau_save, hook, hook_size, solve_kwargs):
@@ -1224,7 +1191,7 @@ def _compute_transfer_batch(
     from .perturbations import _prepare_solve
 
     cosmologies = tuple(_as_cosmology(c) for c in cosmologies)
-    prepared = _prepare_solve(cosmologies, extra=(LineOfSightSources(),), key="sources")
+    prepared = _prepare_solve(cosmologies, extra=(LineOfSightSources,))
     tau0_all = np.asarray(prepared.tau0, dtype=np.float64)
     if grids is None:
         grids = cmb_grids(
@@ -1256,15 +1223,13 @@ def _compute_transfer_batch(
         solve_kwargs,
     )
     # (n_k, n_cosmo, 6 n_tau) -> (n_cosmo, 6, n_k, n_tau), then the visibility weighting
-    channels = weight_channels(
-        jnp.transpose(
-            out.reshape(len(k_sorted), len(cosmologies), len(tau_save), SOURCE_CHANNELS),
-            (1, 3, 0, 2),
-        ),
-        tau_save,
-        tau0_all,
+    recorded = jnp.transpose(
+        out.reshape(len(k_sorted), len(cosmologies), len(tau_save), SOURCE_CHANNELS), (1, 3, 0, 2)
     )
     del out
+    chi_star = jnp.asarray(tau0_all) - visibility_peak_times(recorded, tau_save, tau0_all)
+    channels = weight_channels(recorded, tau_save, tau0_all)
+    del recorded
 
     interp, bessel, bessel_e, lnk_weights = projection_operator(
         ells, k_sorted, k_fine, tau_save, tau0_ref, projection_dtype
@@ -1280,9 +1245,6 @@ def _compute_transfer_batch(
     chi_max = float(tau0_ref - tau_save[0])
     shift_idx, shift_w = _lagrange_shift_stencil(tau_save, tau0_all - tau0_ref)
     shift_idx, shift_w = jnp.asarray(shift_idx), jnp.asarray(shift_w)
-    chi_star = np.asarray(
-        [t0 - _visibility_peak(c) for t0, c in zip(tau0_all, cosmologies)]
-    )
     bands = _k_band(ells_d, k_fine_d, chi_max, chi_star)
     T_cmb = jnp.asarray([float(c.T_cmb) for c in cosmologies])
     k_pivot = float(cosmologies[0].k_pivot)
@@ -1325,7 +1287,7 @@ def _compute_transfer_batch(
     ells_limber_d = jnp.asarray(ells_limber, dtype=jnp.float64)
     k_sorted_d = jnp.asarray(k_sorted)
     theta_psi, limber = lensing_potential_transfer(
-        channels[:, 3], shift_idx, shift_w, chi, jnp.asarray(chi_star), operator, limber_weights, ells_limber_d, k_sorted_d
+        channels[:, 3], shift_idx, shift_w, chi, chi_star, operator, limber_weights, ells_limber_d, k_sorted_d
     )
     transfer = TransferBatch(theta, theta_e, theta_psi, limber, T_cmb)
     tgrids = TransferGrids(ells, k_fine_d, lnk_weights, k_pivot, ells_pp, k_sorted_d, chi, ells_limber_d)
@@ -1339,17 +1301,20 @@ def _lensing_operators(ells, k_sorted, tau_save, tau0_ref, dtype):
     the rest in the Limber approximation; ``ells`` must be sorted.
     """
 
+    return _lensing_operators_cached(ells.tobytes(), np.asarray(k_sorted).tobytes(), np.asarray(tau_save).tobytes(), float(tau0_ref), dtype)
+
+
+@functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
+def _lensing_operators_cached(ells, k_sorted, tau_save, tau0_ref, dtype):
     from .lensing import LIMBER_LMIN, lensing_potential_operator, limber_interpolation
 
-    key = ("lensing", ells.tobytes(), np.asarray(k_sorted).tobytes(), np.asarray(tau_save).tobytes(), float(tau0_ref), dtype)
-    if key not in _OPERATOR_CACHE:
-        exact, limber = ells[ells < LIMBER_LMIN], ells[ells >= LIMBER_LMIN]
-        _OPERATOR_CACHE[key] = (
-            lensing_potential_operator(exact, k_sorted, tau_save, tau0_ref, dtype),
-            limber_interpolation(limber, k_sorted, tau0_ref - np.asarray(tau_save)),
-            limber,
-        )
-    return _OPERATOR_CACHE[key]
+    ells, k_sorted, tau_save = np.frombuffer(ells, np.int64), np.frombuffer(k_sorted, np.float64), np.frombuffer(tau_save, np.float64)
+    exact, limber = ells[ells < LIMBER_LMIN], ells[ells >= LIMBER_LMIN]
+    return (
+        lensing_potential_operator(exact, k_sorted, tau_save, tau0_ref, dtype),
+        limber_interpolation(limber, k_sorted, tau0_ref - tau_save),
+        limber,
+    )
 
 
 def compute_cl_power_spectrum(cosmology, **kwargs):
@@ -1401,7 +1366,7 @@ def cl_power_spectrum_jax(
     from .perturbations import _pack_batch, _prepare_solve, _row_by_name, solve_history_jax
 
     cosmology = _as_cosmology(cosmology)
-    prepared = _prepare_solve((cosmology,), extra=(LineOfSightSources(),), key="sources")
+    prepared = _prepare_solve((cosmology,), extra=(LineOfSightSources,))
     cosmology = prepared.cosmologies[0]
     tau0 = float(prepared.tau0[0])
     if grids is None:
@@ -1442,7 +1407,7 @@ def cl_power_spectrum_jax(
     )
     params = _pack_batch(prepared, k_values, tau_save)[0]
     row = _row_by_name(params[0], densities, thermal)
-    channels = source_channels_jax(prepared.model, history, k_sorted, tau_save, tau0, row)
+    channels, tau_star = source_channels_jax(prepared.model, history, k_sorted, tau_save, tau0, row)
 
     interp, bessel, bessel_e, lnk_weights = projection_operator(
         ells, k_sorted, k_fine, tau_save, tau0_ref, projection_dtype
@@ -1454,7 +1419,7 @@ def cl_power_spectrum_jax(
         ells_d,
         k_fine_d,
         float(tau0_ref - tau_save[0]),
-        float(tau0 - _visibility_peak(cosmology)),
+        tau0 - tau_star,
     )
     theta, theta_e = theta_ell_batch(
         channels[None],

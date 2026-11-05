@@ -1,8 +1,8 @@
 import math
 import os
 from dataclasses import dataclass
+import functools
 from functools import partial
-from collections import OrderedDict
 from typing import NamedTuple
 
 import jax
@@ -21,7 +21,7 @@ from .eb_model import (
     setup_background_evolution,
 )
 from .recombination import (
-    AKTHOM_PER_OMEGAB_H0SQ,
+    recombination_model,
     THERMAL_PARAMETERS,
     THERMO_ERROR_WEIGHT,
     Recombination,
@@ -80,68 +80,6 @@ NVAR = IX_R + LMAX_NR + 1
 """Total length of the perturbation state vector."""
 
 
-# ============================================================
-# MATTER POWER SPECTRUM
-# ============================================================
-
-
-def total_matter_density_contrast(
-    grhoc_t: float,
-    clxc: float,
-    grhob_t: float,
-    clxb: float,
-) -> float:
-    """Return the total-matter density contrast ``delta_m``.
-
-    Density-weighted combination of the CDM and baryon contrasts,
-
-    ``delta_m = (rho_c delta_c + rho_b delta_b) / (rho_c + rho_b)``,
-
-    using the comoving density coefficients (the ``a`` factors cancel).
-    """
-
-    return (grhoc_t * clxc + grhob_t * clxb) / (grhoc_t + grhob_t)
-
-
-def primordial_curvature_power(
-    k: float,
-    A_s: float,
-    n_s: float,
-    k_pivot: float,
-) -> float:
-    """Return the dimensionless primordial curvature power ``P_R(k)``.
-
-    Power-law spectrum ``P_R(k) = A_s (k / k_pivot)^(n_s - 1)``.
-    """
-
-    return A_s * (k / k_pivot) ** (n_s - 1.0)
-
-
-def matter_power_spectrum(
-    k: float,
-    delta_m: float,
-    A_s: float,
-    n_s: float,
-    k_pivot: float,
-) -> float:
-    """Return the linear matter power spectrum ``P(k)`` in Mpc^3.
-
-    With initial conditions normalized to unit comoving curvature, the evolved
-    total-matter contrast ``delta_m(k)`` acts as a transfer function and
-
-    ``P(k) = (2 pi^2 / k^3) P_R(k) delta_m(k)^2``,
-
-    where ``P_R(k)`` is the dimensionless primordial curvature power. The contrast
-    ``delta_m`` must be evaluated at the output time (e.g. ``a = 1``).
-    """
-
-    return (
-        2.0
-        * math.pi**2
-        / k**3
-        * primordial_curvature_power(k, A_s, n_s, k_pivot)
-        * delta_m**2
-    )
 @dataclass(frozen=True)
 class PerturbationLayout:
     """Enabled components and state-vector indices of the perturbation hierarchy.
@@ -425,14 +363,11 @@ TAU_START = 0.1
 #   p = (grhog, grhornomass, grhoc, grhob, grhov,
 #        tau_start, tau_end, k, cosmology_idx, save_index,
 #        w_DE_0, w_DE_a, cs2_DE, grhok, grhor_nu, n_mnu, amnu,
-#        eps, dir_grhog, dir_grhornomass, dir_grhoc, dir_grhob, dir_grhov,
 #        YHe, Tcmb, H0, Omegab, z_re)
 # grhok = grhom * Omega_k is the (constant) comoving curvature density
-# coefficient 8*pi*G*rho_K a^2; it is 0 for a flat cosmology. The rhs reads
-# density ``c`` as ``p[c] + p[IX_EPS] * p[IX_DIR + c]``; ``eps`` is zero in
-# every solve and the ``dir`` columns are kept for callers that seed a
-# direction of their own. The last five columns are what the recombination
-# rates and reionization read (:data:`discoeb.recombination.THERMAL_PARAMETERS`).
+# coefficient 8*pi*G*rho_K a^2; it is 0 for a flat cosmology. The last five
+# columns are what the recombination rates and reionization read
+# (:data:`discoeb.recombination.THERMAL_PARAMETERS`).
 IX_TAU_START = 5
 IX_TAU_END = 6
 IX_K = 7
@@ -445,9 +380,7 @@ IX_GRHOK = 13
 IX_GRHOR_NU = 14
 IX_NMNU = 15
 IX_AMNU = 16
-IX_EPS = 17
-IX_DIR = 18
-N_PARAM_HIERARCHY = IX_DIR + 5
+N_PARAM_HIERARCHY = IX_AMNU + 1
 IX_YHE = N_PARAM_HIERARCHY
 IX_TCMB = N_PARAM_HIERARCHY + 1
 IX_H0 = N_PARAM_HIERARCHY + 2
@@ -456,11 +389,11 @@ IX_ZRE = N_PARAM_HIERARCHY + 4
 N_PARAM = N_PARAM_HIERARCHY + len(THERMAL_PARAMETERS)
 
 PARAM_COLUMNS = {
-    "grhog_nominal": 0,
-    "grhornomass_nominal": 1,
-    "grhoc_nominal": 2,
-    "grhob_nominal": 3,
-    "grhov_nominal": 4,
+    "grhog": 0,
+    "grhornomass": 1,
+    "grhoc": 2,
+    "grhob": 3,
+    "grhov": 4,
     "tau_start": IX_TAU_START,
     "tau_end": IX_TAU_END,
     "k": IX_K,
@@ -473,17 +406,10 @@ PARAM_COLUMNS = {
     "grhor_nu": IX_GRHOR_NU,
     "n_mnu": IX_NMNU,
     "amnu": IX_AMNU,
-    "eps": IX_EPS,
-    "dir_grhog": IX_DIR,
-    "dir_grhornomass": IX_DIR + 1,
-    "dir_grhoc": IX_DIR + 2,
-    "dir_grhob": IX_DIR + 3,
-    "dir_grhov": IX_DIR + 4,
     **{name: N_PARAM_HIERARCHY + i for i, name in enumerate(THERMAL_PARAMETERS)},
 }
 """The row's columns by the names the component model's providers take them under
-(:mod:`discoeb.eb_model`, :mod:`discoeb.recombination`): ``grhog_nominal`` is
-read into the equations as ``grhog = grhog_nominal + eps * dir_grhog``."""
+(:mod:`discoeb.eb_model`, :mod:`discoeb.recombination`)."""
 
 PHYSICAL_DENSITY_COLUMNS = (0, 1, 2, 3, 4)
 """Packed-parameter columns carrying the background densities
@@ -509,49 +435,20 @@ THERMO_ATOL = 1e-7
 """Tolerances of the stand-alone RECFAST solve of :func:`thermal_history_batch`."""
 
 
-class BoundedCache(OrderedDict):
-    """A least-recently-used ``dict`` holding at most ``maxsize`` entries."""
-
-    def __init__(self, maxsize: int):
-        super().__init__()
-        self.maxsize = int(maxsize)
-
-    def __getitem__(self, key):
-        value = super().__getitem__(key)
-        self.move_to_end(key)
-        return value
-
-    def get(self, key, default=None):
-        if key in self:
-            return self[key]
-        return default
-
-    def __setitem__(self, key, value):
-        if key in self:
-            self.move_to_end(key)
-        super().__setitem__(key, value)
-        while len(self) > self.maxsize:
-            self.popitem(last=False)
-
-
 BATCH_CACHE_SIZE = 8
 """Batches whose prepared solve and packed initial states are kept."""
-
-_DENSITY_CACHE: BoundedCache = BoundedCache(4096)
-_PREPARED_SOLVE_CACHE: BoundedCache = BoundedCache(BATCH_CACHE_SIZE)
-_PACKED_BATCH_CACHE: BoundedCache = BoundedCache(BATCH_CACHE_SIZE)
-_KERNELS: dict = {}
 
 
 def _densities(cosmology) -> dict:
     """:func:`discoeb.eb_model.density_parameters` of a cosmology, as floats, memoised."""
 
-    cosmology = _as_cosmology(cosmology)
-    cached = _DENSITY_CACHE.get(cosmology)
-    if cached is None:
-        d = density_parameters(cosmology.to_background_params(), xp=np)
-        cached = _DENSITY_CACHE[cosmology] = {k: float(v) for k, v in d.items()}
-    return cached
+    return _densities_of(_as_cosmology(cosmology))
+
+
+@functools.lru_cache(maxsize=4096)
+def _densities_of(cosmology: _ParamCosmology) -> dict:
+    d = density_parameters(cosmology.to_background_params(), xp=np)
+    return {k: float(v) for k, v in d.items()}
 
 
 def density_coefficients(cosmology) -> tuple[float, float, float, float, float]:
@@ -585,10 +482,11 @@ def joint_model(layout, extra=()):
     The recombination states come *after* the hierarchy's, so the layout's
     indices (:data:`IX_ETAK` ...) hold and the thermal states are the last
     five columns of every history: ``ln a``, ``x_H``, ``x_He``, ``T_m`` and
-    the optical depth, at ``model.index["lna"]`` and so on.
+    the optical depth, at ``model.index["lna"]`` and so on. ``extra`` are
+    component classes appended after it (the line-of-sight sources).
     """
 
-    return perturbation_model(layout, extra=[Recombination(), *extra])
+    return perturbation_model(layout, extra=[Recombination(), *(cls() for cls in extra)])
 
 
 def thermal_indices(model) -> tuple[int, ...]:
@@ -597,22 +495,18 @@ def thermal_indices(model) -> tuple[int, ...]:
     return tuple(model.index[n] for n in ("lna", "thermo_0", "thermo_1", "thermo_2", "kappa"))
 
 
-def joint_kernel(layout, extra=(), key=None):
-    """``(model, rhs, sparsity)`` of the joint model, built once per layout (and ``key``).
+@functools.lru_cache(maxsize=None)
+def joint_kernel(layout, extra=()):
+    """``(model, rhs, sparsity)`` of the joint model, built once per layout and ``extra``.
 
     The right-hand side closes over nothing that varies between batches, so
-    modax compiles it once; the pattern is the hierarchy's with the five
-    driver columns in every row and the driver rows on their own, which
-    modax's ``split=True`` reads as a driver block and a main block.
+    modax compiles it once; the pattern is block lower triangular, the
+    recombination rows on their own, which modax's ``split=True`` reads as a
+    driver block and a main block.
     """
 
-    cache_key = (layout, key)
-    cached = _KERNELS.get(cache_key)
-    if cached is None:
-        model = joint_model(layout, extra)
-        rhs = model.build(PARAM_COLUMNS)
-        cached = _KERNELS[cache_key] = (model, rhs, model.sparsity())
-    return cached
+    model = joint_model(layout, extra)
+    return model, model.build(PARAM_COLUMNS), model.sparsity()
 
 
 def _stack_background_params(cosmologies) -> dict:
@@ -639,20 +533,14 @@ def _background_tau(d):
 def _reionization_redshift(a_bg, tau_bg, xe_rec, params, tau_reio):
     """``z_re`` of CAMB's step, by bisection on the background grid, for ``tau_reio > 0``."""
 
-    f_he = params["YHe"] / (4.0 * (1.0 - params["YHe"]))
-    akthom = AKTHOM_PER_OMEGAB_H0SQ * (1.0 - params["YHe"]) * params["Omegab"] * params["H0"] ** 2
     dtau = jnp.gradient(tau_bg)
-
-    def xe_reio(a, z_re):
-        z = 1.0 / a - 1.0
-        y, y_re = (1.0 + z) ** 1.5, (1.0 + z_re) ** 1.5
-        delta_y = 1.5 * jnp.sqrt(1.0 + z_re) * 0.5
-        step = 0.5 * (1.0 + jnp.tanh((y_re - y) / delta_y))
-        he3 = 0.5 * (1.0 + jnp.tanh((3.5 - z) / 0.5))
-        return (1.0 + f_he - xe_rec) * step + f_he * he3
+    thermal = {name: params[name] for name in ("YHe", "Omegab", "H0")}
 
     def tau_of(z_re):
-        return jnp.sum(xe_reio(a_bg, z_re) * akthom / a_bg**2 * dtau)
+        xe_reio, akthom = recombination_model().evaluate(
+            "xe_reio", "akthom", math=jnp, inv_a=1.0 / a_bg, xe_rec=xe_rec, z_re=z_re, **thermal
+        )
+        return jnp.sum(xe_reio * akthom / a_bg**2 * dtau)
 
     def bisect(carry, _):
         lo, hi = carry
@@ -698,8 +586,8 @@ class _PreparedSolve(NamedTuple):
     z_re: np.ndarray
 
 
-def _prepare_solve(cosmologies, extra=(), key=None) -> _PreparedSolve:
-    """Return (and cache) the joint kernel and the endpoints of a batch of cosmologies.
+def _prepare_solve(cosmologies, extra=()) -> _PreparedSolve:
+    """The joint kernel and the endpoints of a batch of cosmologies, cached per batch.
 
     All cosmologies in a batch must share a perturbation layout. Nothing here
     depends on the wave modes, the save times or the tolerances; the kernel
@@ -707,54 +595,47 @@ def _prepare_solve(cosmologies, extra=(), key=None) -> _PreparedSolve:
     a few milliseconds.
     """
 
-    cosmologies = tuple(_as_cosmology(cosmology) for cosmology in cosmologies)
-    cache_key = (cosmologies, key, MassiveNeutrinos.NQMAX, Photons.LMAX_G, Photons.LMAX_POL,
-                 MasslessNeutrinos.LMAX_NR, MassiveNeutrinos.LMAX_NU, TAU_START)
-    cached = _PREPARED_SOLVE_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    layout = _layout_for(cosmologies[0])
-    for cosmology in cosmologies[1:]:
-        if _layout_for(cosmology) != layout:
-            raise ValueError(
-                "all cosmologies in a batch must share a perturbation layout "
-                "(same dark-energy / massive-neutrino settings)"
-            )
-    model, rhs, sparsity = joint_kernel(layout, extra, key)
+    return _prepared(tuple(_as_cosmology(cosmology) for cosmology in cosmologies), extra)
+
+
+@functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
+def _prepared(cosmologies, extra) -> _PreparedSolve:
+    layouts = {_layout_for(cosmology) for cosmology in cosmologies}
+    if len(layouts) > 1:
+        raise ValueError(
+            "all cosmologies in a batch must share a perturbation layout "
+            "(same dark-energy / massive-neutrino settings)"
+        )
+    (layout,) = layouts
+    model, rhs, sparsity = joint_kernel(layout, extra)
     tau0, lna_start, z_re = (np.asarray(x) for x in background_endpoints(_stack_background_params(cosmologies)))
-    prepared = _PreparedSolve(cosmologies, layout, model, rhs, sparsity, tau0, lna_start, z_re)
-    _PREPARED_SOLVE_CACHE[cache_key] = prepared
-    return prepared
+    return _PreparedSolve(cosmologies, layout, model, rhs, sparsity, tau0, lna_start, z_re)
 
 
-def make_params(cosmology, k_values: np.ndarray, tau_end: float, z_re: float = 0.0) -> np.ndarray:
-    """Return per-mode packed parameters for the device rhs, one row per wave mode."""
+def _row(cosmology, tau_end: float, z_re: float) -> dict:
+    """The parameter row of one cosmology by name, without its wave number."""
 
-    cosmology = _as_cosmology(cosmology)
     d = _densities(cosmology)
-    k_values = np.asarray(k_values, dtype=np.float64)
-    row = {
-        "grhog_nominal": d["grhog"],
-        "grhornomass_nominal": d["grhornomass"],
-        "grhoc_nominal": d["grhoc"],
-        "grhob_nominal": d["grhob"],
-        "grhov_nominal": d["grhov"],
+    return {
+        **{name: d[name] for name in ("grhog", "grhornomass", "grhoc", "grhob", "grhov", "grhok", "grhor_nu", "n_mnu", "amnu")},
         "tau_start": TAU_START,
         "tau_end": tau_end,
         "save_index": 1.0,
         "w_DE_0": cosmology.w_DE_0,
         "w_DE_a": cosmology.w_DE_a,
         "cs2_DE": cosmology.cs2_DE,
-        "grhok": d["grhok"],
-        "grhor_nu": d["grhor_nu"],
-        "n_mnu": d["n_mnu"],
-        "amnu": d["amnu"],
         "YHe": cosmology.Y_He,
         "Tcmb": cosmology.T_cmb,
         "H0": cosmology.H0,
         "Omegab": cosmology.Omegab,
         "z_re": z_re,
     }
+
+
+def make_params(cosmology, k_values: np.ndarray, tau_end: float, z_re: float = 0.0) -> np.ndarray:
+    """Return per-mode packed parameters for the device rhs, one row per wave mode."""
+
+    row = _row(_as_cosmology(cosmology), tau_end, z_re)
     params = np.zeros((len(k_values), N_PARAM), dtype=np.float64)
     for name, column in PARAM_COLUMNS.items():
         params[:, column] = row.get(name, 0.0)
@@ -762,24 +643,45 @@ def make_params(cosmology, k_values: np.ndarray, tau_end: float, z_re: float = 0
     return params
 
 
-def make_initial_states(cosmology, k_values: np.ndarray, model, lna_start: float) -> np.ndarray:
-    """Adiabatic initial states for every wave mode plus the fully ionized thermal state, ``(n_k, nvar)``."""
+def make_initial_states(cosmology, k_values: np.ndarray, model, lna_start) -> np.ndarray:
+    """Adiabatic initial states for every wave mode plus the fully ionized thermal state, ``(n_k, nvar)``.
 
-    cosmology = _as_cosmology(cosmology)
-    grhog, grhornomass, grhoc, grhob, grhov = density_coefficients(cosmology)
+    ``cosmology`` may be one cosmology or a sequence of ``len(k_values)`` of
+    them, one per trajectory, and ``lna_start`` a number or one per trajectory:
+    the initial conditions' algebra broadcasts over the trajectories.
+    """
+
+    cosmologies = [cosmology] if isinstance(cosmology, (dict, _ParamCosmology)) else list(cosmology)
+    cosmologies = [_as_cosmology(c) for c in cosmologies]
+    per = lambda values: values[0] if len(values) == 1 else np.asarray(values)
+    densities = np.array([density_coefficients(c) for c in cosmologies]).T
     return model.initial_state(
         k_values,
         tau=TAU_START,
-        grhog=grhog,
-        grhornomass=grhornomass,
-        grhoc=grhoc,
-        grhob=grhob,
-        grhov=grhov,
-        w_DE_0=cosmology.w_DE_0,
-        w_DE_a=cosmology.w_DE_a,
-        lna_start=float(lna_start),
-        Tcmb=cosmology.T_cmb,
+        **dict(zip(("grhog", "grhornomass", "grhoc", "grhob", "grhov"), map(per, densities))),
+        w_DE_0=per([c.w_DE_0 for c in cosmologies]),
+        w_DE_a=per([c.w_DE_a for c in cosmologies]),
+        lna_start=np.asarray(lna_start, dtype=np.float64),
+        Tcmb=per([c.T_cmb for c in cosmologies]),
     )
+
+
+@functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
+def _packed(cosmologies, model, tau0, lna_start, z_re, k_bytes, tau_bytes):
+    k_arr = np.frombuffer(k_bytes, dtype=np.float64)
+    n_cosmo = len(cosmologies)
+    order = np.argsort(k_arr, kind="stable")
+    k_sorted = k_arr[order]
+    rows = np.array([[_row(c, t, z).get(name, 0.0) for name in PARAM_COLUMNS] for c, t, z in zip(cosmologies, tau0, z_re)])
+    params = np.tile(rows, (len(k_sorted), 1))
+    params[:, IX_K] = np.repeat(k_sorted, n_cosmo)
+    params[:, IX_COSMOLOGY] = np.tile(np.arange(n_cosmo, dtype=np.float64), len(k_sorted))
+    y0 = make_initial_states(cosmologies * len(k_sorted), params[:, IX_K], model, np.tile(lna_start, len(k_sorted)))
+    if tau_bytes is None:
+        t_span = np.asarray((TAU_START, float(np.max(tau0))), dtype=np.float64)
+    else:
+        t_span = np.frombuffer(tau_bytes, dtype=np.float64).copy()
+    return np.ascontiguousarray(params), np.ascontiguousarray(y0), t_span, order, k_sorted
 
 
 def _pack_batch(prepared, k_values, tau_save=None):
@@ -791,32 +693,12 @@ def _pack_batch(prepared, k_values, tau_save=None):
     stopping at its own ``tau0`` through ``IX_TAU_END``.
     """
 
-    k_arr = np.ascontiguousarray(np.asarray(k_values, dtype=np.float64))
-    tau_key = None if tau_save is None else np.asarray(tau_save, np.float64).tobytes()
-    key = (prepared.cosmologies, k_arr.shape, k_arr.tobytes(), tau_key)
-    cached = _PACKED_BATCH_CACHE.get(key)
-    if cached is not None:
-        return cached
-
-    model = prepared.model
-    n_cosmo = len(prepared.cosmologies)
-    order = np.argsort(k_arr, kind="stable")
-    k_sorted = k_arr[order]
-    n_traj = len(k_sorted) * n_cosmo
-    params = np.empty((n_traj, N_PARAM), dtype=np.float64)
-    y0 = np.empty((n_traj, model.nvar), dtype=np.float64)
-    for ci, cosmology in enumerate(prepared.cosmologies):
-        base = make_params(cosmology, k_sorted, float(prepared.tau0[ci]), float(prepared.z_re[ci]))
-        base[:, IX_COSMOLOGY] = float(ci)
-        params[ci::n_cosmo] = base
-        y0[ci::n_cosmo] = make_initial_states(cosmology, k_sorted, model, prepared.lna_start[ci])
-    if tau_save is None:
-        t_span = np.asarray((TAU_START, float(np.max(prepared.tau0))), dtype=np.float64)
-    else:
-        t_span = np.ascontiguousarray(np.asarray(tau_save, dtype=np.float64))
-    packed = (np.ascontiguousarray(params), np.ascontiguousarray(y0), t_span, order, k_sorted)
-    _PACKED_BATCH_CACHE[key] = packed
-    return packed
+    k_bytes = np.ascontiguousarray(np.asarray(k_values, dtype=np.float64)).tobytes()
+    tau_bytes = None if tau_save is None else np.ascontiguousarray(np.asarray(tau_save, dtype=np.float64)).tobytes()
+    return _packed(
+        prepared.cosmologies, prepared.model, tuple(map(float, prepared.tau0)), tuple(map(float, prepared.lna_start)),
+        tuple(map(float, prepared.z_re)), k_bytes, tau_bytes,
+    )
 
 
 def error_weights_for(prepared, n_traj: int, base=None, thermo_weight: float = THERMO_ERROR_WEIGHT):
@@ -858,6 +740,7 @@ def _launch(prepared, params, y0, t_span, *, rtol, atol, first_step, max_steps,
         max_registers=CUDA_MAX_REGISTERS,
         error_weights=error_weights_for(prepared, np.shape(params)[0], error_weights, thermo_weight),
         split=True,
+        cache=True,
         **extra,
     )
 
@@ -1051,6 +934,7 @@ def solve_history_jax(
         sens_param_columns=PHYSICAL_COLUMNS,
         sens_error_control=sens_error_control,
         split=True,
+        cache=True,
     )
     return history, densities, thermal, k_sorted, order
 
@@ -1163,9 +1047,6 @@ def thermal_history_batch(cosmologies, n_grid: int = N_THERMO_GRID) -> dict:
     }
 
 
-_HOST_HISTORY_CACHE: BoundedCache = BoundedCache(64)
-
-
 def host_thermal_history(cosmology, n_grid: int = N_THERMO_GRID):
     """``(tau_grid, values, tau0)`` of one cosmology on a uniform ``log tau`` grid, as host arrays.
 
@@ -1175,11 +1056,11 @@ def host_thermal_history(cosmology, n_grid: int = N_THERMO_GRID):
     thermodynamics tests; the perturbation kernel reads none of it.
     """
 
-    cosmology = _as_cosmology(cosmology)
-    key = (cosmology, n_grid)
-    cached = _HOST_HISTORY_CACHE.get(key)
-    if cached is not None:
-        return cached
+    return _host_thermal_history(_as_cosmology(cosmology), n_grid)
+
+
+@functools.lru_cache(maxsize=64)
+def _host_thermal_history(cosmology: _ParamCosmology, n_grid: int):
     hist = thermal_history_batch([cosmology], n_grid)
     params = cosmology.to_background_params()
     d = density_parameters({k: v for k, v in params.items() if k != "tau_reio"}, xp=np)
@@ -1196,25 +1077,9 @@ def host_thermal_history(cosmology, n_grid: int = N_THERMO_GRID):
         jnp.asarray(a_bg), jnp.asarray(tau_bg), jnp.asarray(xe_bg),
         {k: jnp.asarray(v) for k, v in params.items()}, jnp.asarray(params["tau_reio"]),
     ))
-    f_he = params["YHe"] / (4.0 * (1.0 - params["YHe"]))
-    if z_re > 0.0:
-        z = 1.0 / a_vals - 1.0
-        y, y_re = (1.0 + z) ** 1.5, (1.0 + z_re) ** 1.5
-        step = 0.5 * (1.0 + np.tanh((y_re - y) / (0.75 * np.sqrt(1.0 + z_re))))
-        he3 = 0.5 * (1.0 + np.tanh((3.5 - z) / 0.5))
-        xe_vals = xe_vals + (1.0 + f_he - xe_vals) * step + f_he * he3
-    akthom = AKTHOM_PER_OMEGAB_H0SQ * (1.0 - params["YHe"]) * params["Omegab"] * params["H0"] ** 2
-    opacity = xe_vals * akthom / a_vals**2
+    opacity = recombination_model().evaluate(
+        "opacity", math=np, inv_a=1.0 / a_vals, inv_a2=1.0 / a_vals**2, xe_rec=xe_vals, z_re=z_re,
+        YHe=params["YHe"], Omegab=params["Omegab"], H0=params["H0"],
+    )
     cs2 = np.interp(np.log(a_vals), np.log(a_rec), cs2_rec)
-    out = (tau_grid, np.stack((a_vals, opacity, cs2)), tau0)
-    _HOST_HISTORY_CACHE[key] = out
-    return out
-
-
-def clear_prepared_solve_cache() -> None:
-    """Drop the cached prepared and packed solves and the compiled joint models."""
-
-    _PREPARED_SOLVE_CACHE.clear()
-    _PACKED_BATCH_CACHE.clear()
-    _HOST_HISTORY_CACHE.clear()
-    _KERNELS.clear()
+    return tau_grid, np.stack((a_vals, opacity, cs2)), tau0
