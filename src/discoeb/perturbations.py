@@ -1301,20 +1301,21 @@ def _launch(
 ):
     """One modax Rodas5P launch of the prepared solve over the packed trajectories.
 
-    ``options`` are further modax settings (``error_weights``, or a
-    ``save_hook`` with its ``hook_size`` and ``save_history``).
+    ``options`` are further modax settings (``error_weights``, a ``save_hook``
+    with its ``hook_size`` and ``save_history``, a ``sensitivity`` spec, or
+    ``lu_precision`` in place of the plain solve's ``"fp32"``).
     """
 
     from modax.rodas5P import solve as rodas5P_solve
 
     prepared.bind()
+    options.setdefault("lu_precision", "fp32")
     return rodas5P_solve(
         prepared.ode_fn,
         y0,
         t_span,
         params,
         sparsity=prepared.sparsity,
-        lu_precision="fp32",
         rtol=rtol,
         atol=atol,
         first_step=first_step,
@@ -1434,6 +1435,8 @@ class EBSolution:
     with the wave modes and times in the caller's order, and ``solution[name]``
     is that quantity's ``(n_cosmologies, n_k, n_tau)`` block. ``tau0`` is each
     cosmology's conformal age, past which its column holds the state today.
+    ``values`` is differentiable with respect to the cosmological parameters
+    of :data:`DIFFERENTIABLE_PARAMETERS` given as JAX values.
     """
 
     names: tuple[str, ...]
@@ -1449,7 +1452,7 @@ class EBSolution:
         return self.values[:, self.names.index(name)]
 
 
-def build_keep_hook(model, names):
+def build_keep_hook(model, names, *, tangent: bool = False):
     """A modax save hook storing the quantities ``names`` of every save in the trajectory's row.
 
     A name is a state element (``clxc``, ``theta_2``, ``psi_0_1``: the
@@ -1462,6 +1465,17 @@ def build_keep_hook(model, names):
     past a cosmology's ``tau0`` holds its frozen final state, which the
     background of ``tau0`` goes with. The generated text is
     ``hook._generated_source``.
+
+    With ``tangent`` the hook is for a joint launch carrying one sensitivity
+    column ``S = dy/d eps`` after the state (modax's ``sensitivity`` with
+    ``param_columns=(IX_EPS,)``): it stores each quantity and, after the
+    quantities of the save, its total derivative along the column,
+    ``dq/d eps = (dq/dy) S + dq/d eps``, by one Enzyme forward sweep of the
+    compiled quantities seeded with ``(S, 0, e_eps)`` -- the sweep modax
+    runs on the right-hand side for the sensitivity equations -- and a state
+    element's derivative straight out of ``S``. The densities enter the
+    quantities through the parameter row as ``grho_i = grho_i_nominal + eps
+    dir_grho_i``, so this is the derivative along the row's ``dir``.
     """
 
     from numba_cuda_mlir import cuda
@@ -1476,31 +1490,271 @@ def build_keep_hook(model, names):
             f"({', '.join(model.states[vectors[0]].elements[:3])}, ...)"
         )
     quantities = [n for n in names if n not in model.index]
+    nvar = model.nvar
     namespace: dict = {}
     if quantities:
+        # Enzyme's forward sweep wants a tuple-valued primal; a lone quantity
+        # is returned beside the time, which costs nothing.
+        outputs = quantities if len(quantities) > 1 else [*quantities, "tau"]
         namespace["kept"] = model.build_function(
-            quantities, inputs=("y", "tau"), params=PARAM_COLUMNS, name="kept"
+            outputs, inputs=("y", "tau"), params=PARAM_COLUMNS, name="kept"
         )
+    width = (2 if tangent else 1) * len(names)
     lines = [
         "def hook(save_idx, y, tau, p, acc):",
         f"    t = p[{IX_TAU_END}]",
         "    if tau < t:",
         "        t = tau",
-        f"    base = {len(names)} * save_idx",
+        f"    base = {width} * save_idx",
     ]
     if quantities:
-        targets = ", ".join(f"q_{i}" for i in range(len(quantities)))
+        targets = ", ".join(f"q_{i}" for i in range(len(outputs)))
         lines.append(f"    {targets} = kept(y, t, p)")
     for j, name in enumerate(names):
         if name in model.index:
             lines.append(f"    acc[base + {j}] = y[{model.index[name]}]")
         else:
             lines.append(f"    acc[base + {j}] = q_{quantities.index(name)}")
+    if tangent:
+        if quantities:
+            from numba_cuda_mlir import types
+            from numba_enzyme import jvp
+
+            signature = types.UniTuple(types.float64, len(outputs))(
+                types.UniTuple(types.float64, nvar),
+                types.float64,
+                types.UniTuple(types.float64, N_PARAM),
+            )
+            namespace["kept_tangent"] = jvp(namespace["kept"], signature=signature)
+            # A one-hot direction over the parameter row, as a window into a
+            # constant table so its index is static (modax's seed_table).
+            seeds = np.zeros(2 * N_PARAM, dtype=np.float64)
+            seeds[N_PARAM] = 1.0
+            namespace["seeds"] = seeds
+            namespace["cuda"] = cuda
+            namespace["float64"] = types.float64
+            start = N_PARAM - IX_EPS
+            lines += [
+                "    seed = cuda.const.array_like(seeds)",
+                f"    dq = cuda.local.array({len(outputs)}, float64)",
+                f"    kept_tangent(dq, y[0:{nvar}], t, p, y[{nvar}:{2 * nvar}], 0.0,"
+                f" seed[{start}:{start + N_PARAM}])",
+            ]
+        for j, name in enumerate(names):
+            if name in model.index:
+                lines.append(
+                    f"    acc[base + {len(names) + j}] = y[{nvar + model.index[name]}]"
+                )
+            else:
+                lines.append(
+                    f"    acc[base + {len(names) + j}] = dq[{quantities.index(name)}]"
+                )
     hook = _compile("hook", "\n".join(lines) + "\n", namespace)
     source = hook._generated_source
     hook = cuda.jit(device=True)(hook)
     hook._generated_source = source
     return hook
+
+
+DIFFERENTIABLE_PARAMETERS = ("Omegam", "Omegab", "H0", "Tcmb", "Neff")
+"""The cosmology-dictionary keys :func:`solve_eb` differentiates with respect to.
+
+They reach the perturbation solve through the five background densities of
+:data:`PHYSICAL_DENSITY_COLUMNS` alone, which the forward sensitivities
+carry (and through the thermal history and ``tau0``, which are held fixed).
+The remaining keys enter as parameter columns the sensitivities do not carry
+(``Omegak``, ``Nmnu``, ``mnu``, ``w_DE_0``, ``w_DE_a``, ``cs2_DE``), through
+the thermal history alone (``YHe``, ``tau_reio``) or not at all (``A_s``,
+``n_s``, ``k_p``), and must be given as plain numbers."""
+
+_COSMOLOGY_ATTRIBUTES = {"Tcmb": "T_cmb", "Neff": "Neff_massless", "k_p": "k_pivot"}
+"""Dictionary keys whose :class:`_ParamCosmology` field is named differently."""
+
+
+def _cosmology_dictionary(cosmology) -> dict:
+    """The parameter dictionary of a cosmology given as one or as a cosmology object."""
+
+    if isinstance(cosmology, dict):
+        return dict(cosmology)
+    d = cosmology.to_background_params()
+    d["k_p"] = cosmology.k_pivot
+    return d
+
+
+def _split_cosmologies(cosmologies):
+    """``(fixed, theta)``: each cosmology's plain parameters and its differentiable ones.
+
+    ``fixed`` holds one dictionary per cosmology of the keys outside
+    :data:`DIFFERENTIABLE_PARAMETERS` as floats, which is where a JAX tracer
+    given for one of those keys is refused; ``theta`` is the
+    ``(n_cosmologies, 5)`` array of the differentiable keys, traced or not.
+    """
+
+    fixed, rows = [], []
+    for cosmology in cosmologies:
+        d = _cosmology_dictionary(cosmology)
+        plain = {}
+        for key, value in d.items():
+            if key in DIFFERENTIABLE_PARAMETERS:
+                continue
+            try:
+                plain[key] = float(value)
+            except TypeError as error:
+                raise ValueError(
+                    f"{key!r} cannot be differentiated through solve_eb: the "
+                    f"differentiable parameters are {DIFFERENTIABLE_PARAMETERS}"
+                ) from error
+        fixed.append(plain)
+        rows.append(
+            jnp.stack(
+                [
+                    jnp.asarray(d[k], dtype=jnp.float64)
+                    for k in DIFFERENTIABLE_PARAMETERS
+                ]
+            )
+        )
+    return tuple(fixed), jnp.stack(rows)
+
+
+def _density_vector(fixed: dict, theta_row) -> jax.Array:
+    """The five densities of :data:`PHYSICAL_DENSITY_COLUMNS` from a cosmology's parameters, in JAX."""
+
+    param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta_row))}
+    d = density_parameters(param, xp=jnp)
+    return jnp.stack([d["grhog"], d["grhornomass"], d["grhoc"], d["grhob"], d["grhov"]])
+
+
+def _kept_values(
+    prepared,
+    k_values,
+    tau_grid,
+    names,
+    extra=(),
+    *,
+    error_weights=None,
+    rtol: float = PERTURB_RTOL,
+    atol: float = PERTURB_ATOL,
+    first_step: float = PERTURB_FIRST_STEP,
+    max_steps: int = PERTURB_MAX_STEPS,
+):
+    """The hooked launches of :func:`solve_eb` as a function of the batch's densities.
+
+    Returns ``of_densities(d)``, ``d`` the ``(n_cosmologies, 5)`` densities
+    of :data:`PHYSICAL_DENSITY_COLUMNS`, giving the kept quantities arranged
+    ``(n_cosmologies, len(names), n_k, n_tau)`` in the caller's wave-mode
+    order, as a ``jax.custom_jvp`` in ``d``: the plain hooked launch for the
+    value and, for the tangent, the forward-sensitivity launch of
+    :func:`matter_power_spectrum_jax` -- every trajectory replicated once per
+    density, each replica carrying the single column ``S = dy / d eps`` of its
+    unit direction through ``IX_EPS`` and ``IX_DIR`` -- with the tangent hook
+    of :func:`build_keep_hook`, which stores each kept quantity and its
+    derivative along the column, so the derivative too is formed in the kernel
+    and no history is stored. The joint launch uses the fp64 LU and keeps the
+    sensitivities out of step control; its primal agrees with the plain
+    fp32-LU one to ~1e-6 of a quantity's scale. The thermal history and
+    ``tau0`` are those of ``prepared``, held fixed.
+    """
+
+    layout = prepared.layout
+    n_cosmo = len(prepared.cosmologies)
+    names = tuple(names)
+    extra = tuple(extra)
+    settings = dict(rtol=rtol, atol=atol, first_step=first_step, max_steps=max_steps)
+
+    def hook_for(tangent):
+        key = (names, tuple(type(c) for c in extra), tangent)
+        hook = prepared.slot.functions.get(key)
+        if hook is None:
+            # The hook reads the same thermodynamics buffers as the right-hand side.
+            model = perturbation_model(
+                layout, ThermalHistory(*prepared.slot.buffers), extra=extra
+            )
+            if model.nvar != layout.nvar:
+                raise ValueError("the extra components must not own state")
+            hook = prepared.slot.functions[key] = build_keep_hook(
+                model, names, tangent=tangent
+            )
+        return hook
+
+    params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_grid)
+    n_k, n_grid, n_keep = len(k_sorted), len(tau_grid), len(names)
+    columns = list(PHYSICAL_DENSITY_COLUMNS)
+    n_dir = len(columns)
+    t_span_j = jnp.asarray(t_span)
+
+    def with_densities(base, d, replicas=1):
+        # Row k_idx * n_cosmo + ci (times replicas) takes cosmology ci's row of d.
+        rows = jnp.repeat(jnp.tile(d, (n_k, 1)), replicas, axis=0)
+        return jnp.asarray(base).at[:, jnp.asarray(columns)].set(rows)
+
+    def arrange(rows):
+        # Rows are packed k-major (row = k_idx * n_cosmo + cosmology_idx) and
+        # the hook row save-major, so this reshape is a view; the transpose to
+        # a cosmology-major layout copies only what was kept.
+        values = rows.reshape(n_k, n_cosmo, n_grid, n_keep)
+        values = jnp.transpose(values[:, :, 1:, :], (1, 3, 0, 2))
+        if np.any(order != np.arange(n_k)):
+            values = values[:, :, jnp.asarray(np.argsort(order)), :]
+        return values
+
+    @jax.custom_jvp
+    def of_densities(d):
+        _, out = _launch(
+            prepared,
+            with_densities(params, d),
+            jnp.asarray(y0),
+            t_span_j,
+            error_weights=error_weights,
+            save_hook=hook_for(False),
+            hook_size=n_keep * n_grid,
+            save_history=False,
+            **settings,
+        )
+        return arrange(out)
+
+    @of_densities.defjvp
+    def of_densities_jvp(primals, tangents):
+        from modax.rodas5P import SensitivitySpec
+
+        (d,), (dd,) = primals, tangents
+        # Replica j of trajectory i is row i * n_dir + j, along the unit
+        # direction e_j; each carries the single column S = dy / d eps.
+        params_rep = np.repeat(params, n_dir, axis=0)
+        params_rep[:, IX_DIR : IX_DIR + n_dir] = np.tile(
+            np.eye(n_dir), (n_k * n_cosmo, 1)
+        )
+        _, out = _launch(
+            prepared,
+            with_densities(params_rep, d, n_dir),
+            jnp.asarray(np.repeat(y0, n_dir, axis=0)),
+            t_span_j,
+            error_weights=None
+            if error_weights is None
+            else np.repeat(np.asarray(error_weights), n_dir, axis=0),
+            save_hook=hook_for(True),
+            hook_size=2 * n_keep * n_grid,
+            save_history=False,
+            lu_precision="fp64",
+            sensitivity=SensitivitySpec(
+                layout.nvar,
+                N_PARAM,
+                wrt_y0=False,
+                wrt_params=True,
+                error_control=False,
+                param_columns=(IX_EPS,),
+            ),
+            **settings,
+        )
+        out = out.reshape(n_k * n_cosmo, n_dir, n_grid, 2, n_keep)
+        # Every replica integrates the same state; the first's primal serves.
+        values = arrange(out[:, 0, :, 0, :])
+        # sens[i, j] = d q_i / d density_j at every save; the contraction with
+        # the input tangent is linear, so jax.grad transposes it.
+        dd_rows = jnp.tile(dd, (n_k, 1))
+        tangent = arrange(jnp.einsum("ijsq,ij->isq", out[:, :, :, 1, :], dd_rows))
+        return values, tangent
+
+    return of_densities
 
 
 def solve_eb(
@@ -1532,7 +1786,9 @@ def solve_eb(
     ----------
     cosmologies
         One cosmology (a parameter dictionary or a cosmology object) or a
-        sequence of them, all of one perturbation layout.
+        sequence of them, all of one perturbation layout. The values of
+        :data:`DIFFERENTIABLE_PARAMETERS` may be JAX arrays, traced or not;
+        the others must be plain numbers.
     k_values
         Wave numbers in 1/Mpc, in any order.
     tau
@@ -1557,16 +1813,23 @@ def solve_eb(
         launch order (wave modes ascending, cosmologies within).
 
     The hook is compiled once per batch shape and set of names, like the
-    right-hand side, and the launch is not differentiable (modax's hooked
-    solves support neither ``vmap`` nor JVPs); :func:`matter_power_spectrum_jax`
-    and :func:`discoeb.cmb.cl_power_spectrum_jax` are the differentiable paths.
+    right-hand side. The returned ``values`` are differentiable with respect
+    to the cosmologies' ``Omegam``, ``Omegab``, ``H0``, ``Tcmb`` and ``Neff``
+    under ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad`` (not under ``jit``: the
+    thermal history is tabulated on the host from the concrete values). The
+    derivative runs through the five background densities, which the
+    forward-sensitivity launch of :func:`_kept_values` carries with a hook
+    that stores each kept quantity's derivative beside it, so it too costs
+    one joint launch and no history. As for :func:`matter_power_spectrum_jax`
+    it is the derivative at fixed thermal history and ``tau0``: the
+    recombination history's own dependence on ``Omegab``, ``H0`` and ``Tcmb``
+    is not part of it.
     """
 
     if isinstance(cosmologies, dict) or hasattr(cosmologies, "Omegam"):
         cosmologies = (cosmologies,)
-    prepared = _prepare_solve(tuple(cosmologies))
-    layout = prepared.layout
-    n_cosmo = len(prepared.cosmologies)
+    fixed, theta = _split_cosmologies(cosmologies)
+    n_cosmo = len(fixed)
 
     tau = np.asarray(tau, dtype=np.float64).reshape(-1)
     if tau.size == 0 or not np.all(np.isfinite(tau)):
@@ -1578,52 +1841,60 @@ def solve_eb(
     # The launch starts at TAU_START, so it is the first save; the hook
     # records it too and the row is dropped below.
     tau_grid = np.concatenate(([TAU_START], tau))
+    settings = dict(rtol=rtol, atol=atol, first_step=first_step, max_steps=max_steps)
+    held = {}
 
-    names = tuple(layout_state_names(layout) if keep is None else keep)
-    if len(set(names)) != len(names):
-        raise ValueError(f"keep names a quantity twice: {names}")
-    extra = tuple(extra)
-    hook_key = (names, tuple(type(c) for c in extra))
-    hook = prepared.slot.functions.get(hook_key)
-    if hook is None:
-        # The hook reads the same thermodynamics buffers as the right-hand side.
-        model = perturbation_model(
-            layout, ThermalHistory(*prepared.slot.buffers), extra=extra
+    def prepare(theta):
+        """The prepared solve of the concrete parameters, and its kept-value function."""
+
+        concrete = np.asarray(theta, dtype=np.float64)
+        cosmos = tuple(
+            _as_cosmology(
+                {**fixed[i], **dict(zip(DIFFERENTIABLE_PARAMETERS, concrete[i]))}
+            )
+            for i in range(n_cosmo)
         )
-        if model.nvar != layout.nvar:
-            raise ValueError("the extra components must not own state")
-        hook = prepared.slot.functions[hook_key] = build_keep_hook(model, names)
+        prepared = held["prepared"] = _prepare_solve(cosmos)
+        layout = prepared.layout
+        names = tuple(layout_state_names(layout) if keep is None else keep)
+        if len(set(names)) != len(names):
+            raise ValueError(f"keep names a quantity twice: {names}")
+        held["names"] = names
+        return _kept_values(
+            prepared,
+            k_values,
+            tau_grid,
+            names,
+            extra,
+            error_weights=error_weights,
+            **settings,
+        )
 
-    params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_grid)
-    n_k = len(k_sorted)
-    _, out = _launch(
-        prepared,
-        params,
-        y0,
-        t_span,
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
-        error_weights=error_weights,
-        save_hook=hook,
-        hook_size=len(names) * len(tau_grid),
-        save_history=False,
-    )
-    # Rows are packed k-major (row = k_idx * n_cosmo + cosmology_idx) and the
-    # hook row save-major, so this reshape is a view; the transpose to a
-    # cosmology-major layout copies only what was kept.
-    values = jnp.asarray(out).reshape(n_k, n_cosmo, len(tau_grid), len(names))
-    values = jnp.transpose(values[:, :, 1:, :], (1, 3, 0, 2))
-    if np.any(order != np.arange(n_k)):
-        values = values[:, :, jnp.asarray(np.argsort(order)), :]
+    def densities_of(theta):
+        return jnp.stack([_density_vector(fixed[i], theta[i]) for i in range(n_cosmo)])
+
+    # The thermal history needs the parameters as numbers, which a custom
+    # rule's primals are under jax.grad and jax.jacfwd; the tangent chains
+    # the densities' dependence on the parameters (JAX) into the
+    # densities-level rule of _kept_values.
+    @jax.custom_jvp
+    def kept_of(theta):
+        return prepare(theta)(densities_of(theta))
+
+    @kept_of.defjvp
+    def kept_of_jvp(primals, tangents):
+        (theta,), (dtheta,) = primals, tangents
+        of_densities = prepare(theta)
+        return jax.jvp(lambda t: of_densities(densities_of(t)), (theta,), (dtheta,))
+
+    values = kept_of(theta)
     return EBSolution(
-        names=names,
+        names=held["names"],
         k=np.asarray(k_values, dtype=np.float64).reshape(-1),
         tau=tau,
-        tau0=np.asarray(prepared.tau0, dtype=np.float64),
+        tau0=np.asarray(held["prepared"].tau0, dtype=np.float64),
         values=values,
-        layout=layout,
+        layout=held["prepared"].layout,
     )
 
 

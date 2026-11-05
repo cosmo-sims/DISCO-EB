@@ -348,3 +348,129 @@ def test_solve_eb_comoving_curvature_is_conserved_outside_the_horizon():
     ).max()
     # k = 0.1 Mpc^-1 entered the horizon long before today and R has decayed.
     assert abs(R[-1, -1]) < 0.5
+
+
+def test_solve_eb_derivatives():
+    """The kept quantities are differentiable in the cosmological parameters.
+
+    The derivative chains the densities' dependence on ``Omegam``, ``Omegab``,
+    ``H0``, ``Tcmb`` and ``Neff`` into the densities-level rule, whose tangent
+    hook stores each quantity's derivative along the sensitivity column of its
+    replica: ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad`` of the kept values
+    all come from one joint launch. The densities-level rule is checked
+    against central differences of its own primal at fixed thermal history;
+    the differences are the noisy side: the solve runs at rtol = atol = 1e-4,
+    a step-acceptance flip between the two shifted solves moves a value by
+    ~1e-6 of its scale (5e-5 for the photon quadrupole, whose early-time
+    values are tiny), so the Jacobian is checked as the change it predicts
+    over a 0.1 percent step against the measured change, in units of each
+    quantity's scale, and the gradient of a scale-weighted sum over a 1
+    percent step. The parameter-level derivative is then the chain rule
+    through ``density_parameters``.
+    """
+
+    import jax
+    import jax.numpy as jnp
+
+    from discoeb.perturbations import (
+        DIFFERENTIABLE_PARAMETERS,
+        PHYSICAL_DENSITY_COLUMNS,
+        TAU_START,
+        _as_cosmology,
+        _density_vector,
+        _kept_values,
+        _prepare_solve,
+        density_coefficients,
+        solve_eb,
+    )
+
+    cosmology = _perturbed_cosmologies(1)[0]
+    densities = jnp.asarray(
+        np.asarray(density_coefficients(_as_cosmology(cosmology)), dtype=np.float64)
+    )[None, :]
+    tau = np.geomspace(10.0, 2.0e4, 12)
+    names = ("R", "clxc", "theta_2")
+    noise = {"R": 5.0e-6, "clxc": 5.0e-6, "theta_2": 1.0e-4}
+
+    plain = solve_eb(cosmology, SOLVE_EB_K, tau, keep=names)
+    prepared = _prepare_solve((_as_cosmology(cosmology),))
+    kept = _kept_values(
+        prepared, SOLVE_EB_K, np.concatenate(([TAU_START], tau)), names, ()
+    )
+    base = np.asarray(kept(densities))
+    # The same launch, from densities formed in JAX rather than as floats.
+    np.testing.assert_allclose(np.asarray(plain.values), base, rtol=1e-12)
+    scale = np.abs(base).max(axis=(2, 3), keepdims=True)
+
+    # The joint launch's primal: the fp64 LU in place of the plain fp32 one,
+    # so the same trajectories to within the solver's tolerance.
+    primal, _ = jax.jvp(kept, (densities,), (jnp.zeros_like(densities),))
+    assert np.abs(np.asarray(primal) - base).max() < 1.0e-4 * scale.max()
+
+    jac = np.asarray(jax.jacfwd(kept)(densities))[..., 0, :]
+    assert jac.shape == base.shape + (len(PHYSICAL_DENSITY_COLUMNS),)
+    assert np.isfinite(jac).all()
+    for j, dn in enumerate(DENSITY_NAMES):
+        step = 1.0e-3 * float(densities[0, j])
+        unit = jnp.zeros_like(densities).at[0, j].set(1.0)
+        finite = (
+            np.asarray(kept(densities + step * unit))
+            - np.asarray(kept(densities - step * unit))
+        ) / (2.0 * step)
+        err = np.abs(jac[..., j] - finite) * step / scale
+        for q, name in enumerate(names):
+            assert err[0, q].max() < noise[name], (
+                f"d{name}/d{dn}: {err[0, q].max():.3g} of the scale over a 1e-3 step"
+            )
+
+    weights = 1.0 / scale
+
+    def total(d):
+        return jnp.sum(kept(d) * weights)
+
+    grad = np.asarray(jax.grad(total)(densities))[0]
+    for i, name in enumerate(DENSITY_NAMES):
+        step = 1.0e-2 * abs(float(densities[0, i]))
+        plus = float(total(densities.at[0, i].add(step)))
+        minus = float(total(densities.at[0, i].add(-step)))
+        finite = (plus - minus) / (2.0 * step)
+        rel = abs(grad[i] - finite) / abs(finite)
+        assert rel < 2.0e-2, (
+            f"d(total)/d{name}: tangent hook {grad[i]:.8e} against central "
+            f"difference {finite:.8e}, relative {rel:.3g}"
+        )
+
+    # Through the dictionary: the chain rule with the densities' Jacobian,
+    # under jacfwd and grad alike, and a plain number where a derivative is
+    # not carried.
+    theta = jnp.asarray([cosmology[key] for key in DIFFERENTIABLE_PARAMETERS])
+    fixed = {k: v for k, v in cosmology.items() if k not in DIFFERENTIABLE_PARAMETERS}
+
+    def of_parameters(theta):
+        param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
+        return solve_eb(param, SOLVE_EB_K, tau, keep=names).values
+
+    jac_theta = np.asarray(jax.jacfwd(of_parameters)(theta))
+    d_densities = np.asarray(jax.jacfwd(lambda t: _density_vector(fixed, t))(theta))
+    # Omegab's column is the near-cancelling difference of the CDM and
+    # baryon columns, so the contraction itself carries ~1e-9 of roundoff.
+    np.testing.assert_allclose(
+        jac_theta,
+        np.einsum("cqktj,jp->cqktp", jac, d_densities),
+        rtol=1e-6,
+        atol=1e-9 * np.abs(jac_theta).max(),
+    )
+    grad_theta = np.asarray(
+        jax.grad(lambda t: jnp.sum(of_parameters(t) * weights))(theta)
+    )
+    np.testing.assert_allclose(
+        grad_theta, np.einsum("cqkt,cqktp->p", weights, jac_theta), rtol=1e-10
+    )
+    assert np.all(grad_theta != 0.0)
+
+    with pytest.raises(ValueError, match="cannot be differentiated"):
+        jax.grad(
+            lambda m: jnp.sum(
+                solve_eb({**cosmology, "mnu": m}, SOLVE_EB_K, tau, keep=names).values
+            )
+        )(0.0)
