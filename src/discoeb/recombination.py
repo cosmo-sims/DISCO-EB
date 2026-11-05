@@ -89,7 +89,13 @@ from .thermodynamics_recfast import (
     zGauss2,
 )
 
-THERMAL_PARAMETERS = ("YHe", "Tcmb_nominal", "H0_nominal", "Omegab_nominal", "z_re")
+THERMAL_PARAMETERS = (
+    "YHe_nominal",
+    "Tcmb_nominal",
+    "H0_nominal",
+    "Omegab_nominal",
+    "z_re",
+)
 """What the recombination rates and reionization read of the cosmology, as
 columns of the parameter row after the hierarchy's own
 (:data:`discoeb.perturbations.PARAM_COLUMNS`). ``z_re = 0`` means no reionization."""
@@ -113,9 +119,12 @@ with those functions good to 1e-7 instead of 1e-16, on a card whose fp64
 transcendentals run at 1/64 rate. Only where the argument range allows it:
 ``(CR T)^{3/2}`` reaches 1e42 and the Boltzmann factor ``e^{680}``, so those
 stay double; the ``e^{-E/T}`` factors stay inside fp32's range wherever the
-term they weight matters. The scale factor ``exp(ln a)`` and the
-powers of the reionization step are single precision too: the hierarchy reads
-them at every evaluation, and 1e-7 of either is far inside its tolerance."""
+term they weight matters. The scale factor the recombination block publishes
+to the hierarchy stays double: single precision rounds ``ln a`` and makes ``a``
+a staircase in the parameters whose quintic interpolant the hierarchy reads
+(:meth:`Recombination.a`). The powers of the reionization step are single
+precision: in double they cost 7 percent of a P(k) batch, and the step matters
+only where the opacity is too small for its rounding to show."""
 
 if FP32_MATH:
 
@@ -346,7 +355,7 @@ def matter_temperature_rate(Tmat, xe, fHe, zred, Hz, H0, Tcmb):
 
 
 def logistic(x):
-    """``(1 + tanh x) / 2 = 1 / (1 + e^{-2x})``, the step of the reionization history.
+    """``(1 + tanh x) / 2 = 1 / (1 + e^{-2x})``, a smooth step.
 
     Through ``exp`` (Enzyme has no forward rule for libdevice's ``tanh``) in
     single precision where the rates' transcendentals are. The argument is
@@ -399,8 +408,17 @@ class Recombination(Component):
     # -- what the hierarchy reads -----------------------------------------------------
 
     def a(self, lna):
-        """``exp(ln a)`` in single precision (:data:`FP32_MATH`): 6e-8 of ``a`` is far inside the solve's tolerance."""
-        return exp_(lna)
+        """``exp(ln a)`` in double precision: what the hierarchy reads must be smooth in the parameters.
+
+        In single precision ``ln a`` itself is rounded first, so ``a`` is a
+        staircase of relative steps 5e-7 while its derivative (Enzyme's,
+        through the cast) is smooth; the hierarchy reads the published value
+        and rates as one quintic, and the staircase made the spectra jump by
+        1e-5 between neighbouring parameter values whatever the tolerance.
+        Published once per recombination step, the double-precision ``exp``
+        costs nothing measurable.
+        """
+        return math.exp(lna)
 
     def rhonu(self, a, amnu):
         """``rho_nu / rho_nu(massless)`` of one flavour, 1 when massless."""
@@ -425,6 +443,9 @@ class Recombination(Component):
     # direction, ``x = x_nominal + eps dir_x`` (:data:`discoeb.perturbations.IX_EPS`):
     # ``eps`` is zero in every primal solve, and ``d/d eps`` is the derivative
     # along ``dir``.
+
+    def YHe(self, YHe_nominal, eps, dir_YHe):
+        return YHe_nominal + eps * dir_YHe
 
     def Tcmb(self, Tcmb_nominal, eps, dir_Tcmb):
         return Tcmb_nominal + eps * dir_Tcmb
@@ -454,6 +475,7 @@ class Recombination(Component):
     def xe_reio(self, inv_a, xe_rec, fHe, z_re):
         """CAMB's reionization step, zero when ``z_re = 0``."""
         z = inv_a - 1.0
+        # double precision, as for ``a``: the opacity is published to the hierarchy
         y = pow_(1.0 + z, 1.5)
         y_re = pow_(1.0 + z_re, 1.5)
         delta_y = 0.75 * pow_(1.0 + z_re, 0.5)

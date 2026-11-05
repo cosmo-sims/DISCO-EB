@@ -98,6 +98,8 @@ CL_DERIV_GATE = 2.0e-3
 # polarization error weights sharpened the low-k trajectories' step control,
 # at 1e-3 it is below 5e-4, and the truncation error at 1e-3 is ~1e-6.
 FD_STEP = 1.0e-3
+CONVERGED = dict(rtol=1.0e-6, atol=1.0e-6, max_steps=200_000)
+"""The solver settings of the converged central differences the sensitivities are checked against."""
 
 # A central difference is only checked where the change it measures,
 # ``2 step |dD_l/d(density)|``, exceeds this fraction of ``D_l``: ten times
@@ -502,11 +504,14 @@ def test_power_spectra_derivatives(benchmark):
     the acoustic peaks (it passes through zero near ``l ~ 100``) and its sum
     over these multipoles cancels threefold, so neither a relative error at a
     single ``l`` nor the summed derivative of the ``P(k)`` test is
-    well-conditioned here. At rtol = atol = 1e-4 the sensitivity is within
-    3e-4 of that scale of a converged central difference (rtol = atol = 1e-6,
-    step :data:`FD_STEP`) for every density, and a central difference at the
-    default tolerance within 5e-4 of it, hence the gate; the sensitivity
-    itself moves by 2e-4 between the two tolerances. The projection runs in
+    well-conditioned here. The sensitivity at the default rtol = atol = 1e-4
+    is checked against a converged central difference (:data:`CONVERGED`,
+    step :data:`FD_STEP`), within 1.3e-3 of that scale for every density. A
+    central difference at the default tolerance is no reference: the solve's
+    own error, a few 1e-5 of D_l and different on the two sides of a 1e-3
+    step, is 1-5 percent of the derivative's scale (the recombination block
+    steps on its own, at the tolerance it is given; the joint one-block solve
+    over-resolved the hierarchy and with it the noise). The projection runs in
     float64, since its float32 rounding (2.6e-4 in ``D_l``) would swamp any
     finite difference. The spectra are those of
     ``test_power_spectra_match_class`` (same modes, saves and multipoles).
@@ -534,8 +539,8 @@ def test_power_spectra_derivatives(benchmark):
     )
     assert densities.shape == (len(PHYSICAL_DENSITY_COLUMNS),)
 
-    def spectrum(d):
-        _, _, dl = cl_power_spectrum_jax(cosmology, d, **kwargs)
+    def spectrum(d, **tolerances):
+        _, _, dl = cl_power_spectrum_jax(cosmology, d, **tolerances, **kwargs)
         return jnp.stack(dl)  # (3, n_ell): TT, TE, EE
 
     value_and_grad = jax.value_and_grad(lambda d: jnp.sum(spectrum(d)))
@@ -555,10 +560,14 @@ def test_power_spectra_derivatives(benchmark):
         summed[i] = sens.sum()
 
         step = FD_STEP * abs(float(densities[i]))
-        plus = np.asarray(spectrum(densities.at[i].add(step)))
-        minus = np.asarray(spectrum(densities.at[i].add(-step)))
+        plus = np.asarray(spectrum(densities.at[i].add(step), **CONVERGED))
+        minus = np.asarray(spectrum(densities.at[i].add(-step), **CONVERGED))
         finite = (plus - minus) / (2.0 * step)
-        resolvable = 2.0 * step * np.abs(finite) > FD_RESOLVABLE * np.abs(plus)
+        # against each spectrum's own scale: TE crosses zero, where any
+        # difference is "resolvable" relative to the value there
+        resolvable = 2.0 * step * np.abs(finite) > FD_RESOLVABLE * np.abs(plus).max(
+            axis=1, keepdims=True
+        )
         assert resolvable[0].any(), (
             f"dD_l^TT/d{name} below the finite-difference resolution everywhere"
         )

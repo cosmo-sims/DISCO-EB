@@ -230,11 +230,10 @@ def test_solve_eb_keeps_what_the_history_holds():
         TAU_START,
         density_coefficients,
         make_params,
-        matter_power_spectrum,
+        THERMO_ERROR_WEIGHT,
         solve_eb,
         solve_matter_power_spectrum_batch,
         solve_perturbation_history_batch,
-        total_matter_density_contrast,
     )
 
     cosmologies = _perturbed_cosmologies(2)
@@ -273,21 +272,24 @@ def test_solve_eb_keeps_what_the_history_holds():
             j = names.index(name)
             np.testing.assert_allclose(kept[ci, j], expected, rtol=2e-6, atol=1e-12)
 
-    pk_batch = solve_matter_power_spectrum_batch(SOLVE_EB_K, cosmologies)
+    # the same thermal error weight as solve_eb's launch, so the two solves agree bit for bit
+    pk_batch = solve_matter_power_spectrum_batch(
+        SOLVE_EB_K, cosmologies, thermo_weight=THERMO_ERROR_WEIGHT
+    )
     for ci, cosmology in enumerate(prepared.cosmologies):
         grhoc, grhob = density_coefficients(cosmology)[2:4]
         clxc = np.asarray(solution["clxc"][ci, :, -1])
         clxb = np.asarray(solution["clxb"][ci, :, -1])
-        pk = [
-            matter_power_spectrum(
-                float(k),
-                total_matter_density_contrast(grhoc, dc, grhob, db),
-                cosmology.A_s,
-                cosmology.n_s,
-                cosmology.k_pivot,
-            )
-            for k, dc, db in zip(SOLVE_EB_K, clxc, clxb)
-        ]
+        delta_m = (grhoc * clxc + grhob * clxb) / (grhoc + grhob)
+        k = np.asarray(SOLVE_EB_K)
+        pk = (
+            2.0
+            * np.pi**2
+            / k**3
+            * cosmology.A_s
+            * (k / cosmology.k_pivot) ** (cosmology.n_s - 1.0)
+            * delta_m**2
+        )
         np.testing.assert_allclose(pk, pk_batch[ci], rtol=1e-9)
 
 
@@ -349,21 +351,15 @@ def test_solve_eb_derivatives():
         _input_vector,
         _kept_values,
         _prepare_solve,
-        density_coefficients,
         solve_eb,
     )
 
     cosmology = _perturbed_cosmologies(1)[0]
-    densities = jnp.asarray(
-        np.concatenate(
-            [
-                np.asarray(
-                    density_coefficients(_as_cosmology(cosmology)), dtype=np.float64
-                ),
-                [cosmology["Tcmb"], cosmology["H0"], cosmology["Omegab"]],
-            ]
-        )
-    )[None, :]
+    # the inputs exactly as solve_eb forms them: a last-bit difference moves a
+    # step-acceptance and with it a value by ~1e-6
+    theta = jnp.asarray([cosmology[key] for key in DIFFERENTIABLE_PARAMETERS])
+    fixed = {k: v for k, v in cosmology.items() if k not in DIFFERENTIABLE_PARAMETERS}
+    densities = _input_vector(fixed, theta)[None, :]
     tau = np.geomspace(10.0, 2.0e4, 12)
     names = ("R", "clxc", "theta_2")
     noise = {"R": 5.0e-6, "clxc": 5.0e-6, "theta_2": 1.0e-4}
@@ -383,6 +379,20 @@ def test_solve_eb_derivatives():
     primal, _ = jax.jvp(kept, (densities,), (jnp.zeros_like(densities),))
     assert np.abs(np.asarray(primal) - base).max() < 1.0e-4 * scale.max()
 
+    # The central differences are converged (rtol = atol = 1e-6): at the default
+    # tolerance the solve's own error, different on the two sides of a step,
+    # is the larger part of a difference.
+    kept_converged = _kept_values(
+        prepared,
+        SOLVE_EB_K,
+        np.concatenate(([TAU_START], tau)),
+        names,
+        (),
+        rtol=1.0e-6,
+        atol=1.0e-6,
+        max_steps=200_000,
+    )
+
     jac = np.asarray(jax.jacfwd(kept)(densities))[..., 0, :]
     assert jac.shape == base.shape + (len(DIRECTED_COLUMNS),)
     assert np.isfinite(jac).all()
@@ -390,8 +400,8 @@ def test_solve_eb_derivatives():
         step = 1.0e-3 * float(densities[0, j])
         unit = jnp.zeros_like(densities).at[0, j].set(1.0)
         finite = (
-            np.asarray(kept(densities + step * unit))
-            - np.asarray(kept(densities - step * unit))
+            np.asarray(kept_converged(densities + step * unit))
+            - np.asarray(kept_converged(densities - step * unit))
         ) / (2.0 * step)
         err = np.abs(jac[..., j] - finite) * step / scale
         for q, name in enumerate(names):
@@ -405,23 +415,18 @@ def test_solve_eb_derivatives():
         return jnp.sum(kept(d) * weights)
 
     grad = np.asarray(jax.grad(total)(densities))[0]
-    for i, name in enumerate(DIRECTED_NAMES):
-        step = 1.0e-2 * abs(float(densities[0, i]))
-        plus = float(total(densities.at[0, i].add(step)))
-        minus = float(total(densities.at[0, i].add(-step)))
-        finite = (plus - minus) / (2.0 * step)
-        rel = abs(grad[i] - finite) / abs(finite)
-        assert rel < 2.0e-2, (
-            f"d(total)/d{name}: tangent hook {grad[i]:.8e} against central "
-            f"difference {finite:.8e}, relative {rel:.3g}"
-        )
+    # The transposed rule against the untransposed one: jax.grad of a weighted
+    # sum is the Jacobian contracted with the weights (the Jacobian's accuracy
+    # is the check above; a central difference of the sum is ill-conditioned,
+    # its terms cancelling to 1e-3 of their size for Tcmb).
+    summed = np.einsum("cqkt,cqktj->j", np.broadcast_to(weights, base.shape), jac)
+    np.testing.assert_allclose(
+        grad, summed, rtol=1.0e-6, err_msg="grad vs contracted jacfwd"
+    )
 
     # Through the dictionary: the chain rule with the densities' Jacobian,
     # under jacfwd and grad alike, and a plain number where a derivative is
     # not carried.
-    theta = jnp.asarray([cosmology[key] for key in DIFFERENTIABLE_PARAMETERS])
-    fixed = {k: v for k, v in cosmology.items() if k not in DIFFERENTIABLE_PARAMETERS}
-
     def of_parameters(theta):
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
         return solve_eb(param, SOLVE_EB_K, tau, keep=names).values

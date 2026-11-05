@@ -375,12 +375,12 @@ TAU_START = 0.1
 #        tau_start, tau_end, k, cosmology_idx, save_index,
 #        w_DE_0, w_DE_a, cs2_DE, grhok, grhor_nu, n_mnu, amnu,
 #        YHe, Tcmb, H0, Omegab, z_re,
-#        eps, dir_grhog, dir_grhornomass, dir_grhoc, dir_grhob, dir_grhov, dir_Tcmb, dir_H0, dir_Omegab)
+#        eps, dir_grhog, dir_grhornomass, dir_grhoc, dir_grhob, dir_grhov, dir_YHe, dir_Tcmb, dir_H0, dir_Omegab)
 # grhok = grhom * Omega_k is the (constant) comoving curvature density
 # coefficient 8*pi*G*rho_K a^2; it is 0 for a flat cosmology. The five columns
 # after ``amnu`` are what the recombination rates and reionization read
 # (:data:`discoeb.recombination.THERMAL_PARAMETERS`). The inputs a derivative
-# may move -- the five densities and ``Tcmb``, ``H0``, ``Omegab``
+# may move -- the five densities and ``YHe``, ``Tcmb``, ``H0``, ``Omegab``
 # (:data:`DIRECTED_COLUMNS`) -- are read by the model as ``x_nominal + eps
 # dir_x``: ``eps`` is zero in every primal solve, so the trajectory is what it
 # always was, and its derivative with respect to ``eps`` alone is the
@@ -413,12 +413,13 @@ DIRECTED_NAMES = (
     "grhoc",
     "grhob",
     "grhov",
+    "YHe",
     "Tcmb",
     "H0",
     "Omegab",
 )
 """The inputs a trajectory's sensitivity direction may move, in the order of :data:`DIRECTED_COLUMNS`."""
-DIRECTED_COLUMNS = (0, 1, 2, 3, 4, IX_TCMB, IX_H0, IX_OMEGAB)
+DIRECTED_COLUMNS = (0, 1, 2, 3, 4, IX_YHE, IX_TCMB, IX_H0, IX_OMEGAB)
 """The columns of :data:`DIRECTED_NAMES`: their nominal values, with ``eps`` and the ``dir`` block after the row."""
 N_PARAM = IX_DIR + len(DIRECTED_COLUMNS)
 
@@ -741,7 +742,7 @@ def _row(cosmology, tau_end: float, z_re: float) -> dict:
         "w_DE_0": cosmology.w_DE_0,
         "w_DE_a": cosmology.w_DE_a,
         "cs2_DE": cosmology.cs2_DE,
-        "YHe": cosmology.Y_He,
+        "YHe_nominal": cosmology.Y_He,
         "Tcmb_nominal": cosmology.T_cmb,
         "H0_nominal": cosmology.H0,
         "Omegab_nominal": cosmology.Omegab,
@@ -1110,6 +1111,17 @@ def solve_history_jax(
     the end-time dependence that :func:`matter_power_spectrum_jax` carries
     as an explicit term in the derivative.
 
+    The value is the plain fp64 launch. The tangent replicates every mode once
+    per directed input (:data:`DIRECTED_COLUMNS`), replica ``j`` carrying the
+    single sensitivity column ``S = dy / d eps`` along the unit direction
+    ``e_j`` through ``IX_EPS`` and ``IX_DIR``, and contracts the columns with
+    the input tangent; the contraction is linear, so ``jax.grad`` transposes
+    it with no adjoint solve. One column per thread keeps the joint system
+    at ``2 nvar`` components and the kernel's thread-local memory at a fifth
+    of the nine-column layout's (82 KB a thread, whose reserve beside a CMB
+    batch's XLA pool was a launch failure on a 12 GB card); the nine replicas
+    run on threads the launch would otherwise leave idle.
+
     Returns ``(history, densities, thermal, k_sorted, order)`` with ``history``
     ``(n_k, n_save, nvar)`` in ascending ``k``.
     """
@@ -1124,14 +1136,10 @@ def solve_history_jax(
     densities = jnp.asarray(densities, dtype=jnp.float64)
     thermal = jnp.asarray(thermal, dtype=jnp.float64)
     n_traj = params.shape[0]
-    params_j = jnp.asarray(params)
-    params_j = params_j.at[:, jnp.asarray(PHYSICAL_DENSITY_COLUMNS)].set(
-        jnp.broadcast_to(densities, (n_traj, 5))
-    )
-    params_j = params_j.at[:, jnp.asarray(THERMAL_COLUMNS)].set(
-        jnp.broadcast_to(thermal, (n_traj, 4))
-    )
+    n_dir = len(DIRECTED_COLUMNS)
+    columns = jnp.asarray(DIRECTED_COLUMNS)
     t_span = jnp.asarray(t_span)
+    params_j = jnp.asarray(params)
     if tau_save is None:
         # The trajectory stops at the conformal age of the densities given,
         # so a finite difference of the final state sees the same end-time
@@ -1139,11 +1147,7 @@ def solve_history_jax(
         tau0 = jax.lax.stop_gradient(_tau0_of(densities, _row_by_name(params[0])))
         params_j = params_j.at[:, IX_TAU_END].set(tau0)
         t_span = t_span.at[-1].set(tau0)
-    history = rodas5P_solve(
-        prepared.ode_fn,
-        jnp.asarray(y0),
-        t_span,
-        params_j,
+    settings = dict(
         lu_precision="fp64",
         rtol=rtol,
         atol=atol,
@@ -1155,14 +1159,63 @@ def solve_history_jax(
         tf_index=IX_TAU_END,
         # The joint system's thread-local memory, not its registers, bounds the
         # occupancy: an uncapped register budget halves the resident threads
-        # the driver reserves local memory for (1.6 GB at 168 registers beside
-        # a CMB batch's XLA pool was a launch failure on a 12 GB card).
+        # the driver reserves local memory for.
         max_registers=None,
-        error_weights=error_weights_for(prepared, n_traj, error_weights, thermo_weight),
-        sens_param_columns=PHYSICAL_COLUMNS,
         sens_error_control=sens_error_control,
         cache=True,
     )
+    weights = error_weights_for(prepared, n_traj, error_weights, thermo_weight)
+    y0_j = jnp.asarray(y0)
+
+    def with_inputs(base, x):
+        return base.at[:, columns].set(jnp.broadcast_to(x, (base.shape[0], n_dir)))
+
+    # Replica j of mode i is row i * n_dir + j, so a block of consecutive rows
+    # still spans neighbouring wave modes and their similar step sequences.
+    params_rep = jnp.asarray(np.repeat(np.asarray(params_j), n_dir, axis=0))
+    params_rep = params_rep.at[:, IX_DIR : IX_DIR + n_dir].set(
+        jnp.tile(jnp.eye(n_dir), (n_traj, 1))
+    )
+    y0_rep = jnp.asarray(np.repeat(y0, n_dir, axis=0))
+    weights_rep = np.repeat(weights, n_dir, axis=0)
+
+    @jax.custom_jvp
+    def saved_history(x):
+        return rodas5P_solve(
+            prepared.ode_fn,
+            y0_j,
+            t_span,
+            with_inputs(params_j, x),
+            error_weights=weights,
+            **settings,
+        )
+
+    @saved_history.defjvp
+    def saved_history_jvp(primals, tangents):
+        (x,), (dx,) = primals, tangents
+        p_rep = with_inputs(params_rep, x)
+
+        def along_directions(eps):
+            return rodas5P_solve(
+                prepared.ode_fn,
+                y0_rep,
+                t_span,
+                p_rep.at[:, IX_EPS].set(eps),
+                sens_param_columns=(IX_EPS,),
+                error_weights=weights_rep,
+                **settings,
+            )
+
+        # d/d(eps) at eps = 0 along every replica at once: one joint launch of
+        # n_traj * n_dir trajectories, each carrying its own single column.
+        n_rep = p_rep.shape[0]
+        sol, dsol = jax.jvp(along_directions, (jnp.zeros(n_rep),), (jnp.ones(n_rep),))
+        # Every replica of a mode integrates the same state; keep the first.
+        history = sol[::n_dir]
+        sens = dsol.reshape(n_traj, n_dir, *dsol.shape[1:])
+        return history, jnp.einsum("ijtv,j->itv", sens, dx)
+
+    history = saved_history(jnp.concatenate([densities, thermal]))
     return history, densities, thermal, k_sorted, order
 
 
@@ -1492,7 +1545,7 @@ DIFFERENTIABLE_PARAMETERS = ("Omegam", "Omegab", "H0", "Tcmb", "Neff")
 """The cosmology-dictionary keys :func:`solve_eb` differentiates with respect to.
 
 They reach the solve through the five background densities and the
-recombination block's ``Tcmb``, ``H0`` and ``Omegab`` (:data:`DIRECTED_NAMES`),
+recombination block's thermal inputs (:data:`DIRECTED_NAMES`),
 which the forward sensitivities carry through the hierarchy and the
 recombination history alike. Held fixed are the conformal age ``tau0`` at
 which a trajectory stops, the reionization redshift found for ``tau_reio``,
@@ -1562,6 +1615,7 @@ def _input_vector(fixed: dict, theta_row) -> jax.Array:
             d["grhoc"],
             d["grhob"],
             d["grhov"],
+            param["YHe"],
             param["Tcmb"],
             param["H0"],
             param["Omegab"],
@@ -1585,7 +1639,7 @@ def _kept_values(
 ):
     """The hooked launches of :func:`solve_eb` as a function of the batch's directed inputs.
 
-    Returns ``of_inputs(x)``, ``x`` the ``(n_cosmologies, 8)`` inputs of
+    Returns ``of_inputs(x)``, ``x`` the ``(n_cosmologies, 9)`` inputs of
     :data:`DIRECTED_NAMES`, giving the kept quantities arranged
     ``(n_cosmologies, len(names), n_k, n_tau)`` in the caller's wave-mode
     order, as a ``jax.custom_jvp`` in ``x``: the plain hooked launch for the
