@@ -184,6 +184,7 @@ class Spectra(NamedTuple):
     te: jax.Array
     ee: jax.Array
 
+
 SHIFT_STENCIL = 4
 """Points of the Lagrange stencil that shifts a cosmology's sources in ``tau`` onto
 the shared ``chi`` grid: 4 (cubic) leaves 2e-4 in ``D_l``, 2 (linear) 7e-3."""
@@ -253,7 +254,6 @@ def polarization_error_weights(k, layout):
         for l in range(3):
             weights[:, layout.ix_psi(l, q)] = w
     return jnp.asarray(weights)
-
 
 
 # =============================================================================
@@ -339,9 +339,11 @@ def weight_channels(channels, tau_save, tau0):
     source there.
     """
 
-    m0, m1, m2, phi, kappa_prime, kappa = (channels[:, i] for i in range(SOURCE_CHANNELS))
+    m0, m1, m2, phi, kappa_prime, kappa = (
+        channels[:, i] for i in range(SOURCE_CHANNELS)
+    )
     kappa_end = kappa[:, :, -1:]
-    live = (jnp.asarray(tau_save)[None, None, :] <= jnp.asarray(tau0)[:, None, None])
+    live = jnp.asarray(tau_save)[None, None, :] <= jnp.asarray(tau0)[:, None, None]
     emk = jnp.where(live, jnp.exp(-(kappa_end - kappa)), 0.0)
     g = kappa_prime * emk
     return jnp.stack([g * m0, g * m1, g * m2, phi, emk], axis=1)
@@ -395,7 +397,9 @@ def source_channels_jax(model, history, k_sorted, tau_save, tau0, row):
     base = dict(row)
     base.update(model.state_values(history, xp=jnp))
     base["k"] = jnp.asarray(k_sorted)[:, None]
-    m0, m1, m2, phi, kappa_prime = model.evaluate("m0", "m1", "m2", "phi", "opacity", math=jnp, **base)
+    m0, m1, m2, phi, kappa_prime = model.evaluate(
+        "m0", "m1", "m2", "phi", "opacity", math=jnp, **base
+    )
     live = jnp.asarray(tau_save)[None, :] <= tau0
     emk = jnp.where(live, jnp.exp(-(kappa[:, -1:] - kappa)), 0.0)
     g = kappa_prime * emk
@@ -436,7 +440,11 @@ def _bessel_row(ell: int, n_x: int, dx: float, over_x2: bool = False) -> np.ndar
 def _build_bessel_tables(ells, x_max: float, dx: float):
     """Return cached uniform ``j_ell``, ``j_{ell+1}`` and ``j_ell / x^2`` interpolation tables."""
 
-    return _bessel_tables(tuple(np.asarray(ells, dtype=np.int64)), float(np.ceil(x_max / 250.0) * 250.0), float(dx))
+    return _bessel_tables(
+        tuple(np.asarray(ells, dtype=np.int64)),
+        float(np.ceil(x_max / 250.0) * 250.0),
+        float(dx),
+    )
 
 
 @functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
@@ -451,7 +459,9 @@ def _bessel_tables(ells, x_max, dx):
         n_x,
         jnp.asarray(np.stack([rows[int(ell)] for ell in ell_arr])),
         jnp.asarray(np.stack([rows[int(ell) + 1] for ell in ell_arr])),
-        jnp.asarray(np.stack([_bessel_row(int(ell), n_x, dx, over_x2=True) for ell in ell_arr])),
+        jnp.asarray(
+            np.stack([_bessel_row(int(ell), n_x, dx, over_x2=True) for ell in ell_arr])
+        ),
     )
 
 
@@ -499,7 +509,9 @@ def _lagrange_shift_stencil(tau, delta, order=SHIFT_STENCIL):
 
     tau = np.asarray(tau, dtype=np.float64)
     n = len(tau)
-    target = np.clip(np.asarray(delta, dtype=np.float64)[..., None] + tau, tau[0], tau[-1])
+    target = np.clip(
+        np.asarray(delta, dtype=np.float64)[..., None] + tau, tau[0], tau[-1]
+    )
     i0 = np.clip(np.searchsorted(tau, target) - order // 2, 0, n - order)
     w = np.ones(target.shape + (order,))
     for a in range(order):
@@ -541,13 +553,26 @@ def projection_operator(ells, k_values, k_fine, tau_save, tau0_ref, dtype=jnp.fl
     k_values = np.asarray(k_values, dtype=np.float64)
     k_fine = np.asarray(k_fine, dtype=np.float64)
     tau_save = np.asarray(tau_save, dtype=np.float64)
-    return _projection_operator(ells.tobytes(), k_values.tobytes(), k_fine.tobytes(), tau_save.tobytes(), float(tau0_ref), dtype)
+    return _projection_operator(
+        ells.tobytes(),
+        k_values.tobytes(),
+        k_fine.tobytes(),
+        tau_save.tobytes(),
+        float(tau0_ref),
+        dtype,
+    )
 
 
 @functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
 def _projection_operator(ells, k_values, k_fine, tau_save, tau0_ref, dtype):
     ells, k_values, k_fine, tau_save = (
-        np.frombuffer(b, dtype=d) for b, d in ((ells, np.int64), (k_values, np.float64), (k_fine, np.float64), (tau_save, np.float64))
+        np.frombuffer(b, dtype=d)
+        for b, d in (
+            (ells, np.int64),
+            (k_values, np.float64),
+            (k_fine, np.float64),
+            (tau_save, np.float64),
+        )
     )
     interp = spline_interpolation(
         jnp.log(jnp.asarray(k_values)), jnp.eye(len(k_values))
@@ -574,21 +599,29 @@ def _projection_operator(ells, k_values, k_fine, tau_save, tau0_ref, dtype):
         prefactor = math.sqrt((ell + 2.0) * (ell + 1.0) * ell * (ell - 1.0))
         jlx2 = _interp_uniform_table(x, x0, inv_dx, n_x, jlx2_tab[i])
         return jlx2 * (prefactor * jnp.asarray(weights))
+
     # Stored as (n_k_fine, n_ell, 3, n_chi), the operand layout of the
     # contraction in :func:`theta_ell_batch`: with (n_ell, 3, n_k_fine, n_chi)
     # XLA transposes the table (gigabytes at inference grids) at every call.
     bessel = jnp.stack(
-        [jnp.transpose(rows(i, float(ell)), (1, 0, 2)).astype(dtype) for i, ell in enumerate(ells)],
+        [
+            jnp.transpose(rows(i, float(ell)), (1, 0, 2)).astype(dtype)
+            for i, ell in enumerate(ells)
+        ],
         axis=1,
     )
-    bessel_e = jnp.stack([row_e(i, float(ell)).astype(dtype) for i, ell in enumerate(ells)], axis=1)
+    bessel_e = jnp.stack(
+        [row_e(i, float(ell)).astype(dtype) for i, ell in enumerate(ells)], axis=1
+    )
 
     lnk_weights = np.zeros(len(k_fine))
     dlnk = np.diff(np.log(k_fine))
     lnk_weights[1:] += 0.5 * dlnk
     lnk_weights[:-1] += 0.5 * dlnk
 
-    return ProjectionOperator(interp.astype(dtype), bessel, bessel_e, jnp.asarray(lnk_weights))
+    return ProjectionOperator(
+        interp.astype(dtype), bessel, bessel_e, jnp.asarray(lnk_weights)
+    )
 
 
 @jax.jit
@@ -631,7 +664,9 @@ def cl_from_theta(theta, lnk_weights, n_s, A_s, k_pivot, k_fine, theta2=None):
     return 4.0 * jnp.pi * jnp.einsum("clf,cf,f->cl", product, primordial, lnk_weights)
 
 
-def spectra_from_theta(theta, theta_e, lnk_weights, n_s, A_s, k_pivot, k_fine) -> Spectra:
+def spectra_from_theta(
+    theta, theta_e, lnk_weights, n_s, A_s, k_pivot, k_fine
+) -> Spectra:
     """The ``(tt, te, ee)`` :class:`Spectra` of the two transfer functions of :func:`theta_ell_batch`."""
 
     args = (lnk_weights, n_s, A_s, k_pivot, k_fine)
@@ -967,7 +1002,9 @@ def build_source_device_function(model):
     from numba_cuda_mlir import cuda
 
     kappa_index = thermal_indices(model)[-1]
-    quantities = model.build_function(SOURCE_QUANTITIES, inputs=("y", "tau"), params=PARAM_COLUMNS, name="sources")
+    quantities = model.build_function(
+        SOURCE_QUANTITIES, inputs=("y", "tau"), params=PARAM_COLUMNS, name="sources"
+    )
 
     @cuda.jit(device=True)
     def sources(save_idx, y, tau, p):
@@ -1018,7 +1055,10 @@ def _solve_with_hook(prepared, k_values, tau_save, hook, hook_size, solve_kwargs
     if weights is None:
         weights = polarization_error_weights(params[:, IX_K], prepared.layout)
     _, out = _launch(
-        prepared, y0=y0, params=params, t_span=t_span,
+        prepared,
+        y0=y0,
+        params=params,
+        t_span=t_span,
         rtol=solve_kwargs.get("rtol", PERTURB_RTOL),
         atol=solve_kwargs.get("atol", PERTURB_ATOL),
         first_step=solve_kwargs.get("first_step", PERTURB_FIRST_STEP),
@@ -1049,8 +1089,12 @@ class TransferBatch(NamedTuple):
 
     theta: jax.Array  # (n_c, n_ell, n_k_fine) temperature transfer Theta_l(k), float64, zero outside each l's k band
     theta_e: jax.Array  # (n_c, n_ell, n_k_fine) E-mode transfer
-    theta_psi: jax.Array | None  # (n_c, n_ell_psi_exact, n_k) lensing-potential transfer at the solved modes
-    limber: jax.Array | None  # (n_c, n_ell_psi_limber, n_chi) the Limber integrand without P_R
+    theta_psi: (
+        jax.Array | None
+    )  # (n_c, n_ell_psi_exact, n_k) lensing-potential transfer at the solved modes
+    limber: (
+        jax.Array | None
+    )  # (n_c, n_ell_psi_limber, n_chi) the Limber integrand without P_R
     T_cmb: jax.Array  # (n_c,)
 
 
@@ -1087,8 +1131,15 @@ def compute_transfer_batch(
     """
 
     transfer, tgrids = _compute_transfer_batch(
-        cosmologies, grids=grids, k_values=k_values, ells=ells, n_save=n_save, n_k_fine=n_k_fine,
-        k_fine_values=k_fine_values, projection_dtype=projection_dtype, lensing_potential_ells=lensing_potential_ells,
+        cosmologies,
+        grids=grids,
+        k_values=k_values,
+        ells=ells,
+        n_save=n_save,
+        n_k_fine=n_k_fine,
+        k_fine_values=k_fine_values,
+        projection_dtype=projection_dtype,
+        lensing_potential_ells=lensing_potential_ells,
         **solve_kwargs,
     )
     return transfer, tgrids
@@ -1111,7 +1162,14 @@ def spectra_from_transfer(transfer: TransferBatch, tgrids: TransferGrids, n_s, A
     if transfer.theta_psi is None:
         return cl, dl, None
     cl_pp = lensing_potential_cl_from_transfer(
-        transfer.theta_psi, transfer.limber, tgrids.chi, tgrids.ells_limber, tgrids.k_values, n_s, A_s, tgrids.k_pivot
+        transfer.theta_psi,
+        transfer.limber,
+        tgrids.chi,
+        tgrids.ells_limber,
+        tgrids.k_values,
+        n_s,
+        A_s,
+        tgrids.k_pivot,
     )
     return cl, dl, cl_pp
 
@@ -1163,8 +1221,15 @@ def compute_cl_power_spectrum_batch(
 
     cosmologies = tuple(_as_cosmology(c) for c in cosmologies)
     transfer, tgrids = compute_transfer_batch(
-        cosmologies, grids=grids, k_values=k_values, ells=ells, n_save=n_save, n_k_fine=n_k_fine,
-        k_fine_values=k_fine_values, projection_dtype=projection_dtype, lensing_potential_ells=lensing_potential_ells,
+        cosmologies,
+        grids=grids,
+        k_values=k_values,
+        ells=ells,
+        n_save=n_save,
+        n_k_fine=n_k_fine,
+        k_fine_values=k_fine_values,
+        projection_dtype=projection_dtype,
+        lensing_potential_ells=lensing_potential_ells,
         **solve_kwargs,
     )
     n_s = jnp.asarray([float(c.n_s) for c in cosmologies])
@@ -1224,10 +1289,13 @@ def _compute_transfer_batch(
     )
     # (n_k, n_cosmo, 6 n_tau) -> (n_cosmo, 6, n_k, n_tau), then the visibility weighting
     recorded = jnp.transpose(
-        out.reshape(len(k_sorted), len(cosmologies), len(tau_save), SOURCE_CHANNELS), (1, 3, 0, 2)
+        out.reshape(len(k_sorted), len(cosmologies), len(tau_save), SOURCE_CHANNELS),
+        (1, 3, 0, 2),
     )
     del out
-    chi_star = jnp.asarray(tau0_all) - visibility_peak_times(recorded, tau_save, tau0_all)
+    chi_star = jnp.asarray(tau0_all) - visibility_peak_times(
+        recorded, tau_save, tau0_all
+    )
     channels = weight_channels(recorded, tau_save, tau0_all)
     del recorded
 
@@ -1277,20 +1345,34 @@ def _compute_transfer_batch(
     theta_e = jnp.concatenate(thetas_e)
     if lensing_potential_ells is None:
         transfer = TransferBatch(theta, theta_e, None, None, T_cmb)
-        tgrids = TransferGrids(ells, k_fine_d, lnk_weights, k_pivot, None, None, None, None)
+        tgrids = TransferGrids(
+            ells, k_fine_d, lnk_weights, k_pivot, None, None, None, None
+        )
         return transfer, tgrids
     from .lensing import lensing_potential_transfer
 
     ells_pp = np.asarray(lensing_potential_ells, dtype=np.int64)
-    operator, limber_weights, ells_limber = _lensing_operators(ells_pp, k_sorted, tau_save, tau0_ref, projection_dtype)
+    operator, limber_weights, ells_limber = _lensing_operators(
+        ells_pp, k_sorted, tau_save, tau0_ref, projection_dtype
+    )
     chi = jnp.asarray(tau0_ref - tau_save)
     ells_limber_d = jnp.asarray(ells_limber, dtype=jnp.float64)
     k_sorted_d = jnp.asarray(k_sorted)
     theta_psi, limber = lensing_potential_transfer(
-        channels[:, 3], shift_idx, shift_w, chi, chi_star, operator, limber_weights, ells_limber_d, k_sorted_d
+        channels[:, 3],
+        shift_idx,
+        shift_w,
+        chi,
+        chi_star,
+        operator,
+        limber_weights,
+        ells_limber_d,
+        k_sorted_d,
     )
     transfer = TransferBatch(theta, theta_e, theta_psi, limber, T_cmb)
-    tgrids = TransferGrids(ells, k_fine_d, lnk_weights, k_pivot, ells_pp, k_sorted_d, chi, ells_limber_d)
+    tgrids = TransferGrids(
+        ells, k_fine_d, lnk_weights, k_pivot, ells_pp, k_sorted_d, chi, ells_limber_d
+    )
     return transfer, tgrids
 
 
@@ -1301,14 +1383,24 @@ def _lensing_operators(ells, k_sorted, tau_save, tau0_ref, dtype):
     the rest in the Limber approximation; ``ells`` must be sorted.
     """
 
-    return _lensing_operators_cached(ells.tobytes(), np.asarray(k_sorted).tobytes(), np.asarray(tau_save).tobytes(), float(tau0_ref), dtype)
+    return _lensing_operators_cached(
+        ells.tobytes(),
+        np.asarray(k_sorted).tobytes(),
+        np.asarray(tau_save).tobytes(),
+        float(tau0_ref),
+        dtype,
+    )
 
 
 @functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
 def _lensing_operators_cached(ells, k_sorted, tau_save, tau0_ref, dtype):
     from .lensing import LIMBER_LMIN, lensing_potential_operator, limber_interpolation
 
-    ells, k_sorted, tau_save = np.frombuffer(ells, np.int64), np.frombuffer(k_sorted, np.float64), np.frombuffer(tau_save, np.float64)
+    ells, k_sorted, tau_save = (
+        np.frombuffer(ells, np.int64),
+        np.frombuffer(k_sorted, np.float64),
+        np.frombuffer(tau_save, np.float64),
+    )
     exact, limber = ells[ells < LIMBER_LMIN], ells[ells >= LIMBER_LMIN]
     return (
         lensing_potential_operator(exact, k_sorted, tau_save, tau0_ref, dtype),
@@ -1363,7 +1455,12 @@ def cl_power_spectrum_jax(
     2.6e-4 in ``D_l``, which a derivative of the spectrum cannot afford.
     """
 
-    from .perturbations import _pack_batch, _prepare_solve, _row_by_name, solve_history_jax
+    from .perturbations import (
+        _pack_batch,
+        _prepare_solve,
+        _row_by_name,
+        solve_history_jax,
+    )
 
     cosmology = _as_cosmology(cosmology)
     prepared = _prepare_solve((cosmology,), extra=(LineOfSightSources,))
@@ -1407,7 +1504,9 @@ def cl_power_spectrum_jax(
     )
     params = _pack_batch(prepared, k_values, tau_save)[0]
     row = _row_by_name(params[0], densities, thermal)
-    channels, tau_star = source_channels_jax(prepared.model, history, k_sorted, tau_save, tau0, row)
+    channels, tau_star = source_channels_jax(
+        prepared.model, history, k_sorted, tau_save, tau0, row
+    )
 
     interp, bessel, bessel_e, lnk_weights = projection_operator(
         ells, k_sorted, k_fine, tau_save, tau0_ref, projection_dtype

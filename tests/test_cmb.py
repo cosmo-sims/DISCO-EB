@@ -373,7 +373,9 @@ def test_power_spectra_match_class_with_massive_neutrinos():
     # spectrum the difference is well above the gate, and we follow CLASS across it.
     tt_massless = _class_unlensed(REFERENCE_COSMOLOGY, TT_ELLS)["tt"][None]
     shift = np.abs(tt_c / tt_massless - 1.0)
-    assert shift.max() > 3.0 * MASSIVE_DL_GATE, f"the neutrino moves TT by only {shift.max():.3g}"
+    assert shift.max() > 3.0 * MASSIVE_DL_GATE, (
+        f"the neutrino moves TT by only {shift.max():.3g}"
+    )
     assert err.max() < MASSIVE_DL_GATE, (
         f"TT D_ell off by {err.max():.3g} at l={TT_ELLS[np.argmax(err)]}; "
         f"per multipole {np.array2string(err, precision=4)}"
@@ -587,12 +589,30 @@ def _reference_sources(layout, y, k, a, densities):
     k = k[:, None]
     a = a[None, :]
     etak = y[..., layout.ix_etak]
-    clxc, clxb, vb = y[..., layout.ix_clxc], y[..., layout.ix_clxb], y[..., layout.ix_vb]
-    clxg, qg, pig = y[..., layout.ix_g], y[..., layout.ix_g + 1], y[..., layout.ix_g + 2]
+    clxc, clxb, vb = (
+        y[..., layout.ix_clxc],
+        y[..., layout.ix_clxb],
+        y[..., layout.ix_vb],
+    )
+    clxg, qg, pig = (
+        y[..., layout.ix_g],
+        y[..., layout.ix_g + 1],
+        y[..., layout.ix_g + 2],
+    )
     e2 = y[..., layout.ix_pol]
-    clxr, qr, pir = y[..., layout.ix_r], y[..., layout.ix_r + 1], y[..., layout.ix_r + 2]
+    clxr, qr, pir = (
+        y[..., layout.ix_r],
+        y[..., layout.ix_r + 1],
+        y[..., layout.ix_r + 2],
+    )
     a2 = a * a
-    grhog_t, grhor_t, grhoc_t, grhob_t, grhov_t = grhog / a2, grhor / a2, grhoc / a, grhob / a, grhov * a2
+    grhog_t, grhor_t, grhoc_t, grhob_t, grhov_t = (
+        grhog / a2,
+        grhor / a2,
+        grhoc / a,
+        grhob / a,
+        grhov * a2,
+    )
     adotoa = jnp.sqrt((grhog_t + grhor_t + grhoc_t + grhob_t + grhov_t) / 3.0)
     dgrho = grhob_t * clxb + grhoc_t * clxc + grhog_t * clxg + grhor_t * clxr
     dgq = grhob_t * vb + grhog_t * qg + grhor_t * qr
@@ -603,7 +623,9 @@ def _reference_sources(layout, y, k, a, densities):
     sigma = z + 1.5 * dgq / k2
     polter = pig / 10.0 + 9.0 / 15.0 * e2
     monopole = -etak / k + 2.0 * phi + 0.25 * clxg
-    return jnp.stack([monopole + 0.625 * polter, sigma + vb, 1.875 * polter, phi], axis=0)
+    return jnp.stack(
+        [monopole + 0.625 * polter, sigma + vb, 1.875 * polter, phi], axis=0
+    )
 
 
 def test_sources_come_from_the_component_model():
@@ -614,7 +636,12 @@ def test_sources_come_from_the_component_model():
     import jax.numpy as jnp
 
     from discoeb.cmb import source_model
-    from discoeb.perturbations import PARAM_COLUMNS, PerturbationLayout, _as_cosmology, make_params
+    from discoeb.perturbations import (
+        PARAM_COLUMNS,
+        PerturbationLayout,
+        _as_cosmology,
+        make_params,
+    )
     from test_perturbations import REFERENCE_COSMOLOGY
 
     layout = PerturbationLayout()
@@ -632,20 +659,29 @@ def test_sources_come_from_the_component_model():
     base = dict(row)
     base.update(model.state_values(jnp.asarray(y), xp=jnp))
     base.update(k=jnp.asarray(k)[:, None], a=jnp.asarray(a)[None, :])
-    channels = jnp.stack(model.evaluate("m0", "m1", "m2", "phi", math=jnp, **base), axis=0)
+    channels = jnp.stack(
+        model.evaluate("m0", "m1", "m2", "phi", math=jnp, **base), axis=0
+    )
     np.testing.assert_allclose(np.asarray(channels), np.asarray(reference), rtol=1e-12)
 
     # The device function, run as plain Python, point by point, with ``a`` given.
     host = dict(
         jit=lambda f: f,
-        cuda=SimpleNamespace(local=SimpleNamespace(array=lambda shape, dtype: np.zeros(shape))),
+        cuda=SimpleNamespace(
+            local=SimpleNamespace(array=lambda shape, dtype: np.zeros(shape))
+        ),
         float64=np.float64,
     )
     quantities = model.build_function(
-        ("m0", "m1", "m2", "phi"), inputs=("y", "tau", "a"), params=PARAM_COLUMNS, **host
+        ("m0", "m1", "m2", "phi"),
+        inputs=("y", "tau", "a"),
+        params=PARAM_COLUMNS,
+        **host,
     )
     for i in range(n_k):
         for j in range(n_tau):
             p = params[i].copy()
             out = quantities(tuple(y[i, j]), 300.0, float(a[j]), tuple(p))
-            np.testing.assert_allclose(np.asarray(out), np.asarray(channels[:, i, j]), rtol=1e-12)
+            np.testing.assert_allclose(
+                np.asarray(out), np.asarray(channels[:, i, j]), rtol=1e-12
+            )

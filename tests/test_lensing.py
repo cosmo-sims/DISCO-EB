@@ -106,7 +106,11 @@ def test_lensed_spectra_match_class_convolution():
     tables = lensing_tables(LMAX, dtype=jnp.float64)
     cut = slice(None, LMAX + 1)
     mine = lensed_spectra(
-        unlensed["tt"][None, cut], unlensed["te"][None, cut], unlensed["ee"][None, cut], unlensed["pp"][None, cut], tables
+        unlensed["tt"][None, cut],
+        unlensed["te"][None, cut],
+        unlensed["ee"][None, cut],
+        unlensed["pp"][None, cut],
+        tables,
     )
     mine = {name: np.asarray(getattr(mine, name))[0] for name in LENSED}
     check = slice(30, 2509)
@@ -115,13 +119,19 @@ def test_lensed_spectra_match_class_convolution():
         rel = mine[name][check] / lensed[name][check] - 1.0
         assert np.abs(rel[ell <= 2000]).max() < 5.0e-4, name
         assert np.abs(rel).max() < 1.0e-3, name
-    te = _te_error(mine["te"][check], lensed["te"][check], lensed["tt"][check], lensed["ee"][check])
+    te = _te_error(
+        mine["te"][check], lensed["te"][check], lensed["tt"][check], lensed["ee"][check]
+    )
     assert te.max() < 3.0e-4
     bb = mine["bb"][check] / lensed["bb"][check] - 1.0
     assert np.abs(bb[ell <= 1500]).max() < 1.0e-2
     # lensing is a several percent effect at these multipoles, so the checks are not vacuous
-    assert np.abs(unlensed["tt"][1500:2509] / lensed["tt"][1500:2509] - 1.0).max() > 0.02
-    assert np.abs(unlensed["ee"][1000:2509] / lensed["ee"][1000:2509] - 1.0).max() > 0.05
+    assert (
+        np.abs(unlensed["tt"][1500:2509] / lensed["tt"][1500:2509] - 1.0).max() > 0.02
+    )
+    assert (
+        np.abs(unlensed["ee"][1000:2509] / lensed["ee"][1000:2509] - 1.0).max() > 0.05
+    )
 
 
 @pytest.mark.skipif(not _cuda_available(), reason="numba-CUDA requires a CUDA GPU")
@@ -136,10 +146,20 @@ def test_lensing_potential_matches_class():
     cosmologies = _perturbed_cosmologies(4)
     ells_pp = np.unique(np.round(np.geomspace(2, 2500, 40)).astype(np.int64))
     k_values = cmb_k_grid(cosmologies[0], n=128, mode="ode", k_min=1.0e-5, k_max=0.5)
-    grids = cmb_grids(cosmologies[0], k_values=k_values, ells=np.asarray([30, 300, 1000]), n_save=1200, n_k_fine=1500)
+    grids = cmb_grids(
+        cosmologies[0],
+        k_values=k_values,
+        ells=np.asarray([30, 300, 1000]),
+        n_save=1200,
+        n_k_fine=1500,
+    )
     # the Limber projection at l ~ 1000-2500 needs the Weyl potential up to k ~ 1 Mpc^-1
-    grids = grids._replace(k_values=np.sort(np.concatenate([k_values, np.geomspace(0.55, 1.2, 16)])))
-    _, _, _, cl_pp = compute_cl_power_spectrum_batch(cosmologies, grids=grids, lensing_potential_ells=ells_pp)
+    grids = grids._replace(
+        k_values=np.sort(np.concatenate([k_values, np.geomspace(0.55, 1.2, 16)]))
+    )
+    _, _, _, cl_pp = compute_cl_power_spectrum_batch(
+        cosmologies, grids=grids, lensing_potential_ells=ells_pp
+    )
     cl_pp = np.asarray(jax.block_until_ready(cl_pp))
     for i, cosmology in enumerate(cosmologies):
         unlensed, _ = _class_spectra(cosmology, lmax=2600)
@@ -166,17 +186,39 @@ def test_lensed_spectra_end_to_end_match_class():
     cosmology = _perturbed_cosmologies(1)[0]
     # every multipole where D_l curves sharply in ln l, then the acoustic peaks
     # at CLASS's own spacing (a 25-step table at E2E_LMAX outgrows the device)
-    ells = np.unique(np.concatenate([np.arange(2, 12), np.arange(12, 40, 2), np.arange(40, 200, 10), np.arange(200, E2E_LMAX + 1, 40)]))
+    ells = np.unique(
+        np.concatenate(
+            [
+                np.arange(2, 12),
+                np.arange(12, 40, 2),
+                np.arange(40, 200, 10),
+                np.arange(200, E2E_LMAX + 1, 40),
+            ]
+        )
+    )
     ells_pp = np.unique(np.round(np.geomspace(2, E2E_LMAX, 40)).astype(np.int64))
     k_values = cmb_k_grid(cosmology, n=128, mode="ode", k_min=1.0e-5, k_max=0.5)
-    grids = cmb_grids(cosmology, k_values=k_values, ells=ells, n_save=1000, n_k_fine=1500)
-    grids = grids._replace(k_values=np.sort(np.concatenate([k_values, np.geomspace(0.55, 1.2, 16)])))
-    _, cl, _, cl_pp = compute_cl_power_spectrum_batch([cosmology], grids=grids, lensing_potential_ells=ells_pp)
+    grids = cmb_grids(
+        cosmology, k_values=k_values, ells=ells, n_save=1000, n_k_fine=1500
+    )
+    grids = grids._replace(
+        k_values=np.sort(np.concatenate([k_values, np.geomspace(0.55, 1.2, 16)]))
+    )
+    _, cl, _, cl_pp = compute_cl_power_spectrum_batch(
+        [cosmology], grids=grids, lensing_potential_ells=ells_pp
+    )
 
     norm = (cosmology["Tcmb"] * 1.0e6) ** 2
-    unlensed = {name: cl_on_every_ell(ells, getattr(cl, name) * norm, E2E_LMAX) for name in UNLENSED}
+    unlensed = {
+        name: cl_on_every_ell(ells, getattr(cl, name) * norm, E2E_LMAX)
+        for name in UNLENSED
+    }
     lensed = lensed_spectra(
-        unlensed["tt"], unlensed["te"], unlensed["ee"], cl_on_every_ell(ells_pp, cl_pp, E2E_LMAX, power=2), lensing_tables(E2E_LMAX)
+        unlensed["tt"],
+        unlensed["te"],
+        unlensed["ee"],
+        cl_on_every_ell(ells_pp, cl_pp, E2E_LMAX, power=2),
+        lensing_tables(E2E_LMAX),
     )
     lensed = {name: np.asarray(getattr(lensed, name))[0] for name in LENSED}
     unlensed = {name: np.asarray(unlensed[name])[0] for name in UNLENSED}
@@ -186,9 +228,22 @@ def test_lensed_spectra_end_to_end_match_class():
     ell = np.arange(2, E2E_LCHECK + 1)
     for name, gate in (("tt", DL_GATE), ("ee", POL_GATE)):
         rel = lensed[name][check] / lensed_class[name][check] - 1.0
-        assert np.abs(rel).max() < gate, f"lensed {name} off by {np.abs(rel).max():.3g} at l={ell[np.argmax(np.abs(rel))]}"
-    te = _te_error(lensed["te"][check], lensed_class["te"][check], lensed_class["tt"][check], lensed_class["ee"][check])
-    assert te.max() < POL_GATE, f"lensed te off by {te.max():.3g} of sqrt(TT EE) at l={ell[np.argmax(te)]}"
+        assert np.abs(rel).max() < gate, (
+            f"lensed {name} off by {np.abs(rel).max():.3g} at l={ell[np.argmax(np.abs(rel))]}"
+        )
+    te = _te_error(
+        lensed["te"][check],
+        lensed_class["te"][check],
+        lensed_class["tt"][check],
+        lensed_class["ee"][check],
+    )
+    assert te.max() < POL_GATE, (
+        f"lensed te off by {te.max():.3g} of sqrt(TT EE) at l={ell[np.argmax(te)]}"
+    )
     for name, gate in (("tt", 1.0e-3), ("ee", 5.0e-3)):
-        correction = (lensed[name][check] / unlensed[name][check]) / (lensed_class[name][check] / unlensed_class[name][check]) - 1.0
-        assert np.abs(correction).max() < gate, f"{name} lensing correction off by {np.abs(correction).max():.3g} at l={ell[np.argmax(np.abs(correction))]}"
+        correction = (lensed[name][check] / unlensed[name][check]) / (
+            lensed_class[name][check] / unlensed_class[name][check]
+        ) - 1.0
+        assert np.abs(correction).max() < gate, (
+            f"{name} lensing correction off by {np.abs(correction).max():.3g} at l={ell[np.argmax(np.abs(correction))]}"
+        )

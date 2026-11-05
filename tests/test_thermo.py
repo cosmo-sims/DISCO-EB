@@ -87,7 +87,9 @@ def _class_thermodynamics(param):
         cosmo.struct_cleanup()
         cosmo.empty()
     order = np.argsort(thermo["z"])
-    return tuple(np.asarray(thermo[key])[order] for key in ("z", "x_e", "Tb [K]", "c_b^2"))
+    return tuple(
+        np.asarray(thermo[key])[order] for key in ("z", "x_e", "Tb [K]", "c_b^2")
+    )
 
 
 @pytest.mark.parametrize("n_cosmologies", BATCH_SIZE_CASES)

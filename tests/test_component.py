@@ -25,7 +25,9 @@ from discoeb.component import (
 
 HOST = dict(
     jit=lambda f: f,
-    cuda=SimpleNamespace(local=SimpleNamespace(array=lambda shape, dtype: np.zeros(shape))),
+    cuda=SimpleNamespace(
+        local=SimpleNamespace(array=lambda shape, dtype: np.zeros(shape))
+    ),
     float64=np.float64,
 )
 FLOOR = 1e-30  # a module constant a provider reads
@@ -113,7 +115,14 @@ def reference(y, tau, p):
 
 def toy_model(*extra):
     return Model(
-        [Background(), ColdDarkMatter(), Baryons(), Photons(), ThomsonScattering(), *extra],
+        [
+            Background(),
+            ColdDarkMatter(),
+            Baryons(),
+            Photons(),
+            ThomsonScattering(),
+            *extra,
+        ],
         sums=("grho",),
     )
 
@@ -122,7 +131,9 @@ def test_the_built_rhs_evaluates_the_equations():
     model = toy_model()
     rhs = model.build(PARAMS, **HOST)
     assert model.state == ["clxc", "clxb", "vb", "clxg", "qg"]
-    np.testing.assert_allclose(rhs(Y0, TAU, P), reference(Y0, TAU, P), rtol=1e-15, atol=0)
+    np.testing.assert_allclose(
+        rhs(Y0, TAU, P), reference(Y0, TAU, P), rtol=1e-15, atol=0
+    )
     assert rhs._generated_source == model.source
 
 
@@ -131,11 +142,21 @@ def test_the_driver_injects_by_name_in_dependency_order():
     model = toy_model()
     model.build(PARAMS, **HOST)
     lines = [l.strip() for l in model.source.splitlines()]
-    assert "d_vb = Baryons__d_vb(a, adotoa, vb, cs2b, k, clxb) + ThomsonScattering__d_vb(R, kappa, qg, vb)" in lines
-    assert "d_qg = Photons__d_qg(k, clxg) + ThomsonScattering__d_qg(kappa, qg, vb)" in lines
+    assert (
+        "d_vb = Baryons__d_vb(a, adotoa, vb, cs2b, k, clxb) + ThomsonScattering__d_vb(R, kappa, qg, vb)"
+        in lines
+    )
+    assert (
+        "d_qg = Photons__d_qg(k, clxg) + ThomsonScattering__d_qg(kappa, qg, vb)"
+        in lines
+    )
     total = "grho = ColdDarkMatter__grho(grhoc, inv_a) + Baryons__grho(grhob, inv_a) + Photons__grho(grhog, inv_a)"
     assert total in lines
-    assert lines.index("inv_a = Background__inv_a(a)") < lines.index(total) < lines.index("adotoa = Background__adotoa(grho)")
+    assert (
+        lines.index("inv_a = Background__inv_a(a)")
+        < lines.index(total)
+        < lines.index("adotoa = Background__adotoa(grho)")
+    )
     # Every y and p access is a literal index.
     for line in lines:
         if "y[" in line or "p[" in line:
@@ -162,7 +183,9 @@ def test_initial_conditions_are_declared_on_the_states():
     np.testing.assert_allclose(y0[:, model.index["clxg"]], clxg)
     np.testing.assert_allclose(y0[:, model.index["clxc"]], 0.75 * clxg)
     np.testing.assert_allclose(y0[:, model.index["clxb"]], 0.75 * clxg)
-    assert (y0[:, [model.index["vb"], model.index["qg"]]] == 0.0).all()  # no initial condition: zero
+    assert (
+        y0[:, [model.index["vb"], model.index["qg"]]] == 0.0
+    ).all()  # no initial condition: zero
 
 
 def stream(kv, x, inv_tau, output):
@@ -193,7 +216,9 @@ class Hierarchy(Species):
 def test_vector_states_are_arrays_and_their_output_buffers_are_provided():
     compiled = []
     model = Model([Hierarchy()])
-    rhs = model.build({"k": 0}, **{**HOST, "jit": lambda f: compiled.append(f.__name__) or f})
+    rhs = model.build(
+        {"k": 0}, **{**HOST, "jit": lambda f: compiled.append(f.__name__) or f}
+    )
     assert model.state == ["x_0", "x_1", "x_2", "x_3"]
     k, tau, x = 0.7, 3.0, (1.0, 2.0, 4.0, 8.0)
     np.testing.assert_allclose(
@@ -229,10 +254,23 @@ def finite_difference_pattern(f, y, step=1e-6):
 def test_the_jacobian_pattern_is_traced_through_the_providers():
     """``stream`` couples each multipole to its neighbours; nothing declares that."""
     model = Model([Hierarchy()])
-    tridiagonal = {(0, 1), (1, 0), (1, 2), (2, 1), (2, 3), (3, 2), (3, 3)}  # x_3 damps itself
+    tridiagonal = {
+        (0, 1),
+        (1, 0),
+        (1, 2),
+        (2, 1),
+        (2, 3),
+        (3, 2),
+        (3, 3),
+    }  # x_3 damps itself
     assert pattern(model) == tridiagonal
     rhs = model.build({"k": 0}, **HOST)
-    assert finite_difference_pattern(lambda y: rhs(tuple(y), 3.0, (0.7,)), (1.0, 2.0, 4.0, 8.0)) == tridiagonal
+    assert (
+        finite_difference_pattern(
+            lambda y: rhs(tuple(y), 3.0, (0.7,)), (1.0, 2.0, 4.0, 8.0)
+        )
+        == tridiagonal
+    )
 
     class Core(Species):
         v = State(2)
@@ -240,15 +278,19 @@ def test_the_jacobian_pattern_is_traced_through_the_providers():
         def d_v(k, v, output):
             output[0] = k * v[1]  # v_1 has no derivative of its own: an empty row
 
-    assert pattern(Model([Core(), Hierarchy()])) == {(0, 1)} | {(r + 2, c + 2) for r, c in tridiagonal}
+    assert pattern(Model([Core(), Hierarchy()])) == {(0, 1)} | {
+        (r + 2, c + 2) for r, c in tridiagonal
+    }
 
     # The toy model, against the hand-written reference: the pattern threads
     # through the sums and the interaction (vb and qg through the drag).
     model = toy_model()
     expected = finite_difference_pattern(lambda y: reference(y, TAU, P), Y0)
-    assert pattern(model) == expected == {
-        (0, 0), (1, 2), (2, 1), (2, 2), (2, 4), (3, 4), (4, 2), (4, 3), (4, 4)
-    }
+    assert (
+        pattern(model)
+        == expected
+        == {(0, 0), (1, 2), (2, 1), (2, 2), (2, 4), (3, 4), (4, 2), (4, 3), (4, 4)}
+    )
 
 
 def test_providers_of_inputs_alone_are_not_traced():
@@ -291,7 +333,9 @@ def test_a_branch_on_the_state_reads_every_input():
         u = State()
 
         def d_u(u, k):
-            return max(k, 1e-30) * u  # a branch on an input, inside a provider that reads the state
+            return (
+                max(k, 1e-30) * u
+            )  # a branch on an input, inside a provider that reads the state
 
     assert {tuple(e) for e in Model([Floor()]).sparsity()} == {(0, 0)}
 
@@ -311,7 +355,12 @@ def test_settings_are_class_attributes_loaded_from_the_environment(monkeypatch):
     assert Tuned.setting_names() == ("LMAX_T", "SCALE", "FLAG", "UNSET")
     instance = Tuned(LMAX_T=11)
     assert (instance.LMAX_T, instance.SCALE, Tuned.LMAX_T) == (11, 2.5, 7)
-    assert instance.constants() == {"LMAX_T": 11, "SCALE": 2.5, "FLAG": True, "UNSET": 4}
+    assert instance.constants() == {
+        "LMAX_T": 11,
+        "SCALE": 2.5,
+        "FLAG": True,
+        "UNSET": 4,
+    }
     with pytest.raises(TypeError, match="has no settings \\['NOPE'\\]"):
         Tuned(NOPE=1)
 
@@ -374,7 +423,9 @@ def test_partial_writes_of_a_vector_accumulate():
     rhs = model.build({"k": 0, "opacity": 1}, **HOST)
     k, tau, x, op = 0.7, 3.0, (1.0, 2.0, 4.0, 8.0), 5.0
     undamped = Model([Hierarchy()]).build({"k": 0}, **HOST)(x, tau, (k,))
-    np.testing.assert_allclose(rhs(x, tau, (k, op)), np.add(undamped, (0.0, 0.0, -op * 4.0, -op * 8.0)))
+    np.testing.assert_allclose(
+        rhs(x, tau, (k, op)), np.add(undamped, (0.0, 0.0, -op * 4.0, -op * 8.0))
+    )
     lines = [l.strip() for l in model.source.splitlines()]
     assert lines.index("Hierarchy__d_x(k, x, inv_tau, c_Hierarchy__d_x)") < lines.index(
         "Damping__d_x(opacity, x, c_Damping__d_x)"
@@ -422,18 +473,29 @@ def test_matrix_states_and_tuple_constants():
     v0, v1 = a * 0.5, a * 0.25
     np.testing.assert_allclose(
         rhs(y, 1.0, (k, a)),
-        (-k * v0 * 2.0, k * v0 * 1.0, -k * v1 * 8.0, k * v1 * 4.0, 0.5 * 1.0 * v0 + 0.25 * 4.0 * v1),
+        (
+            -k * v0 * 2.0,
+            k * v0 * 1.0,
+            -k * v1 * 8.0,
+            k * v1 * 4.0,
+            0.5 * 1.0 * v0 + 0.25 * 4.0 * v1,
+        ),
     )
     assert "psi = cuda.local.array((2, 2), float64)" in model.source
     assert "d_psi[i, j] += c_Bins__d_psi[i, j]" in model.source
     assert "Bins__d_psi(Bins_self, k, a, psi, c_Bins__d_psi)" in model.source
     # On the device self is a named tuple of the constants, one field per type.
     device_self = Bins([0.5, 0.25]).device_self()
-    assert type(device_self).__name__ == "Bins" and device_self._fields == ("NQ", "weight")
+    assert type(device_self).__name__ == "Bins" and device_self._fields == (
+        "NQ",
+        "weight",
+    )
     assert device_self.NQ == 2 and device_self.weight == (0.5, 0.25)
     # Matrix initial conditions and sparsity work element by element: each bin
     # couples only to itself, and w reads the bins' first elements.
-    np.testing.assert_array_equal(model.initial_state([2.0]), [[1.0, 0.0, 0.5, 0.0, 0.0]])
+    np.testing.assert_array_equal(
+        model.initial_state([2.0]), [[1.0, 0.0, 0.5, 0.0, 0.0]]
+    )
     assert pattern(model) == {(0, 1), (1, 0), (2, 3), (3, 2), (4, 0), (4, 2)}
 
 

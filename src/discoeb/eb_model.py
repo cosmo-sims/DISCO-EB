@@ -56,11 +56,14 @@ from .component import Component, Interaction, Model, Setting, Species, State
 from .spline_interpolation import FastUniformCubicSpline1D, spline_interpolation
 from .util import generalized_gauss_laguerre_weights
 
-SUMS = ("grho", "dgrho", "dgq", "dgpi")
-"""The quantities summed over species: the Friedmann density, the sources of
-the Einstein constraints ``dgrho = Sum grho_i_t delta_i`` and
-``dgq = Sum grho_i_t q_i``, and the anisotropic stress ``dgpi = Sum grho_i_t pi_i``
-the Weyl potential of the line-of-sight sources needs."""
+SUMS = ("grho", "gpres", "dgrho", "dgq", "dgpi")
+"""The quantities summed over species: the Friedmann density, the pressure
+``gpres = Sum 8 pi G p_i a^2`` (CAMB's, so the comoving curvature perturbation
+can divide by ``rho + p``), the sources of the Einstein constraints
+``dgrho = Sum grho_i_t delta_i`` and ``dgq = Sum grho_i_t q_i``, and the
+anisotropic stress ``dgpi = Sum grho_i_t pi_i`` the Weyl potential of the
+line-of-sight sources needs. Spatial curvature enters ``grho`` through
+``grhok`` but, not being a fluid, contributes no pressure."""
 
 
 def _needs_octupole(**lmax):
@@ -148,13 +151,32 @@ class Metric(Component):
     ``sigma = k alpha = (z + 1.5 dgq/k^2) / s2^2``.
     """
 
-    etak = State(initial=lambda k, x, Rp15: -k * (1.0 - x * x / 12.0 * (-10.0 / Rp15 + 1.0)))
+    etak = State(
+        initial=lambda k, x, Rp15: -k * (1.0 - x * x / 12.0 * (-10.0 / Rp15 + 1.0))
+    )
 
     def z(self, dgrho, k, s2, etak, adotoa):
         return (0.5 * dgrho / k + s2 * etak) / adotoa
 
     def sigma(self, z, dgq, inv_k2, inv_s2):
         return (z + 1.5 * dgq * inv_k2) * inv_s2
+
+    def R(self, etak, k, adotoa, dgq, grho, gpres, grhok):
+        """The comoving curvature perturbation ``R``, unity for the adiabatic mode.
+
+        The curvature perturbation of the slices on which the total momentum
+        density vanishes, a gauge invariant: from synchronous gauge the slicing
+        shifts by ``T = theta / k^2`` with ``theta = k dgq / (grho_fluid +
+        gpres)`` the total velocity divergence (``dgq = 8 pi G a^2 (rho + p)
+        theta / k``), under which the curvature ``eta`` becomes ``eta + aH T``.
+        The sign is CAMB's, in which the initial conditions set ``R = 1``
+        (``etak = -k`` at ``k tau << 1``); Ma & Bertschinger's ``phi``
+        convention is the negative, so in matter domination the Newtonian
+        potentials are ``phi = psi = -3 R / 5`` outside the horizon. ``R`` is
+        conserved on super-horizon scales up to ``O((k tau)^2)``; through
+        horizon entry it decays as the mode's potentials do.
+        """
+        return -etak / k - adotoa * dgq / (k * (grho - grhok + gpres))
 
     def d_etak(self, dgq, Kcurv, z, inv_s2):
         return (0.5 * dgq + Kcurv * z) * inv_s2
@@ -167,7 +189,12 @@ class Metric(Component):
 
 
 class ColdDarkMatter(Species):
-    clxc = State(initial=lambda clxg: 0.75 * clxg)  # the adiabatic mode: 3/4 of the photon density
+    clxc = State(
+        initial=lambda clxg: 0.75 * clxg
+    )  # the adiabatic mode: 3/4 of the photon density
+
+    def grhoc(self, grhoc_nominal, eps, dir_grhoc):
+        return grhoc_nominal + eps * dir_grhoc
 
     def grhoc_t(self, grhoc, inv_a):
         return grhoc * inv_a
@@ -188,6 +215,9 @@ class Baryons(Species):
 
     clxb = State(initial=lambda clxg: 0.75 * clxg)
     vb = State(initial=lambda qg: 0.75 * qg)
+
+    def grhob(self, grhob_nominal, eps, dir_grhob):
+        return grhob_nominal + eps * dir_grhob
 
     def grhob_t(self, grhob, inv_a):
         return grhob * inv_a
@@ -254,6 +284,9 @@ class Photons(Species):
         super().__init__(**settings)
         _needs_octupole(LMAX_G=self.LMAX_G, LMAX_POL=self.LMAX_POL)
 
+    def grhog(self, grhog_nominal, eps, dir_grhog):
+        return grhog_nominal + eps * dir_grhog
+
     def grhog_t(self, grhog, inv_a2):
         return grhog * inv_a2
 
@@ -279,13 +312,20 @@ class Photons(Species):
     def dgq(self, grhog_t, qg):
         return grhog_t * qg
 
+    def gpres(self, grhog_t):
+        return grhog_t * (1.0 / 3.0)
+
     def dgpi(self, grhog_t, pig):
         return grhog_t * pig
 
     def d_theta(self, k, z, sigma, theta, inv_tau, output):
         output[0] = -k * ((4.0 / 3.0) * z + theta[1])
         output[1] = k * theta[0] * (1.0 / 3.0) - (2.0 / 3.0) * k * theta[2]
-        output[2] = (2.0 / 5.0) * k * theta[1] - (3.0 / 5.0) * k * theta[3] + (8.0 / 15.0) * k * sigma
+        output[2] = (
+            (2.0 / 5.0) * k * theta[1]
+            - (3.0 / 5.0) * k * theta[3]
+            + (8.0 / 15.0) * k * sigma
+        )
         stream(k, theta, inv_tau, output)
 
     def d_e(self, k, e, inv_tau, output):
@@ -295,7 +335,8 @@ class Photons(Species):
             upfac = (l + 3.0) * (l - 1.0) / (l + 1.0)
             output[l - 2] = k * (l * e[l - 3] - upfac * e[l - 1]) * (1.0 / (2 * l + 1))
         output[lmax - 2] = (
-            k * lmax * e[lmax - 3] * (1.0 / (2 * lmax + 1)) - (lmax + 3) * e[lmax - 2] * inv_tau
+            k * lmax * e[lmax - 3] * (1.0 / (2 * lmax + 1))
+            - (lmax + 3) * e[lmax - 2] * inv_tau
         )
 
 
@@ -343,7 +384,14 @@ class MasslessNeutrinos(Species):
         """The growing mode's neutrino monopole, dipole, quadrupole and octupole."""
         output[0] = clxg
         output[1] = (4.0 * Rv + 23.0) / Rp15 * x**3 / 27.0
-        output[2] = -4.0 / 3.0 * x * x / Rp15 * (1.0 + omtau / 4.0 * (4.0 * Rv - 5.0) / (2.0 * Rv + 15.0))
+        output[2] = (
+            -4.0
+            / 3.0
+            * x
+            * x
+            / Rp15
+            * (1.0 + omtau / 4.0 * (4.0 * Rv - 5.0) / (2.0 * Rv + 15.0))
+        )
         output[3] = -4.0 / 21.0 / Rp15 * x**3
 
     n = State(lambda self: self.LMAX_NR + 1, initial=_n_initial)
@@ -351,6 +399,9 @@ class MasslessNeutrinos(Species):
     def __init__(self, **settings):
         super().__init__(**settings)
         _needs_octupole(LMAX_NR=self.LMAX_NR)
+
+    def grhornomass(self, grhornomass_nominal, eps, dir_grhornomass):
+        return grhornomass_nominal + eps * dir_grhornomass
 
     def grhor_t(self, grhornomass, inv_a2):
         return grhornomass * inv_a2
@@ -364,13 +415,18 @@ class MasslessNeutrinos(Species):
     def dgq(self, grhor_t, n):
         return grhor_t * n[1]
 
+    def gpres(self, grhor_t):
+        return grhor_t * (1.0 / 3.0)
+
     def dgpi(self, grhor_t, n):
         return grhor_t * n[2]
 
     def d_n(self, k, z, sigma, n, inv_tau, output):
         output[0] = -k * ((4.0 / 3.0) * z + n[1])
         output[1] = k * (n[0] - 2.0 * n[2]) / 3.0
-        output[2] = (2.0 / 5.0) * k * n[1] - (3.0 / 5.0) * k * n[3] + (8.0 / 15.0) * k * sigma
+        output[2] = (
+            (2.0 / 5.0) * k * n[1] - (3.0 / 5.0) * k * n[3] + (8.0 / 15.0) * k * sigma
+        )
         stream(k, n, inv_tau, output)
 
 
@@ -388,7 +444,7 @@ class MassiveNeutrinos(Species):
 
     and the free-streaming tail above. The bins' moments ``Sum w psi0 / v``,
     ``Sum w psi1`` and ``Sum w v psi2`` enter the Einstein sources; the background density
-    ratio ``rhonu`` comes from the tables. Deep in radiation domination the
+    ratio ``rhonu`` and pressure ratio ``pnu`` come from the recombination block. Deep in radiation domination the
     neutrinos are still relativistic, so each bin starts as the massless
     hierarchy, ``psi_l = -(1/4) N_l dlnf0/dlnq``. The quadrature nodes and
     weights are constants of the instance, which the providers read through
@@ -435,6 +491,10 @@ class MassiveNeutrinos(Species):
             total += self.weight[i] * psi[i, 1]
         return nu_norm * total
 
+    def gpres(self, nu_norm, pnu):
+        """The background pressure, from the recombination block's ``pnu = (rhonu - d rhonu / d ln a) / 3``."""
+        return nu_norm * pnu
+
     def dgpi(self, nu_norm, a, amnu, psi):
         """The shear ``Sum w v psi2``: the pressure weighting ``q/epsilon`` of a massive bin."""
         total = 0.0
@@ -450,7 +510,10 @@ class MassiveNeutrinos(Species):
             dl = self.dlnf0[i]
             output[i, 0] = -kv * psi[i, 1] + k * z * (1.0 / 3.0) * dl
             output[i, 1] = kv * (1.0 / 3.0) * (psi[i, 0] - 2.0 * psi[i, 2])
-            output[i, 2] = kv * (1.0 / 5.0) * (2.0 * psi[i, 1] - 3.0 * psi[i, 3]) - (2.0 / 15.0) * k * sigma * dl
+            output[i, 2] = (
+                kv * (1.0 / 5.0) * (2.0 * psi[i, 1] - 3.0 * psi[i, 3])
+                - (2.0 / 15.0) * k * sigma * dl
+            )
             stream(kv, psi[i], inv_tau, output[i])
 
 
@@ -460,11 +523,17 @@ class MassiveNeutrinos(Species):
 class CosmologicalConstant(Species):
     """A cosmological constant: density only, no perturbations."""
 
+    def grhov(self, grhov_nominal, eps, dir_grhov):
+        return grhov_nominal + eps * dir_grhov
+
     def grhov_t(self, grhov, a2):
         return grhov * a2
 
     def grho(self, grhov_t):
         return grhov_t
+
+    def gpres(self, grhov_t):
+        return -grhov_t
 
 
 class DarkEnergy(Species):
@@ -481,7 +550,9 @@ class DarkEnergy(Species):
     The fluid starts in the adiabatic mode, ``clxq = (1 + w_0) clxc`` at rest.
     """
 
-    clxq = State(initial=lambda w_DE_0, clxc: (1.0 + w_DE_0) * clxc)  # adiabatic, at rest
+    clxq = State(
+        initial=lambda w_DE_0, clxc: (1.0 + w_DE_0) * clxc
+    )  # adiabatic, at rest
     thetaq = State()
 
     def w_Q(self, a, w_DE_0, w_DE_a):
@@ -489,13 +560,21 @@ class DarkEnergy(Species):
 
     def rho_Q(self, a, w_DE_0, w_DE_a):
         """``rho_Q(a) / rho_Q(1)`` for the CPL equation of state."""
-        return a ** (-3.0 * (1.0 + w_DE_0 + w_DE_a)) * math.exp(3.0 * (a - 1.0) * w_DE_a)
+        return a ** (-3.0 * (1.0 + w_DE_0 + w_DE_a)) * math.exp(
+            3.0 * (a - 1.0) * w_DE_a
+        )
+
+    def grhov(self, grhov_nominal, eps, dir_grhov):
+        return grhov_nominal + eps * dir_grhov
 
     def grhov_t(self, grhov, rho_Q, a2):
         return grhov * rho_Q * a2
 
     def grho(self, grhov_t):
         return grhov_t
+
+    def gpres(self, grhov_t, w_Q):
+        return w_Q * grhov_t
 
     def dgrho(self, grhov_t, clxq):
         return grhov_t * clxq
@@ -517,17 +596,22 @@ class DarkEnergy(Species):
         )
 
     def d_thetaq(self, clxq, thetaq, k, adotoa, w_Q, cs2_DE):
-        return -(1.0 - 3.0 * cs2_DE) * adotoa * thetaq + cs2_DE / (1.0 + w_Q) * k**2 * clxq
+        return (
+            -(1.0 - 3.0 * cs2_DE) * adotoa * thetaq + cs2_DE / (1.0 + w_Q) * k**2 * clxq
+        )
 
 
 # --- the model ----------------------------------------------------------------------
 
 
-def perturbation_model(layout, thermal_history: Component | None = None, extra=()) -> Model:
+def perturbation_model(
+    layout, thermal_history: Component | None = None, extra=()
+) -> Model:
     """The components a :class:`~discoeb.perturbations.PerturbationLayout` enables.
 
-    ``thermal_history`` provides ``a``, ``opacity``, ``cs2`` and ``rhonu`` as
-    functions of ``tau`` (on the device, spline tables; in a test, anything);
+    ``thermal_history`` provides ``a``, ``opacity``, ``cs2``, ``rhonu`` and
+    ``pnu`` as functions of ``tau`` (in a test, anything; in the solve the
+    recombination block of :func:`discoeb.perturbations.joint_kernel`);
     without it the model still gives the state layout, the initial conditions
     and the sparsity pattern. ``extra`` components (the line-of-sight sources
     of :mod:`discoeb.cmb`) are appended. The layout's truncations are passed to the
@@ -603,7 +687,11 @@ def layout_state_names(layout) -> tuple[str, ...]:
     if layout.enable_dark_energy:
         names += ["clxq", "thetaq"]
     if layout.has_massive_neutrinos:
-        names += [f"psi_{i}_{l}" for i in range(layout.nqmax) for l in range(layout.lmaxnu + 1)]
+        names += [
+            f"psi_{i}_{l}"
+            for i in range(layout.nqmax)
+            for l in range(layout.lmaxnu + 1)
+        ]
     return tuple(names)
 
 
@@ -643,7 +731,9 @@ def get_neutrino_momentum_bins(nqmax: int) -> tuple[jax.Array, jax.Array]:
     elif nqmax == 5:
         q = jnp.array([0.583165, 2.0, 4.0, 7.26582, 13.0])
         dlfdlq = -q / (1 + jnp.exp(-q))
-        w = jnp.array([0.0081201, 0.689407, 2.8063, 2.05156, 0.12681]) / (-0.25 * dlfdlq)
+        w = jnp.array([0.0081201, 0.689407, 2.8063, 2.05156, 0.12681]) / (
+            -0.25 * dlfdlq
+        )
     else:
         alpha = 1
         q, w = generalized_gauss_laguerre_weights(nqmax, alpha)
@@ -688,7 +778,11 @@ def _neutrino_table(n_y_grid: int = 1000):
         with jax.ensure_compile_time_eval():
             log_y = jnp.linspace(_LN_Y_MIN, _LN_Y_MAX, n_y_grid)
             q, w = get_neutrino_momentum_bins(NQ_NEUTRINO_TABLE)
-            ratio = jnp.sum(w[None, :] * jnp.sqrt(1.0 + (jnp.exp(log_y)[:, None] / q[None, :]) ** 2), axis=1)
+            ratio = jnp.sum(
+                w[None, :]
+                * jnp.sqrt(1.0 + (jnp.exp(log_y)[:, None] / q[None, :]) ** 2),
+                axis=1,
+            )
             table = FastUniformCubicSpline1D(log_y, jnp.log(ratio))
         _NEUTRINO_TABLE[key] = table
     return table
@@ -731,8 +825,16 @@ def background_model() -> Model:
     if not _BACKGROUND_MODEL:
         _BACKGROUND_MODEL.append(
             Model(
-                [Background(), Curvature(), ColdDarkMatter(), Baryons(), Photons(),
-                 MasslessNeutrinos(), DarkEnergy(), MassiveNeutrinos()],
+                [
+                    Background(),
+                    Curvature(),
+                    ColdDarkMatter(),
+                    Baryons(),
+                    Photons(),
+                    MasslessNeutrinos(),
+                    DarkEnergy(),
+                    MassiveNeutrinos(),
+                ],
                 sums=SUMS,
             )
         )
@@ -771,7 +873,12 @@ def density_parameters(param, xp=jnp) -> dict:
     }
     rhonu_today = neutrino_density_ratio(1.0, d["amnu"], xp)
     without_dark_energy = background_model().evaluate(
-        "grho", math=(math if xp is np else jnp), a=1.0, rhonu=rhonu_today, grhov=0.0, **d
+        "grho",
+        math=(math if xp is np else jnp),
+        a=1.0,
+        rhonu=rhonu_today,
+        grhov=0.0,
+        **d,
     )
     d["grhov"] = grhom - without_dark_energy
     d["OmegaDE"] = d["grhov"] / grhom
@@ -783,7 +890,9 @@ def expansion_rate(a, densities):
     """The conformal Hubble rate ``a'/a = a H`` at scalar ``a``, from the model's ``adotoa``."""
 
     rhonu = neutrino_density_ratio(a, densities["amnu"])
-    return background_model().evaluate("adotoa", math=jnp, a=a, rhonu=rhonu, **densities)
+    return background_model().evaluate(
+        "adotoa", math=jnp, a=a, rhonu=rhonu, **densities
+    )
 
 
 def dtauda(a, densities):
@@ -819,24 +928,49 @@ def setup_background_evolution(*, amin, amax, param):
     loga = jnp.log(a)
     param["a"] = a
     rhonu = neutrino_density_ratio(a, densities["amnu"])
-    param["logrhonu_of_loga_spline"] = spline_interpolation(loga, jnp.log(rhonu)[:, None], uniform=True)
+    param["logrhonu_of_loga_spline"] = spline_interpolation(
+        loga, jnp.log(rhonu)[:, None], uniform=True
+    )
 
     radiation = (
-        densities["grhog"] + densities["grhornomass"]
-        + densities["grhor_nu"] * densities["n_mnu"] * neutrino_density_ratio(amin, densities["amnu"])
+        densities["grhog"]
+        + densities["grhornomass"]
+        + densities["grhor_nu"]
+        * densities["n_mnu"]
+        * neutrino_density_ratio(amin, densities["amnu"])
     )
     param["adotrad"] = jnp.sqrt(radiation / 3.0)
     param["taumin"] = amin / param["adotrad"]
-    dtauda_values = jnp.reshape(jax.vmap(dtauda, in_axes=(0, None))(a, densities), a.shape)
+    dtauda_values = jnp.reshape(
+        jax.vmap(dtauda, in_axes=(0, None))(a, densities), a.shape
+    )
     integrator = FastUniformCubicSpline1D(loga, dtauda_values * a)
     param["tau"] = param["taumin"] + jax.vmap(integrator.integral)(loga)
     param["taumax"] = param["tau"][-1]
     return param
 
 
-@partial(jax.jit, static_argnames=("thermo_module", "num_thermo", "rtol", "atol", "order", "class_thermo"))
-def evolve_background(*, param, thermo_module="RECFAST", num_thermo: int = 256, rtol: float = 1e-5,
-                      atol: float = 1e-7, order: int = 5, class_thermo=None):
+@partial(
+    jax.jit,
+    static_argnames=(
+        "thermo_module",
+        "num_thermo",
+        "rtol",
+        "atol",
+        "order",
+        "class_thermo",
+    ),
+)
+def evolve_background(
+    *,
+    param,
+    thermo_module="RECFAST",
+    num_thermo: int = 256,
+    rtol: float = 1e-5,
+    atol: float = 1e-7,
+    order: int = 5,
+    class_thermo=None,
+):
     """Evolve the cosmological background and thermal history.
 
     ``thermo_module`` is ``'RECFAST'`` (default) or ``'CLASS'`` (external CLASS
@@ -860,14 +994,21 @@ def evolve_background(*, param, thermo_module="RECFAST", num_thermo: int = 256, 
 
     if thermo_module == "RECFAST":
         aexp, cs2, Tm, _mu, xe, _dxeda = evaluate_thermo(
-            param=param, num_thermo=num_thermo, rtol=rtol, atol=atol, amin=amin, amax=amax
+            param=param,
+            num_thermo=num_thermo,
+            rtol=rtol,
+            atol=atol,
+            amin=amin,
+            amax=amax,
         )
         param["aexp"] = aexp
         param["xe"] = xe
         param["cs2"] = cs2
         param["Tm"] = Tm
 
-        tau = spline_interpolation(jnp.log(param["a"]), param["tau"]).evaluate(jnp.log(aexp))
+        tau = spline_interpolation(jnp.log(param["a"]), param["tau"]).evaluate(
+            jnp.log(aexp)
+        )
         param["tau_th"] = tau
         param["tau_of_a_spline"] = spline_interpolation(aexp, tau)
         param["a_of_tau_spline"] = spline_interpolation(tau, aexp)
@@ -875,30 +1016,51 @@ def evolve_background(*, param, thermo_module="RECFAST", num_thermo: int = 256, 
         param["cs2a_of_tau_spline"] = spline_interpolation(tau, aexp[:, None] * cs2)
         param["tempba_of_tau_spline"] = spline_interpolation(tau, aexp[:, None] * Tm)
         # Pre-composed splines for direct a-to-quantity lookups.
-        param["xe_of_loga_spline"] = spline_interpolation(jnp.log(aexp), xe, uniform=False)
-        param["cs2a_of_loga_spline"] = spline_interpolation(jnp.log(aexp), aexp[:, None] * cs2, uniform=False)
+        param["xe_of_loga_spline"] = spline_interpolation(
+            jnp.log(aexp), xe, uniform=False
+        )
+        param["cs2a_of_loga_spline"] = spline_interpolation(
+            jnp.log(aexp), aexp[:, None] * cs2, uniform=False
+        )
     elif thermo_module == "CLASS":
         tau_class = class_thermo["conf. time [Mpc]"][::-1]
         aexp_class = class_thermo["scale factor a"][::-1]
-        param["cs2_of_tau_spline"] = spline_interpolation(tau_class, class_thermo["c_b^2"][::-1])
-        param["tempb_of_tau_spline"] = spline_interpolation(tau_class, class_thermo["Tb [K]"][::-1])
-        param["xe_of_tau_spline"] = spline_interpolation(tau_class, class_thermo["x_e"][::-1])
+        param["cs2_of_tau_spline"] = spline_interpolation(
+            tau_class, class_thermo["c_b^2"][::-1]
+        )
+        param["tempb_of_tau_spline"] = spline_interpolation(
+            tau_class, class_thermo["Tb [K]"][::-1]
+        )
+        param["xe_of_tau_spline"] = spline_interpolation(
+            tau_class, class_thermo["x_e"][::-1]
+        )
         param["a_of_tau_spline"] = spline_interpolation(tau_class, aexp_class)
         param["tau_of_a_spline"] = spline_interpolation(aexp_class, tau_class)
         param["aexp"] = aexp_class
         param["tau"] = tau_class
-        param["xe_of_loga_spline"] = spline_interpolation(jnp.log(aexp_class), class_thermo["x_e"][::-1])
+        param["xe_of_loga_spline"] = spline_interpolation(
+            jnp.log(aexp_class), class_thermo["x_e"][::-1]
+        )
         param["cs2a_of_loga_spline"] = spline_interpolation(
             jnp.log(aexp_class), aexp_class * class_thermo["c_b^2"][::-1]
         )
         aexp, tau = aexp_class, tau_class
 
     # Optical depth and visibility functions.
-    akthom = 2.3038921003709498e-9 * (1.0 - param["YHe"]) * param["Omegab"] * param["H0"] ** 2
+    akthom = (
+        2.3038921003709498e-9
+        * (1.0 - param["YHe"])
+        * param["Omegab"]
+        * param["H0"] ** 2
+    )
     tau_pre_recomb = param["tau_of_a_spline"].evaluate(1e-4)
     xe_full = 1 + param["YHe"] / (1 - param["YHe"])
-    xe = jnp.where(tau <= tau_pre_recomb, xe_full, param["xe_of_tau_spline"].evaluate(tau))
-    xeprime = jnp.where(tau <= tau_pre_recomb, 0.0, param["xe_of_tau_spline"].derivative(tau))
+    xe = jnp.where(
+        tau <= tau_pre_recomb, xe_full, param["xe_of_tau_spline"].evaluate(tau)
+    )
+    xeprime = jnp.where(
+        tau <= tau_pre_recomb, 0.0, param["xe_of_tau_spline"].derivative(tau)
+    )
     opac = xe * akthom / aexp[:, None] ** 2
 
     opacspline = spline_interpolation(tau, opac, integrate_from_start=True)

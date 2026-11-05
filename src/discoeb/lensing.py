@@ -106,25 +106,45 @@ def limber_interpolation(ells, k_values, chi):
     target = (ells[:, None] + 0.5) / chi_safe[None, :]
     inside = (chi > 0.0)[None, :] & (target >= k_values[0]) & (target <= k_values[-1])
     lnk_t = jnp.log(jnp.asarray(np.where(inside, target, k_values[0])))
-    weights = spline_interpolation(jnp.log(jnp.asarray(k_values)), jnp.eye(len(k_values))).evaluate(lnk_t.ravel())
-    weights = weights.reshape(len(ells), len(chi), len(k_values)) * jnp.asarray(inside)[..., None]
+    weights = spline_interpolation(
+        jnp.log(jnp.asarray(k_values)), jnp.eye(len(k_values))
+    ).evaluate(lnk_t.ravel())
+    weights = (
+        weights.reshape(len(ells), len(chi), len(k_values))
+        * jnp.asarray(inside)[..., None]
+    )
     return weights.astype(jnp.float32)
 
 
 def _shift(phi, shift_idx, shift_w):
     return sum(
-        shift_w[:, None, :, a] * jnp.take_along_axis(phi, (shift_idx + a)[:, None, :], axis=2)
+        shift_w[:, None, :, a]
+        * jnp.take_along_axis(phi, (shift_idx + a)[:, None, :], axis=2)
         for a in range(shift_w.shape[-1])
     )  # (c, k, chi)
 
 
 def _lensing_kernel(chi, chi_star):
     chi_s = chi_star[:, None]
-    return jnp.where((chi > 0.0) & (chi < chi_s), (chi_s - chi) / jnp.where(chi > 0.0, chi, 1.0) / chi_s, 0.0)
+    return jnp.where(
+        (chi > 0.0) & (chi < chi_s),
+        (chi_s - chi) / jnp.where(chi > 0.0, chi, 1.0) / chi_s,
+        0.0,
+    )
 
 
 @jax.jit
-def lensing_potential_transfer(phi, shift_idx, shift_w, chi, chi_star, operator, limber_weights, ells_limber, k_values):
+def lensing_potential_transfer(
+    phi,
+    shift_idx,
+    shift_w,
+    chi,
+    chi_star,
+    operator,
+    limber_weights,
+    ells_limber,
+    k_values,
+):
     """The primordial-spectrum-independent half of :func:`lensing_potential_cl`.
 
     Returns ``(theta_psi, limber)``: the lensing-potential transfer function
@@ -139,23 +159,45 @@ def lensing_potential_transfer(phi, shift_idx, shift_w, chi, chi_star, operator,
     shifted = _shift(phi, shift_idx, shift_w)
     kernel = _lensing_kernel(chi, chi_star)
     source = -2.0 * kernel[:, None, :] * shifted  # (c, k, chi)
-    theta = jnp.einsum("ckj,lkj->clk", source.astype(operator.dtype), operator, precision=hi).astype(jnp.float64)
-    source_at = jnp.einsum("ljk,ckj->clj", limber_weights, source.astype(jnp.float32), precision=hi).astype(jnp.float64)
+    theta = jnp.einsum(
+        "ckj,lkj->clk", source.astype(operator.dtype), operator, precision=hi
+    ).astype(jnp.float64)
+    source_at = jnp.einsum(
+        "ljk,ckj->clj", limber_weights, source.astype(jnp.float32), precision=hi
+    ).astype(jnp.float64)
     chi_safe = jnp.where(chi > 0.0, chi, 1.0)
     k_chi = (ells_limber[:, None] + 0.5) / chi_safe[None, :]  # (l, chi)
-    dchi = jnp.zeros_like(chi).at[1:].add(0.5 * jnp.abs(jnp.diff(chi))).at[:-1].add(0.5 * jnp.abs(jnp.diff(chi)))
-    limber = jnp.where(chi > 0.0, source_at**2 / (k_chi[None] ** 3 * chi_safe[None, None] ** 2) * dchi, 0.0)
+    dchi = (
+        jnp.zeros_like(chi)
+        .at[1:]
+        .add(0.5 * jnp.abs(jnp.diff(chi)))
+        .at[:-1]
+        .add(0.5 * jnp.abs(jnp.diff(chi)))
+    )
+    limber = jnp.where(
+        chi > 0.0,
+        source_at**2 / (k_chi[None] ** 3 * chi_safe[None, None] ** 2) * dchi,
+        0.0,
+    )
     return theta, limber
 
 
 @jax.jit
-def lensing_potential_cl_from_transfer(theta_psi, limber, chi, ells_limber, k_values, n_s, A_s, k_pivot):
+def lensing_potential_cl_from_transfer(
+    theta_psi, limber, chi, ells_limber, k_values, n_s, A_s, k_pivot
+):
     """``C_l^{psi psi}`` ``(n_c, n_ell_exact + n_ell_limber)`` from :func:`lensing_potential_transfer` and the primordial spectrum."""
 
     primordial = A_s[:, None] * (k_values[None, :] / k_pivot) ** (n_s[:, None] - 1.0)
     # Exact projection: C_l = 4 pi int dln k P_R(k) Theta_l(k)^2.
     lnk = jnp.log(k_values)
-    w = jnp.zeros_like(lnk).at[1:].add(0.5 * jnp.diff(lnk)).at[:-1].add(0.5 * jnp.diff(lnk))
+    w = (
+        jnp.zeros_like(lnk)
+        .at[1:]
+        .add(0.5 * jnp.diff(lnk))
+        .at[:-1]
+        .add(0.5 * jnp.diff(lnk))
+    )
     cl_exact = 4.0 * jnp.pi * jnp.einsum("clk,ck,k->cl", theta_psi**2, primordial, w)
     # Limber: C_l = 2 pi^2 int dchi S(k_chi, chi)^2 P_R(k_chi) / (k_chi^3 chi^2), k_chi = (l + 1/2) / chi.
     chi_safe = jnp.where(chi > 0.0, chi, 1.0)
@@ -165,7 +207,20 @@ def lensing_potential_cl_from_transfer(theta_psi, limber, chi, ells_limber, k_va
     return jnp.concatenate([cl_exact, cl_limber], axis=1)
 
 
-def lensing_potential_cl(phi, shift_idx, shift_w, chi, chi_star, operator, limber_weights, ells_limber, k_values, n_s, A_s, k_pivot):
+def lensing_potential_cl(
+    phi,
+    shift_idx,
+    shift_w,
+    chi,
+    chi_star,
+    operator,
+    limber_weights,
+    ells_limber,
+    k_values,
+    n_s,
+    A_s,
+    k_pivot,
+):
     """``C_l^{psi psi}`` for a batch of cosmologies, shape ``(n_c, n_ell_exact + n_ell_limber)``.
 
     ``phi`` is the Weyl potential channel ``(n_c, n_k, n_tau)`` on the save
@@ -180,8 +235,20 @@ def lensing_potential_cl(phi, shift_idx, shift_w, chi, chi_star, operator, limbe
     :func:`lensing_potential_transfer` and :func:`lensing_potential_cl_from_transfer`.
     """
 
-    theta_psi, limber = lensing_potential_transfer(phi, shift_idx, shift_w, chi, chi_star, operator, limber_weights, ells_limber, k_values)
-    return lensing_potential_cl_from_transfer(theta_psi, limber, chi, ells_limber, k_values, n_s, A_s, k_pivot)
+    theta_psi, limber = lensing_potential_transfer(
+        phi,
+        shift_idx,
+        shift_w,
+        chi,
+        chi_star,
+        operator,
+        limber_weights,
+        ells_limber,
+        k_values,
+    )
+    return lensing_potential_cl_from_transfer(
+        theta_psi, limber, chi, ells_limber, k_values, n_s, A_s, k_pivot
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +280,20 @@ class LensingTables(NamedTuple):
     d2m4: jax.Array
 
 
-D_TABLES = ((0, 0), (1, 1), (1, -1), (2, -2), (2, 2), (1, 3), (0, 4), (3, -3), (4, -4), (2, 0), (1, -3), (2, -4))
+D_TABLES = (
+    (0, 0),
+    (1, 1),
+    (1, -1),
+    (2, -2),
+    (2, 2),
+    (1, 3),
+    (0, 4),
+    (3, -3),
+    (4, -4),
+    (2, 0),
+    (1, -3),
+    (2, -4),
+)
 """The ``(m, m')`` of the d-function tables of :class:`LensingTables`, in field order."""
 
 
@@ -254,14 +334,18 @@ def _wigner_d(m, mp, x, lmax):
             return out
         out[1], prev, l0 = x, out[0], 1
     for l in range(l0, lmax):
-        num = (2 * l + 1) * (l * (l + 1) * x - m * mp) * out[l] - (l + 1) * np.sqrt((l * l - m * m) * (l * l - mp * mp)) * prev
+        num = (2 * l + 1) * (l * (l + 1) * x - m * mp) * out[l] - (l + 1) * np.sqrt(
+            (l * l - m * m) * (l * l - mp * mp)
+        ) * prev
         den = l * np.sqrt(((l + 1) ** 2 - m * m) * ((l + 1) ** 2 - mp * mp))
         prev = out[l]
         out[l + 1] = num / den
     return out
 
 
-def lensing_tables(lmax: int, n_points: int | None = None, dtype=jnp.float32) -> LensingTables:
+def lensing_tables(
+    lmax: int, n_points: int | None = None, dtype=jnp.float32
+) -> LensingTables:
     """Tabulate the quadrature and the d-functions for :func:`lensed_spectra`.
 
     ``n_points`` Gauss-Legendre nodes in ``cos(beta)`` (``lmax + 1024`` by
@@ -301,8 +385,12 @@ def cl_on_every_ell(ells, cl, lmax: int, power: int = 1):
     ell = np.arange(lmax + 1, dtype=np.float64)
     inside = ell >= ells[0]
     weight = (ells * (ells + 1.0)) ** power
-    spline = spline_interpolation(jnp.log(jnp.asarray(ells)), (jnp.asarray(cl, dtype=jnp.float64) * weight).T)
-    values = spline.evaluate(jnp.log(jnp.asarray(np.where(inside, ell, ells[0]))))  # (lmax + 1, n_c)
+    spline = spline_interpolation(
+        jnp.log(jnp.asarray(ells)), (jnp.asarray(cl, dtype=jnp.float64) * weight).T
+    )
+    values = spline.evaluate(
+        jnp.log(jnp.asarray(np.where(inside, ell, ells[0])))
+    )  # (lmax + 1, n_c)
     unweight = np.where(inside, ell * (ell + 1.0), 1.0) ** power
     return jnp.where(inside[None, :], (values / unweight[:, None]).T, 0.0)
 
@@ -321,7 +409,9 @@ def _lensed_one(cl_tt, cl_te, cl_ee, cl_pp, tables: LensingTables):
 
     hi = jax.lax.Precision.HIGHEST
     dtype = tables.d00.dtype
-    ell = jnp.arange(tables.d00.shape[0], dtype=jnp.float64)  # 0..lmax (a static shape, unlike tables.lmax under jit)
+    ell = jnp.arange(
+        tables.d00.shape[0], dtype=jnp.float64
+    )  # 0..lmax (a static shape, unlike tables.lmax under jit)
     llp1 = ell * (ell + 1.0)
     norm = (2.0 * ell + 1.0) / (4.0 * jnp.pi)
     # Deflection correlation functions on the quadrature nodes.
@@ -329,24 +419,30 @@ def _lensed_one(cl_tt, cl_te, cl_ee, cl_pp, tables: LensingTables):
     c_gl = jnp.einsum("l,ln->n", a, tables.d11, precision=hi)
     c_gl2 = jnp.einsum("l,ln->n", a, tables.d1m1, precision=hi)
     sigma2 = (jnp.sum(a.astype(jnp.float64)) - c_gl.astype(jnp.float64)).astype(dtype)
-    damping = jnp.exp(-0.5 * llp1.astype(dtype)[:, None] * sigma2[None, :])  # F_l, (l, n)
+    damping = jnp.exp(
+        -0.5 * llp1.astype(dtype)[:, None] * sigma2[None, :]
+    )  # F_l, (l, n)
     # The anisotropic expansion parameter is c_l = h_l C_gl,2 with h_l = l(l+1)/2:
     # every term is F_l times a power of C_gl,2(beta) times a sum over l.
     h = 0.5 * llp1
     b_t, b_x, b_e = (norm * cl_tt, norm * cl_te, norm * cl_ee)
 
     def term(b, coefficient, d):
-        return jnp.einsum("l,ln,ln->n", (b * coefficient).astype(dtype), damping, d, precision=hi)
+        return jnp.einsum(
+            "l,ln,ln->n", (b * coefficient).astype(dtype), damping, d, precision=hi
+        )
 
     xi = (
         term(b_t, 1.0, tables.d00)
         + c_gl2 * term(b_t, h, tables.d1m1)
-        + c_gl2**2 * (term(b_t, h**2 / 4.0, tables.d00) + term(b_t, h**2 / 4.0, tables.d2m2))
+        + c_gl2**2
+        * (term(b_t, h**2 / 4.0, tables.d00) + term(b_t, h**2 / 4.0, tables.d2m2))
     )
     xi_plus = (
         term(b_e, 1.0, tables.d22)
         + c_gl2 * term(b_e, h, tables.d13)
-        + c_gl2**2 * (term(b_e, h**2 / 4.0, tables.d22) + term(b_e, h**2 / 4.0, tables.d04))
+        + c_gl2**2
+        * (term(b_e, h**2 / 4.0, tables.d22) + term(b_e, h**2 / 4.0, tables.d04))
     )
     xi_minus = (
         term(b_e, 1.0, tables.d2m2)
@@ -361,12 +457,17 @@ def _lensed_one(cl_tt, cl_te, cl_ee, cl_pp, tables: LensingTables):
     xi_cross = (
         term(b_x, 1.0, tables.d20)
         + c_gl2 * (term(b_x, h / 2.0, tables.d11) + term(b_x, h / 2.0, tables.d1m3))
-        + c_gl2**2 * (term(b_x, 3.0 * h**2 / 8.0, tables.d20) + term(b_x, h**2 / 8.0, tables.d2m4))
+        + c_gl2**2
+        * (term(b_x, 3.0 * h**2 / 8.0, tables.d20) + term(b_x, h**2 / 8.0, tables.d2m4))
     )
 
     def back(xi_n, d):
         integrand = (tables.weights * xi_n.astype(jnp.float64)).astype(dtype)
-        return 2.0 * jnp.pi * jnp.einsum("ln,n->l", d, integrand, precision=hi).astype(jnp.float64)
+        return (
+            2.0
+            * jnp.pi
+            * jnp.einsum("ln,n->l", d, integrand, precision=hi).astype(jnp.float64)
+        )
 
     tt = back(xi, tables.d00)
     te = back(xi_cross, tables.d20)
@@ -376,7 +477,9 @@ def _lensed_one(cl_tt, cl_te, cl_ee, cl_pp, tables: LensingTables):
 
 
 @partial(jax.jit, static_argnames=("chunk",))
-def lensed_spectra(cl_tt, cl_te, cl_ee, cl_pp, tables: LensingTables, chunk: int = 4) -> LensedSpectra:
+def lensed_spectra(
+    cl_tt, cl_te, cl_ee, cl_pp, tables: LensingTables, chunk: int = 4
+) -> LensedSpectra:
     """Lensed ``TT, TE, EE, BB`` for a batch, a :class:`LensedSpectra` of ``(n_c, lmax + 1)`` arrays.
 
     ``cl_tt``, ``cl_te`` and ``cl_ee`` are the unlensed scalar spectra and
@@ -389,7 +492,10 @@ def lensed_spectra(cl_tt, cl_te, cl_ee, cl_pp, tables: LensingTables, chunk: int
     per-cosmology work is an ``(lmax + 1, n_points)`` array of damping factors.
     """
 
-    spectra = [jnp.asarray(c, dtype=jnp.float64).at[:, :2].set(0.0) for c in (cl_tt, cl_te, cl_ee, cl_pp)]
+    spectra = [
+        jnp.asarray(c, dtype=jnp.float64).at[:, :2].set(0.0)
+        for c in (cl_tt, cl_te, cl_ee, cl_pp)
+    ]
     n_c, n_l = spectra[0].shape
     pad = (-n_c) % chunk
     spectra = [jnp.pad(c, ((0, pad), (0, 0))).reshape(-1, chunk, n_l) for c in spectra]

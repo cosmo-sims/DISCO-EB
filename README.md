@@ -18,31 +18,45 @@ Currently work in progress:
 
 ## Installation
 
-### Simple Install
+Use `uv` to install the GPU compiler and solver dependencies with the
+constraints this project pins:
 
 ```bash
-pip install git+https://github.com/ohahn/DISCO-EB.git
+git clone https://github.com/cosmo-sims/DISCO-EB.git
+cd DISCO-EB
+uv sync
 ```
+
+### Current CUDA solver environment
+
+`uv sync` installs modax and numba-enzyme-cuda from PyPI, together with the
+numba-cuda-mlir and CUDA toolkit versions pinned in `[tool.uv]`. Plain
+`pip install` does not apply those constraints, nor the override that lets
+numba-enzyme-cuda run with current numba, and is not sufficient for this
+solver stack.
+
+```bash
+uv run python examples/solve_eb_comoving_curvature.py
+```
+
+On Blackwell GPUs (compute capability 10.0 and up) modax compiles Rodas5P and
+its Enzyme derivatives, including the tangents of the quantities `solve_eb`
+keeps, for `sm_90` and links the result for the actual GPU,
+which keeps both on the LLVM 7 dialect Enzyme's LLVM 15 toolchain reads.
+`NUMBA_ENZYME_CUDA_CC`, set before the first solve, chooses that target for
+both instead.
+
 ### For Development
 
-In a fresh virtual environment:
+`uv sync` installs this checkout in editable mode. Add the development
+dependencies and run the tests with:
 
 ```bash
-git clone https://github.com/ohahn/DISCO-EB.git
-cd DISCO-EB
-pip install -e .
+uv sync --extra dev
+uv run pytest
 ```
 
-#### Running the tests
-
-First install the additional dependencies with the `[dev]` flag:
-
-```bash
-cd DISCO-EB
-pip install -e '.[dev]'
-```
-
-Then run `pytest` to start the tests. This should be run on GPU platforms.
+The solver tests should be run on GPU platforms.
 
 
 ## Getting started

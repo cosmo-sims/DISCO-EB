@@ -175,11 +175,17 @@ float32 = _Ambient("float32")
 def _device_names():
     from numba_cuda_mlir import cuda as cuda_module, types as cuda_types
 
-    return {"cuda": cuda_module, "float64": cuda_types.float64, "float32": cuda_types.float32}
+    return {
+        "cuda": cuda_module,
+        "float64": cuda_types.float64,
+        "float32": cuda_types.float32,
+    }
 
 
 _HOST_NAMES = {
-    "cuda": types.SimpleNamespace(local=types.SimpleNamespace(array=lambda shape, dtype: np.zeros(shape))),
+    "cuda": types.SimpleNamespace(
+        local=types.SimpleNamespace(array=lambda shape, dtype: np.zeros(shape))
+    ),
     "float64": np.float64,
     "float32": np.float32,
 }
@@ -197,8 +203,10 @@ def _host_names(math_module) -> dict:
     names = {**_HOST_NAMES, "math": math_module}
     if hasattr(math_module, "maximum"):
         names.update(
-            max=math_module.maximum, min=math_module.minimum,
-            float32=math_module.float32, float64=math_module.float64,
+            max=math_module.maximum,
+            min=math_module.minimum,
+            float32=math_module.float32,
+            float64=math_module.float64,
         )
     return names
 
@@ -222,7 +230,9 @@ def load_setting(name: str, default):
     try:
         return type(default)(text)
     except ValueError as e:
-        raise ValueError(f"{SETTINGS_PREFIX}{name}={text!r} is not a {type(default).__name__}") from e
+        raise ValueError(
+            f"{SETTINGS_PREFIX}{name}={text!r} is not a {type(default).__name__}"
+        ) from e
 
 
 T = TypeVar("T", bool, int, float, str)
@@ -238,14 +248,18 @@ class Setting(Generic[T]):
 
     def __init__(self, default: T):
         if not isinstance(default, (bool, int, float, str)):
-            raise TypeError(f"a Setting needs a bool, int, float or str default, not {default!r}")
+            raise TypeError(
+                f"a Setting needs a bool, int, float or str default, not {default!r}"
+            )
         self.default = default
         self.name = None
         self.value = default
 
     def __set_name__(self, owner, name):
         if not (name.isidentifier() and name.isupper()):
-            raise ValueError(f"{owner.__name__}: setting {name!r} must be an UPPER_CASE identifier")
+            raise ValueError(
+                f"{owner.__name__}: setting {name!r} must be an UPPER_CASE identifier"
+            )
         self.name = name
         self.value = load_setting(name, self.default)
 
@@ -264,8 +278,10 @@ class Setting(Generic[T]):
 def _is_constant(value) -> bool:
     if isinstance(value, (bool, int, float)):
         return True
-    return isinstance(value, tuple) and bool(value) and all(
-        isinstance(v, (bool, int, float)) for v in value
+    return (
+        isinstance(value, tuple)
+        and bool(value)
+        and all(isinstance(v, (bool, int, float)) for v in value)
     )
 
 
@@ -284,7 +300,9 @@ class State:
         self.shape = shape
         self.initial_fn = initial
         if initial is not None and not callable(initial):
-            raise TypeError("initial must be a function of the quantities the initial condition reads")
+            raise TypeError(
+                "initial must be a function of the quantities the initial condition reads"
+            )
 
     def resolve(self, component) -> tuple[int, ...]:
         spec = self.shape(component) if callable(self.shape) else self.shape
@@ -294,7 +312,9 @@ class State:
             return (spec,)
         shape = tuple(int(n) for n in spec)
         if not shape or any(n <= 0 for n in shape) or len(shape) > 2:
-            raise ValueError(f"a state is a scalar, a vector or a matrix, not of shape {spec}")
+            raise ValueError(
+                f"a state is a scalar, a vector or a matrix, not of shape {spec}"
+            )
         return shape
 
 
@@ -316,7 +336,9 @@ class Component:
         names = self.setting_names()
         unknown = sorted(set(overrides) - set(names))
         if unknown:
-            raise TypeError(f"{self.label} has no settings {unknown}; it has {sorted(names)}")
+            raise TypeError(
+                f"{self.label} has no settings {unknown}; it has {sorted(names)}"
+            )
         for name, value in overrides.items():
             setattr(self, name, value)
 
@@ -375,7 +397,9 @@ class Interaction(Component):
         super().__init_subclass__(**kwargs)
         owned = [attr for attr, value in vars(cls).items() if isinstance(value, State)]
         if owned:
-            raise TypeError(f"{cls.__name__} is an Interaction and cannot own state {owned}")
+            raise TypeError(
+                f"{cls.__name__} is an Interaction and cannot own state {owned}"
+            )
 
 
 _FRAMEWORK_CLASSES = (Component, Species, Interaction, object)
@@ -398,7 +422,12 @@ def _elements(name: str, shape: tuple[int, ...]) -> list[str]:
 
 class _State:
     def __init__(self, name: str, declared: State, component: Component, offset: int):
-        self.name, self.declared, self.component, self.offset = name, declared, component, offset
+        self.name, self.declared, self.component, self.offset = (
+            name,
+            declared,
+            component,
+            offset,
+        )
         self.shape = declared.resolve(component)
         self.elements = _elements(name, self.shape)
         self.size = len(self.elements)
@@ -412,7 +441,10 @@ def _positional_names(fn: Callable, label: str) -> tuple[bool, list[str]]:
 
     params = list(inspect.signature(fn).parameters.values())
     for p in params:
-        if p.kind not in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) or p.default is not p.empty:
+        if (
+            p.kind not in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            or p.default is not p.empty
+        ):
             raise TypeError(f"{label}: functions take plain positional parameters only")
     takes_self = bool(params) and params[0].name == "self"
     return takes_self, [p.name for p in params[takes_self:]]
@@ -421,7 +453,13 @@ def _positional_names(fn: Callable, label: str) -> tuple[bool, list[str]]:
 class _Provider:
     """One function of a component: what it reads, what it provides."""
 
-    def __init__(self, component: Component, attr: str, fn: Callable, states: Mapping[str, _State]):
+    def __init__(
+        self,
+        component: Component,
+        attr: str,
+        fn: Callable,
+        states: Mapping[str, _State],
+    ):
         self.component, self.attr, self.fn = component, attr, fn
         self.owner = component.label
         self.label = f"{self.owner}.{attr}"
@@ -432,7 +470,9 @@ class _Provider:
         if attr.startswith("d_"):
             state = states.get(attr[2:])
             if state is None:
-                raise ValueError(f"{self.label} writes {attr[2:]!r}, which no component owns")
+                raise ValueError(
+                    f"{self.label} writes {attr[2:]!r}, which no component owns"
+                )
             self.written = state
             if state.shape and OUTPUT not in names:
                 raise TypeError(
@@ -444,7 +484,9 @@ class _Provider:
                     f"instead of taking {OUTPUT!r}"
                 )
         elif OUTPUT in names:
-            raise TypeError(f"{self.label}: only a vector state's derivative fills an {OUTPUT!r}")
+            raise TypeError(
+                f"{self.label}: only a vector state's derivative fills an {OUTPUT!r}"
+            )
         self.params = tuple(n for n in names if n != OUTPUT)
         self.signature = tuple(names)
 
@@ -464,13 +506,19 @@ def _providers(component: Component, states: Mapping[str, _State]) -> list[_Prov
             elif isinstance(member, types.FunctionType):
                 found.append(_Provider(component, attr, member, states))
     for attr, value in vars(component).items():
-        if attr not in seen and not attr.startswith("_") and isinstance(value, types.FunctionType):
+        if (
+            attr not in seen
+            and not attr.startswith("_")
+            and isinstance(value, types.FunctionType)
+        ):
             seen.add(attr)
             found.append(_Provider(component, attr, value, states))
     return found
 
 
-def _bound_function(fn: Callable, jit: Callable, names: Mapping[str, object], memo: dict) -> Callable:
+def _bound_function(
+    fn: Callable, jit: Callable, names: Mapping[str, object], memo: dict
+) -> Callable:
     """``fn`` compiled by ``jit`` with its globals resolved.
 
     numba resolves a global at compile time, so the function is rebound to a
@@ -496,8 +544,12 @@ def _bound_function(fn: Callable, jit: Callable, names: Mapping[str, object], me
         elif isinstance(value, types.FunctionType) and value.__module__ != "builtins":
             rebound[name] = _bound_function(value, jit, names, memo)
         elif value is None and name in names:
-            rebound[name] = names[name]  # a builtin the names override: max and min on arrays
-    fn_bound = types.FunctionType(fn.__code__, rebound, fn.__name__, fn.__defaults__, fn.__closure__)
+            rebound[name] = names[
+                name
+            ]  # a builtin the names override: max and min on arrays
+    fn_bound = types.FunctionType(
+        fn.__code__, rebound, fn.__name__, fn.__defaults__, fn.__closure__
+    )
     compiled = jit(fn_bound)
     memo[fn] = compiled
     return compiled
@@ -534,7 +586,10 @@ class _HostValues:
         if name in self.values:
             return self.values[name]
         if name in self.resolving:
-            raise ValueError("circular dependency on the host: " + " -> ".join([*self.resolving, name]))
+            raise ValueError(
+                "circular dependency on the host: "
+                + " -> ".join([*self.resolving, name])
+            )
         self.resolving.append(name)
         if name in self.model.states:
             s = self.model.states[name]
@@ -546,9 +601,13 @@ class _HostValues:
             if fn is not None:
                 takes_self, params = _positional_names(fn, f"{name}.initial")
                 if s.shape and OUTPUT not in params:
-                    raise TypeError(f"{name}.initial: a vector's initial condition takes {OUTPUT!r} and fills it")
+                    raise TypeError(
+                        f"{name}.initial: a vector's initial condition takes {OUTPUT!r} and fills it"
+                    )
                 if not s.shape and OUTPUT in params:
-                    raise TypeError(f"{name}.initial: a scalar's initial condition returns the value")
+                    raise TypeError(
+                        f"{name}.initial: a scalar's initial condition returns the value"
+                    )
                 args = [result if p == OUTPUT else self[p] for p in params]
                 filled = self._call(fn, s.component, takes_self, args)
                 if not s.shape:
@@ -565,7 +624,9 @@ class _HostValues:
                 result = result + part
         elif name in self.providers:
             p = self.providers[name]
-            result = self._call(p.fn, p.component, p.takes_self, [self[d] for d in p.params])
+            result = self._call(
+                p.fn, p.component, p.takes_self, [self[d] for d in p.params]
+            )
         else:
             raise NameError(f"{name!r} is neither given nor provided by any component")
         self.resolving.pop()
@@ -608,7 +669,9 @@ class _Traced:
         return self
 
     __add__ = __radd__ = __sub__ = __rsub__ = __mul__ = __rmul__ = _join
-    __truediv__ = __rtruediv__ = __floordiv__ = __rfloordiv__ = __mod__ = __rmod__ = _join
+    __truediv__ = __rtruediv__ = __floordiv__ = __rfloordiv__ = __mod__ = __rmod__ = (
+        _join
+    )
     __pow__ = __rpow__ = _join
     __lt__ = __le__ = __gt__ = __ge__ = __eq__ = __ne__ = _join
     __neg__ = __pos__ = __abs__ = __getitem__ = __round__ = _same
@@ -622,7 +685,9 @@ class _Traced:
         )
 
     def __float__(self):
-        raise TypeError("a provider converts a state-dependent value to a number; it must stay an expression")
+        raise TypeError(
+            "a provider converts a state-dependent value to a number; it must stay an expression"
+        )
 
     __int__ = __index__ = __complex__ = __float__
 
@@ -641,7 +706,9 @@ class _TracingMath:
 
     def __getattr__(self, name):
         attr = getattr(math, name)
-        return attr if not callable(attr) else _traced_call  # pi, e, inf, ... stay numbers
+        return (
+            attr if not callable(attr) else _traced_call
+        )  # pi, e, inf, ... stay numbers
 
 
 def _traced_array(shape, first: int | None = None) -> np.ndarray:
@@ -668,7 +735,9 @@ def _reads_state(value) -> bool:
 
 
 _TRACING_NAMES = {
-    "cuda": types.SimpleNamespace(local=types.SimpleNamespace(array=lambda shape, dtype: _traced_array(shape))),
+    "cuda": types.SimpleNamespace(
+        local=types.SimpleNamespace(array=lambda shape, dtype: _traced_array(shape))
+    ),
     "float64": lambda x: x,  # a cast carries its operand's dependencies
     "float32": lambda x: x,
     "math": _TracingMath(),
@@ -693,7 +762,11 @@ class _TracedValues(_HostValues):
     def __init__(self, model):
         base = {}
         for s in model.states.values():
-            base[s.name] = _Traced(frozenset({s.offset})) if not s.shape else _traced_array(s.shape, s.offset)
+            base[s.name] = (
+                _Traced(frozenset({s.offset}))
+                if not s.shape
+                else _traced_array(s.shape, s.offset)
+            )
         super().__init__(model, base, _TRACING_NAMES)
 
     def __getitem__(self, name):
@@ -718,7 +791,11 @@ class _TracedValues(_HostValues):
             # it reads. A superset of the pattern, never a miss.
             on = frozenset().union(*(_depends(a) for a in args))
             for a in args:
-                if isinstance(a, np.ndarray) and a.dtype == object and not _reads_state(a):
+                if (
+                    isinstance(a, np.ndarray)
+                    and a.dtype == object
+                    and not _reads_state(a)
+                ):
                     a[...] = _Traced(on)  # the output buffer it fills
             return _Traced(on)
 
@@ -805,9 +882,21 @@ class Model:
                     buffer = _traced_array(s.shape)
                     args = [buffer if n == OUTPUT else values[n] for n in p.signature]
                     values._call(p.fn, p.component, p.takes_self, args)
-                    rows = enumerate(buffer.reshape(-1))  # row-major, the order of the elements
+                    rows = enumerate(
+                        buffer.reshape(-1)
+                    )  # row-major, the order of the elements
                 else:
-                    rows = [(0, values._call(p.fn, p.component, p.takes_self, [values[d] for d in p.params]))]
+                    rows = [
+                        (
+                            0,
+                            values._call(
+                                p.fn,
+                                p.component,
+                                p.takes_self,
+                                [values[d] for d in p.params],
+                            ),
+                        )
+                    ]
                 for i, traced in rows:
                     entries.update((s.offset + i, column) for column in traced.on)
         return np.array(sorted(entries), dtype=np.int64).reshape(-1, 2)
@@ -848,11 +937,15 @@ class Model:
         k_values = np.asarray(k_values, dtype=np.float64)
         n_k = len(k_values)
         memo = self.__dict__.setdefault("_host_memo", {}).setdefault(id(np), {})
-        values = _HostValues(self, dict(base, k=k_values), _host_names(np), memo, batch_shape=(n_k,))
+        values = _HostValues(
+            self, dict(base, k=k_values), _host_names(np), memo, batch_shape=(n_k,)
+        )
         y0 = np.zeros((n_k, self.nvar), dtype=np.float64)
         for s in self.states.values():
-            value = np.broadcast_to(np.asarray(values[s.name], dtype=np.float64), s.shape + (n_k,))
-            y0[:, s.offset:s.offset + s.size] = value.reshape(s.size, n_k).T
+            value = np.broadcast_to(
+                np.asarray(values[s.name], dtype=np.float64), s.shape + (n_k,)
+            )
+            y0[:, s.offset : s.offset + s.size] = value.reshape(s.size, n_k).T
         return y0
 
     # -- compiled functions -----------------------------------------------------------
@@ -881,9 +974,13 @@ class Model:
                         f"{provider.label} and {producers[q].label} both provide {q!r}"
                     )
                 elif q in self.states or q in self.index:
-                    raise ValueError(f"{provider.label} provides {q!r}, which is a state variable")
+                    raise ValueError(
+                        f"{provider.label} provides {q!r}, which is a state variable"
+                    )
                 elif q in params:
-                    raise ValueError(f"{provider.label} provides {q!r}, which is a parameter")
+                    raise ValueError(
+                        f"{provider.label} provides {q!r}, which is a parameter"
+                    )
                 elif q in base and not shadow:
                     raise ValueError(f"{provider.label} provides {q!r}, which is given")
                 elif q not in base:
@@ -983,11 +1080,13 @@ class Model:
 
         values = {}
         for s in self.states.values():
-            block = y[..., s.offset:s.offset + s.size]
+            block = y[..., s.offset : s.offset + s.size]
             if not s.shape:
                 values[s.name] = block[..., 0]
             else:
-                values[s.name] = xp.moveaxis(block, -1, 0).reshape(s.shape + block.shape[:-1])
+                values[s.name] = xp.moveaxis(block, -1, 0).reshape(
+                    s.shape + block.shape[:-1]
+                )
         return values
 
     def build(
@@ -1027,16 +1126,23 @@ class Model:
                 raise ValueError(f"parameter {pname!r} clashes with a state variable")
         quantities = tuple(quantities)
         block = self._subset(states)
-        producers, contributions, derivatives = self._collect(params, {time, *quantities}, shadow=bool(quantities))
+        producers, contributions, derivatives = self._collect(
+            params, {time, *quantities}, shadow=bool(quantities)
+        )
         missing = [s.name for s in block if not derivatives[s.name]]
         if missing:
             raise ValueError(f"no component writes the derivatives of {missing}")
         given = {time, *(s.name for s in block), *params, *quantities}
-        wanted = [(p.label, d) for s in block for p in derivatives[s.name] for d in p.params]
+        wanted = [
+            (p.label, d) for s in block for p in derivatives[s.name] for d in p.params
+        ]
         order = self._order(wanted, producers, contributions, given)
 
         memo: dict = {}
-        namespace: dict[str, object] = {"cuda": names["cuda"], "float64": names["float64"]}
+        namespace: dict[str, object] = {
+            "cuda": names["cuda"],
+            "float64": names["float64"],
+        }
 
         def call(provider, buffer=None):
             namespace[provider.symbol] = _bound_function(provider.fn, jit, names, memo)
@@ -1070,7 +1176,12 @@ class Model:
                 yield f"            {target}[i, j] += {source}[i, j]"
 
         signature = f"y, {time}, p" + (", q" if quantities else "")
-        lines = [f"def {name}({signature}):", "    # states", *self._state_reads(states), "    # parameters"]
+        lines = [
+            f"def {name}({signature}):",
+            "    # states",
+            *self._state_reads(states),
+            "    # parameters",
+        ]
         for pname, column in params.items():
             lines.append(f"    {pname} = p[{int(column)}]")
         for k, quantity in enumerate(quantities):
@@ -1080,12 +1191,17 @@ class Model:
             if quantity in producers:
                 lines.append(f"    {quantity} = {call(producers[quantity])}")
             else:
-                lines.append(f"    {quantity} = " + " + ".join(call(p) for p in contributions[quantity]))
+                lines.append(
+                    f"    {quantity} = "
+                    + " + ".join(call(p) for p in contributions[quantity])
+                )
         lines.append("    # derivatives")
         for s in block:
             d = f"d_{s.name}"
             if not s.shape:
-                lines.append(f"    {d} = " + " + ".join(call(p) for p in derivatives[s.name]))
+                lines.append(
+                    f"    {d} = " + " + ".join(call(p) for p in derivatives[s.name])
+                )
                 continue
             lines.extend(zeros(d, s.shape))
             for p in derivatives[s.name]:
@@ -1101,7 +1217,9 @@ class Model:
                 lines.extend(f"        d_{s.name}[{i}]," for i in range(s.shape[0]))
             else:
                 lines.extend(
-                    f"        d_{s.name}[{i}, {j}]," for i in range(s.shape[0]) for j in range(s.shape[1])
+                    f"        d_{s.name}[{i}, {j}],"
+                    for i in range(s.shape[0])
+                    for j in range(s.shape[1])
                 )
         lines.append("    )")
         self.source = "\n".join(lines) + "\n"
@@ -1140,10 +1258,15 @@ class Model:
         if with_state:
             given |= {s.name for s in self._subset(states)}
         producers, contributions, _ = self._collect(params, given, shadow=True)
-        order = self._order([(name, o) for o in outputs], producers, contributions, given)
+        order = self._order(
+            [(name, o) for o in outputs], producers, contributions, given
+        )
 
         memo: dict = {}
-        namespace: dict[str, object] = {"cuda": names["cuda"], "float64": names["float64"]}
+        namespace: dict[str, object] = {
+            "cuda": names["cuda"],
+            "float64": names["float64"],
+        }
 
         def call(provider):
             namespace[provider.symbol] = _bound_function(provider.fn, jit, names, memo)
@@ -1163,11 +1286,17 @@ class Model:
             if quantity in producers:
                 lines.append(f"    {quantity} = {call(producers[quantity])}")
             else:
-                lines.append(f"    {quantity} = " + " + ".join(call(p) for p in contributions[quantity]))
+                lines.append(
+                    f"    {quantity} = "
+                    + " + ".join(call(p) for p in contributions[quantity])
+                )
         for o in outputs:
             if o not in given and o not in producers and o not in contributions:
                 raise NameError(f"{name}: {o!r} is neither an input nor provided")
-        lines.append("    return " + (outputs[0] if len(outputs) == 1 else "(" + ", ".join(outputs) + ")"))
+        lines.append(
+            "    return "
+            + (outputs[0] if len(outputs) == 1 else "(" + ", ".join(outputs) + ")")
+        )
         source = "\n".join(lines) + "\n"
         fn = _compile(name, source, namespace)
         return jit(fn)

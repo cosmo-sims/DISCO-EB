@@ -35,14 +35,61 @@ import numpy as np
 from .component import Component, State, float32, float64
 from .eb_model import neutrino_momentum_bins
 from .thermodynamics_recfast import (
-    A2P_s, A2P_t, AGauss1, AGauss2, Bfact, CB1, CB1_He1, CDB, CDB_He, CK, CK_He, CL, CL_He, CL_PSt, FUDGE_H,
-    CR, CT, DZ_H_SAHA_BLEND, H_frac, L_He2St_ion, L_He_2Pt, L_He_2p, Lambda, Lambda_He,
-    NQ_NU_BACKGROUND, T_0, T_1, Z_H_SAHA_END, a_PPB, a_VF, a_trip, b_PPB, b_VF, b_trip, bigH, c_PPB,
-    const_EionHe12s, const_c, const_c_Mpc_s, const_dens_fac, const_h, const_h_c_L_He_2St_kB,
-    const_kB, const_mH, const_mHe_mH, d_PPB, sigma_He_2Ps, sigma_He_2Pt, wGauss1, wGauss2, zGauss1, zGauss2,
+    A2P_s,
+    A2P_t,
+    AGauss1,
+    AGauss2,
+    Bfact,
+    CB1,
+    CB1_He1,
+    CDB,
+    CDB_He,
+    CK,
+    CK_He,
+    CL,
+    CL_He,
+    CL_PSt,
+    FUDGE_H,
+    CR,
+    CT,
+    DZ_H_SAHA_BLEND,
+    H_frac,
+    L_He2St_ion,
+    L_He_2Pt,
+    L_He_2p,
+    Lambda,
+    Lambda_He,
+    NQ_NU_BACKGROUND,
+    T_0,
+    T_1,
+    Z_H_SAHA_END,
+    a_PPB,
+    a_VF,
+    a_trip,
+    b_PPB,
+    b_VF,
+    b_trip,
+    bigH,
+    c_PPB,
+    const_EionHe12s,
+    const_c,
+    const_c_Mpc_s,
+    const_dens_fac,
+    const_h,
+    const_h_c_L_He_2St_kB,
+    const_kB,
+    const_mH,
+    const_mHe_mH,
+    d_PPB,
+    sigma_He_2Ps,
+    sigma_He_2Pt,
+    wGauss1,
+    wGauss2,
+    zGauss1,
+    zGauss2,
 )
 
-THERMAL_PARAMETERS = ("YHe", "Tcmb", "H0", "Omegab", "z_re")
+THERMAL_PARAMETERS = ("YHe", "Tcmb_nominal", "H0_nominal", "Omegab_nominal", "z_re")
 """What the recombination rates and reionization read of the cosmology, as
 columns of the parameter row after the hierarchy's own
 (:data:`discoeb.perturbations.PARAM_COLUMNS`). ``z_re = 0`` means no reionization."""
@@ -117,7 +164,9 @@ def saha_slope(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
             root = math.sqrt(discr)
             droot = (alpha + 2.0 * f_factor) * dR / root
         denom = root + alpha
-        slope = (2.0 * f_factor * dR * denom - 2.0 * beta * (droot + dR)) / (denom * denom)
+        slope = (2.0 * f_factor * dR * denom - 2.0 * beta * (droot + dR)) / (
+            denom * denom
+        )
     return slope
 
 
@@ -130,11 +179,20 @@ def hydrogen_rate(x_H, xe, Tmat, z, n_H, Hz, Tcmb, Nnow, K_peebles):
         fu = FUDGE_H
         one_minus_x_H = 1.0 - x_H
         Tmat_1e4 = Tmat / 1.0e4
-        Rdown = 1.0e-19 * a_PPB * pow_(Tmat_1e4, b_PPB) / (1.0 + c_PPB * pow_(Tmat_1e4, d_PPB))
+        Rdown = (
+            1.0e-19
+            * a_PPB
+            * pow_(Tmat_1e4, b_PPB)
+            / (1.0 + c_PPB * pow_(Tmat_1e4, d_PPB))
+        )
         Rup = Rdown * (CR * Tmat) ** 1.5 * exp_(-CDB / Tmat)
         rate_diff = xe * x_H * n_H * Rdown - Rup * one_minus_x_H * exp_(-CL / Tmat)
         K_Lambda_n_1_minus_x_H = K_peebles * Lambda * n_H * one_minus_x_H
-        denom_term = 1.0 / fu + K_Lambda_n_1_minus_x_H / fu + K_peebles * Rup * n_H * one_minus_x_H
+        denom_term = (
+            1.0 / fu
+            + K_Lambda_n_1_minus_x_H / fu
+            + K_peebles * Rup * n_H * one_minus_x_H
+        )
         f0 = rate_diff * (1.0 + K_Lambda_n_1_minus_x_H) / (Hz * (1.0 + z) * denom_term)
         if z > Z_H_SAHA_END - 2.0 * DZ_H_SAHA_BLEND:
             s_blend = (Z_H_SAHA_END - z) / (2.0 * DZ_H_SAHA_BLEND)
@@ -174,29 +232,52 @@ def helium_rate_equation(x_H, x_He, xe, Tmat, z, n_H, Hz, fHe):
     CR_Tmat_15 = (CR * Tmat) ** 1.5
     sq_0 = math.sqrt(Tmat / T_0)
     sq_1 = math.sqrt(Tmat / T_1)
-    Rdown_He = a_VF / (sq_0 * pow_(1.0 + sq_0, 1.0 - b_VF) * pow_(1.0 + sq_1, 1.0 + b_VF))
+    Rdown_He = a_VF / (
+        sq_0 * pow_(1.0 + sq_0, 1.0 - b_VF) * pow_(1.0 + sq_1, 1.0 + b_VF)
+    )
     Rup_He = 4.0 * Rdown_He * CR_Tmat_15 * exp_(-CDB_He / Tmat)
     He_Boltz = math.exp(min(680.0, Bfact / Tmat))
-    Rdown_trip = a_trip / (sq_0 * pow_(1.0 + sq_0, 1.0 - b_trip) * pow_(1.0 + sq_1, 1.0 + b_trip))
+    Rdown_trip = a_trip / (
+        sq_0 * pow_(1.0 + sq_0, 1.0 - b_trip) * pow_(1.0 + sq_1, 1.0 + b_trip)
+    )
     Rup_trip = (
-        Rdown_trip * exp_(-const_h * const_c * L_He2St_ion / (const_kB * Tmat)) * CR_Tmat_15 * (4.0 / 3.0)
+        Rdown_trip
+        * exp_(-const_h * const_c * L_He2St_ion / (const_kB * Tmat))
+        * CR_Tmat_15
+        * (4.0 / 3.0)
     )
 
     tauHe_s = A2P_s * CK_He * 3.0 * n_He_1_minus_x_He / Hz
     pHe_s = (1.0 - exp_(-tauHe_s)) / tauHe_s
-    Doppler_term = math.sqrt(2.0 * const_kB * Tmat / (const_mH * const_mHe_mH * const_c**2))
+    Doppler_term = math.sqrt(
+        2.0 * const_kB * Tmat / (const_mH * const_mHe_mH * const_c**2)
+    )
     if x_H < 0.9999999:
         Doppler_2p = const_c * L_He_2p * Doppler_term
         gamma_2Ps = (
-            3.0 * A2P_s * fHe * one_minus_x_He * const_c**2
-            / (math.sqrt(math.pi) * sigma_He_2Ps * 8.0 * math.pi * Doppler_2p * one_minus_x_H * (const_c * L_He_2p) ** 2)
+            3.0
+            * A2P_s
+            * fHe
+            * one_minus_x_He
+            * const_c**2
+            / (
+                math.sqrt(math.pi)
+                * sigma_He_2Ps
+                * 8.0
+                * math.pi
+                * Doppler_2p
+                * one_minus_x_H
+                * (const_c * L_He_2p) ** 2
+            )
         )
         AHcon = A2P_s / (1.0 + 0.36 * pow_(gamma_2Ps, 0.86))
         K_He = 1.0 / ((A2P_s * pHe_s + AHcon) * 3.0 * n_He_1_minus_x_He)
     else:
         K_He = 1.0 / (A2P_s * pHe_s * 3.0 * n_He_1_minus_x_He)
 
-    rate_diff_He = xe * x_He * n_H * Rdown_He - Rup_He * one_minus_x_He * exp_(-CL_He / Tmat)
+    rate_diff_He = xe * x_He * n_H * Rdown_He - Rup_He * one_minus_x_He * exp_(
+        -CL_He / Tmat
+    )
     K_He_Lambda = K_He * Lambda_He * n_He_1_minus_x_He * He_Boltz
     He_denom_term = 1.0 + K_He * (Lambda_He + Rup_He) * n_He_1_minus_x_He * He_Boltz
     f1 = rate_diff_He * (1.0 + K_He_Lambda) / (Hz_z_term * He_denom_term)
@@ -209,8 +290,20 @@ def helium_rate_equation(x_H, x_He, xe, Tmat, z, n_H, Hz, fHe):
     else:
         Doppler_2Pt = const_c * L_He_2Pt * Doppler_term
         gamma_2Pt = (
-            3.0 * A2P_t * fHe * one_minus_x_He * const_c**2
-            / (math.sqrt(math.pi) * sigma_He_2Pt * 8.0 * math.pi * Doppler_2Pt * one_minus_x_H * (const_c * L_He_2Pt) ** 2)
+            3.0
+            * A2P_t
+            * fHe
+            * one_minus_x_He
+            * const_c**2
+            / (
+                math.sqrt(math.pi)
+                * sigma_He_2Pt
+                * 8.0
+                * math.pi
+                * Doppler_2Pt
+                * one_minus_x_H
+                * (const_c * L_He_2Pt) ** 2
+            )
         )
         AHcon_t = A2P_t / (1.0 + 0.66 * pow_(gamma_2Pt, 0.9)) / 3.0
         CfHe_t = (A2P_t * pHe_t + AHcon_t) * exp_CL_PSt
@@ -227,10 +320,14 @@ def peebles_K(Hz, zred):
     """The Peebles ``K`` with the Gaussian fudges of Rubino-Martin et al. (2010)."""
 
     log_z_term = log_(1.0 + zred)
-    return CK / Hz * (
-        1.0
-        + AGauss1 * exp_(-(((log_z_term - zGauss1) / wGauss1) ** 2))
-        + AGauss2 * exp_(-(((log_z_term - zGauss2) / wGauss2) ** 2))
+    return (
+        CK
+        / Hz
+        * (
+            1.0
+            + AGauss1 * exp_(-(((log_z_term - zGauss1) / wGauss1) ** 2))
+            + AGauss2 * exp_(-(((log_z_term - zGauss2) / wGauss2) ** 2))
+        )
     )
 
 
@@ -246,8 +343,6 @@ def matter_temperature_rate(Tmat, xe, fHe, zred, Hz, H0, Tcmb):
     full = compton * (Tmat - Trad) / Hz * inv_z + 2.0 * locked
     w_full = 1.0 if inv_timeH >= H_frac * compton else 0.0  # timeTh >= H_frac timeH
     return w_full * full + (1.0 - w_full) * locked
-
-
 
 
 def logistic(x):
@@ -316,6 +411,30 @@ class Recombination(Component):
                 total += self.nu_w[i] * math.sqrt(1.0 + (a * amnu / self.nu_q[i]) ** 2)
         return total
 
+    def pnu(self, a, amnu):
+        """``p_nu / rho_nu(massless)`` of one flavour: ``(rhonu - d rhonu / d ln a) / 3``, 1/3 when massless."""
+        total = 1.0 / 3.0
+        if amnu > 0.0:
+            total = 0.0
+            for i in range(len(self.nu_q)):
+                total += self.nu_w[i] / math.sqrt(1.0 + (a * amnu / self.nu_q[i]) ** 2)
+            total *= 1.0 / 3.0
+        return total
+
+    # The inputs a derivative may move are read through the trajectory's
+    # direction, ``x = x_nominal + eps dir_x`` (:data:`discoeb.perturbations.IX_EPS`):
+    # ``eps`` is zero in every primal solve, and ``d/d eps`` is the derivative
+    # along ``dir``.
+
+    def Tcmb(self, Tcmb_nominal, eps, dir_Tcmb):
+        return Tcmb_nominal + eps * dir_Tcmb
+
+    def H0(self, H0_nominal, eps, dir_H0):
+        return H0_nominal + eps * dir_H0
+
+    def Omegab(self, Omegab_nominal, eps, dir_Omegab):
+        return Omegab_nominal + eps * dir_Omegab
+
     def fHe(self, YHe):
         return YHe / (const_mHe_mH * (1.0 - YHe))
 
@@ -356,7 +475,10 @@ class Recombination(Component):
         """``c_s^2 = k_B T_m / (mu m_H c^2) (1 - (1/3) d ln T_m / d ln a)``."""
         inv_mu = 1.0 + (1.0 / const_mHe_mH - 1.0) * YHe + (1.0 - YHe) * xe_rec
         dTm_dlna = -dTm_dz * inv_a
-        return max(const_kB / (3.0 * const_mH * const_c**2) * inv_mu * (3.0 * Tmat - dTm_dlna), 0.0)
+        return max(
+            const_kB / (3.0 * const_mH * const_c**2) * inv_mu * (3.0 * Tmat - dTm_dlna),
+            0.0,
+        )
 
     # -- the rates ----------------------------------------------------------------------
 
@@ -383,10 +505,34 @@ class Recombination(Component):
     def d_lna(self, adotoa):
         return adotoa
 
-    def d_thermo(self, x_H, x_He, xe_rec, Tmat, zred, a, n_H, Hz, Tcmb, Nnow, fHe, K_peebles, dTm_dz, adotoa, inv_a, output):
+    def d_thermo(
+        self,
+        x_H,
+        x_He,
+        xe_rec,
+        Tmat,
+        zred,
+        a,
+        n_H,
+        Hz,
+        Tcmb,
+        Nnow,
+        fHe,
+        K_peebles,
+        dTm_dz,
+        adotoa,
+        inv_a,
+        output,
+    ):
         dz_dtau = -adotoa * inv_a
-        output[0] = hydrogen_rate(x_H, xe_rec, Tmat, zred, n_H, Hz, Tcmb, Nnow, K_peebles) * dz_dtau
-        output[1] = helium_rate(x_H, x_He, xe_rec, Tmat, zred, a, n_H, Hz, Tcmb, Nnow, fHe) * dz_dtau
+        output[0] = (
+            hydrogen_rate(x_H, xe_rec, Tmat, zred, n_H, Hz, Tcmb, Nnow, K_peebles)
+            * dz_dtau
+        )
+        output[1] = (
+            helium_rate(x_H, x_He, xe_rec, Tmat, zred, a, n_H, Hz, Tcmb, Nnow, fHe)
+            * dz_dtau
+        )
         output[2] = dTm_dz * dz_dtau
 
     def d_kappa(self, opacity):
