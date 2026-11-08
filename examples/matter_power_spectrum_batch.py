@@ -4,18 +4,38 @@
 in one GPU launch. The recombination history is a block of its own that
 runs ahead of the perturbations on its own steps and hands down its opacity,
 sound speed and scale factor as interpolants. The first call compiles the
-kernel (about 35 s) or loads it from modax's kernel cache (about 5 s), and
-is timed on its own;
+kernel from scratch (about 35 s) and is timed on its own: the script points
+numba's cache at an empty temporary directory, so modax's kernel cache is
+neither read nor written;
 the second call then uses a batch of cosmologies not seen before.
 
-Run from the repository root with the project's environment. Until modax
-0.0.8, which has the Block and Hierarchy API, is released, put the local
-modax checkout on the path::
+Run from the repository root with the project's environment::
 
-    PYTHONPATH=$HOME/git/modax:$HOME/git/DISCO-EB/src .venv/bin/python examples/matter_power_spectrum_batch.py
+    .venv/bin/python examples/matter_power_spectrum_batch.py
+
+Until modax 0.0.8, which has the Block and Hierarchy API, is released, the
+script imports modax from a local checkout at ~/git/modax (hard-coded below)
+and DISCO-EB from this repository's src/.
 """
 
+import atexit
 import os
+import shutil
+import sys
+import tempfile
+
+# Import modax from the local checkout (the released 0.0.7 lacks the
+# hierarchy API) and DISCO-EB from this repository, ahead of any installed
+# copies.
+sys.path[:0] = [
+    os.path.expanduser("~/git/modax"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "src"),
+]
+
+# Compile from fresh every run: an empty kernel cache, removed at exit. This
+# must be set before numba or modax is imported.
+os.environ["NUMBA_CACHE_DIR"] = tempfile.mkdtemp(prefix="discoeb-kernel-cache-")
+atexit.register(shutil.rmtree, os.environ["NUMBA_CACHE_DIR"], ignore_errors=True)
 
 # The perturbation kernel keeps its own device memory beside JAX's pool.
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
@@ -65,7 +85,7 @@ k = np.geomspace(1.0e-4, 1.0, 128)  # 1/Mpc
 t0 = time.perf_counter()
 solve_matter_power_spectrum_batch(k, cosmologies(128, offset=0.0))
 compile_time = time.perf_counter() - t0
-print(f"first call (compile, or load from the kernel cache): {compile_time:.1f} s")
+print(f"compile and first call: {compile_time:.1f} s")
 
 batch = cosmologies(128, offset=0.001)
 t0 = time.perf_counter()
