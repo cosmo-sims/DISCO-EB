@@ -4,12 +4,15 @@
 in one GPU launch. The recombination history is a block of its own that
 runs ahead of the perturbations on its own steps and hands down its opacity,
 sound speed and scale factor as interpolants. The first call compiles the
-kernel, or loads it from the cache; the timed call then uses a batch of
-cosmologies not seen before.
+kernel (about 35 s) or loads it from modax's kernel cache (about 5 s), and
+is timed on its own;
+the second call then uses a batch of cosmologies not seen before.
 
-Run from the repository root with the project's environment::
+Run from the repository root with the project's environment. Until modax
+0.0.8, which has the Block and Hierarchy API, is released, put the local
+modax checkout on the path::
 
-    python examples/matter_power_spectrum_batch.py
+    PYTHONPATH=$HOME/git/modax:$HOME/git/DISCO-EB/src .venv/bin/python examples/matter_power_spectrum_batch.py
 """
 
 import os
@@ -59,7 +62,10 @@ def cosmologies(n, offset):
 
 k = np.geomspace(1.0e-4, 1.0, 128)  # 1/Mpc
 
-solve_matter_power_spectrum_batch(k, cosmologies(128, offset=0.0))  # compile
+t0 = time.perf_counter()
+solve_matter_power_spectrum_batch(k, cosmologies(128, offset=0.0))
+compile_time = time.perf_counter() - t0
+print(f"first call (compile, or load from the kernel cache): {compile_time:.1f} s")
 
 batch = cosmologies(128, offset=0.001)
 t0 = time.perf_counter()
