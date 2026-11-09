@@ -158,7 +158,8 @@ def saha_slope(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
     """
 
     T = Tcmb * (1.0 + z)
-    phi = (CR * T) ** 1.5 / Nnow / (1.0 + z) ** 3
+    CR_T = CR * T
+    phi = CR_T * math.sqrt(CR_T) / Nnow / (1.0 + z) ** 3
     R = g_factor * phi * exp_(-E_ion / T)
     slope = 0.0
     if R > 1.0e-20 and T <= E_ion * 0.1:
@@ -179,6 +180,26 @@ def saha_slope(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
     return slope
 
 
+def saha_fraction(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
+    """The Saha ionization fraction at ``z`` whose rate :func:`saha_slope` is.
+
+    Fully ionized (``f_factor``) where :func:`saha_slope` is zero at high
+    temperature, ``2 beta / (sqrt(alpha^2 + 4 beta) + alpha)`` below; a state
+    integrated from full ionization with :func:`saha_slope` follows it. One exit.
+    """
+
+    T = Tcmb * (1.0 + z)
+    CR_T = CR * T
+    phi = CR_T * math.sqrt(CR_T) / Nnow / (1.0 + z) ** 3
+    R = g_factor * phi * exp_(-E_ion / T)
+    frac = f_factor
+    if T <= E_ion * 0.1:
+        alpha = R + offset
+        beta = R * f_factor
+        frac = 2.0 * beta / (math.sqrt(alpha * alpha + 4.0 * beta) + alpha)
+    return frac
+
+
 def hydrogen_rate(x_H, xe, Tmat, z, n_H, Hz, Tcmb, Nnow, K_peebles):
     """``d x_H / d z``: Saha above ``Z_H_SAHA_END``, blended into the rate equation below it."""
 
@@ -194,7 +215,8 @@ def hydrogen_rate(x_H, xe, Tmat, z, n_H, Hz, Tcmb, Nnow, K_peebles):
             * pow_(Tmat_1e4, b_PPB)
             / (1.0 + c_PPB * pow_(Tmat_1e4, d_PPB))
         )
-        Rup = Rdown * (CR * Tmat) ** 1.5 * exp_(-CDB / Tmat)
+        CR_Tmat = CR * Tmat
+        Rup = Rdown * (CR_Tmat * math.sqrt(CR_Tmat)) * exp_(-CDB / Tmat)
         rate_diff = xe * x_H * n_H * Rdown - Rup * one_minus_x_H * exp_(-CL / Tmat)
         K_Lambda_n_1_minus_x_H = K_peebles * Lambda * n_H * one_minus_x_H
         denom_term = (
@@ -211,7 +233,16 @@ def hydrogen_rate(x_H, xe, Tmat, z, n_H, Hz, Tcmb, Nnow, K_peebles):
 
 
 def helium_rate(x_H, x_He, xe, Tmat, z, a, n_H, Hz, Tcmb, Nnow, fHe):
-    """``d x_He / d z``: both Saha stages while ``x_He > 0.9``, the singlet and triplet rates below.
+    """``d x_He / d z``: both Saha stages while their fraction exceeds 0.9, the singlet and triplet rates below.
+
+    The switch is RECFAST's ``x_He > 0.9``, tested on the Saha fraction at
+    ``z`` rather than on the state. While the Saha slope drives it the state
+    is that fraction, so the switch falls at the same redshift; but a state
+    test can switch back, and a lane whose step landed just below 0.9 was
+    pulled back across it and crept along ``x_He = 0.9`` for a couple of
+    hundred tiny steps (a few lanes of most warps, at 40 percent of the
+    recombination block's cost). On the fraction it is a function of ``z``
+    alone, the treatment hydrogen's switch has (CLASS 3 does the same).
 
     The rate equation is called from one place only: a helper inlined at two
     call sites, or a local assigned in several branches, gives numba-cuda-mlir
@@ -222,8 +253,12 @@ def helium_rate(x_H, x_He, xe, Tmat, z, a, n_H, Hz, Tcmb, Nnow, fHe):
         saha_slope(z, Tcmb, Nnow, CB1_He1, 1.0, 4.0, fHe)
         + saha_slope(z, Tcmb, Nnow, const_EionHe12s, 1.0 + fHe, 1.0, fHe)
     ) / fHe
+    saha_x = (
+        saha_fraction(z, Tcmb, Nnow, CB1_He1, 1.0, 4.0, fHe)
+        + saha_fraction(z, Tcmb, Nnow, const_EionHe12s, 1.0 + fHe, 1.0, fHe)
+    ) / fHe
     f1 = 0.0
-    if x_He > 0.9 or a < 3.0e-4:
+    if saha_x > 0.9 or a < 3.0e-4:
         f1 = saha
     elif x_He >= 1.0e-8:
         f1 = helium_rate_equation(x_H, x_He, xe, Tmat, z, n_H, Hz, fHe)
@@ -238,7 +273,8 @@ def helium_rate_equation(x_H, x_He, xe, Tmat, z, n_H, Hz, fHe):
     one_minus_x_He = 1.0 - x_He
     one_minus_x_H = 1.0 - x_H
     n_He_1_minus_x_He = n_He * one_minus_x_He
-    CR_Tmat_15 = (CR * Tmat) ** 1.5
+    CR_Tmat = CR * Tmat
+    CR_Tmat_15 = CR_Tmat * math.sqrt(CR_Tmat)
     sq_0 = math.sqrt(Tmat / T_0)
     sq_1 = math.sqrt(Tmat / T_1)
     Rdown_He = a_VF / (
