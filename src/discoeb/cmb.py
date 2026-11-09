@@ -81,6 +81,8 @@ from __future__ import annotations
 
 import functools
 import math
+import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import NamedTuple
 
 import jax
@@ -100,9 +102,9 @@ from .perturbations import (
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
     PERTURB_RTOL,
+    N_THERMO_GRID,
     TAU_START,
     _as_cosmology,
-    host_thermal_history,
     joint_model,
     thermal_indices,
     density_coefficients,
@@ -190,8 +192,8 @@ SHIFT_STENCIL = 4
 the shared ``chi`` grid: 4 (cubic) leaves 2e-4 in ``D_l``, 2 (linear) 7e-3."""
 
 PROJECTION_BUDGET_BYTES = 1.0e9
-"""Device memory for one projection call's fine-``k`` source arrays, which sets how
-many cosmologies are contracted together at once."""
+"""Device memory for one projection chunk's fine-``k`` source arrays, which sets how
+many fine wave modes are contracted together at once."""
 
 TAU_END_MARGIN = 0.01
 """How far past the fiducial cosmology's ``tau0`` the save grid of :func:`cmb_grids`
@@ -363,6 +365,23 @@ def visibility_peak_times(channels, tau_save, tau0):
     return jnp.asarray(tau_save)[jnp.argmax(g, axis=1)]
 
 
+@jax.jit
+def _channels_from_hook(out, tau_save, tau0):
+    """The hook rows ``(n_k, n_cosmo, 6 n_tau)`` -> ``(chi_star, weighted channels)``, as one program.
+
+    The transpose to ``(n_cosmo, 6, n_k, n_tau)``, :func:`visibility_peak_times`
+    and :func:`weight_channels` fused: run eagerly, each of their dozen steps
+    was a pass over the batch's gigabyte of sources.
+    """
+
+    n_k, n_cosmo, _ = out.shape
+    recorded = jnp.transpose(
+        out.reshape(n_k, n_cosmo, tau_save.shape[0], SOURCE_CHANNELS), (1, 3, 0, 2)
+    )
+    chi_star = tau0 - visibility_peak_times(recorded, tau_save, tau0)
+    return chi_star, weight_channels(recorded, tau_save, tau0)
+
+
 def assemble_sources(channels, tau):
     """``(S, S_j1, S_j2)`` from the five weighted channels, with the ISW term by centered differences.
 
@@ -451,8 +470,12 @@ def _build_bessel_tables(ells, x_max: float, dx: float):
 def _bessel_tables(ells, x_max, dx):
     ell_arr = np.asarray(ells, dtype=np.int64)
     n_x = int(np.ceil(x_max / dx)) + 2
-    unique = np.unique(np.concatenate([ell_arr, ell_arr + 1]))
-    rows = {int(ell): _bessel_row(int(ell), n_x, dx) for ell in unique}
+    unique = [int(ell) for ell in np.unique(np.concatenate([ell_arr, ell_arr + 1]))]
+    # Each row is a few hundred thousand evaluations of scipy's j_nu, which
+    # releases the GIL: the rows are computed on every core (85 s on one).
+    # j_l / x^2 is the same row divided through, so it is not recomputed.
+    with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
+        rows = dict(zip(unique, pool.map(lambda ell: _bessel_row(ell, n_x, dx), unique)))
     return (
         0.0,
         1.0 / dx,
@@ -460,9 +483,19 @@ def _bessel_tables(ells, x_max, dx):
         jnp.asarray(np.stack([rows[int(ell)] for ell in ell_arr])),
         jnp.asarray(np.stack([rows[int(ell) + 1] for ell in ell_arr])),
         jnp.asarray(
-            np.stack([_bessel_row(int(ell), n_x, dx, over_x2=True) for ell in ell_arr])
+            np.stack([_over_x2(rows[int(ell)], int(ell), n_x, dx) for ell in ell_arr])
         ),
     )
+
+
+def _over_x2(row: np.ndarray, ell: int, n_x: int, dx: float) -> np.ndarray:
+    """``j_ell(x) / x^2`` from the ``j_ell`` row, as ``_bessel_row(..., over_x2=True)`` computes it."""
+
+    x = np.linspace(0.0, dx * (n_x - 1), n_x)
+    x_safe = np.where(x > 1.0e-30, x, 1.0)
+    values = row / x_safe**2
+    values[0] = 1.0 / 15.0 if ell == 2 else 0.0
+    return values
 
 
 def _interp_uniform_table(x, x0, inv_dx, n_x, vals):
@@ -624,9 +657,11 @@ def _projection_operator(ells, k_values, k_fine, tau_save, tau0_ref, dtype):
     )
 
 
-@jax.jit
-def theta_ell_batch(channels, tau, shift_idx, shift_w, band, interp, bessel, bessel_e):
-    """``(Theta_l, E_l)`` at ``k_fine`` of a group of cosmologies from their source channels, as matrix products.
+@functools.partial(jax.jit, static_argnames=("k_chunk",))
+def theta_ell_batch(
+    channels, tau, shift_idx, shift_w, band, interp, bessel, bessel_e, k_chunk=None
+):
+    """``(Theta_l, E_l)`` at ``k_fine`` of a batch of cosmologies from their source channels, as matrix products.
 
     ``channels`` is ``(n_c, 5, n_k, n_tau)`` on the shared save grid; ``shift_idx``
     and ``shift_w`` are each cosmology's stencil onto the shared ``chi`` grid
@@ -634,6 +669,11 @@ def theta_ell_batch(channels, tau, shift_idx, shift_w, band, interp, bessel, bes
     mask of :func:`_k_band`; ``interp``, ``bessel`` and ``bessel_e`` come from
     :func:`projection_operator`. Returns the temperature and E-mode transfer
     functions, each ``(n_c, n_ell, n_k_fine)`` in float64.
+
+    The fine wave modes are contracted ``k_chunk`` at a time (all at once by
+    default), each chunk for every cosmology: the Bessel table, gigabytes at
+    production sizes, is then read once a call whatever the batch, and only a
+    chunk's fine-``k`` sources are ever held. Chunking changes no sum.
     """
 
     dtype = bessel.dtype
@@ -643,9 +683,19 @@ def theta_ell_batch(channels, tau, shift_idx, shift_w, band, interp, bessel, bes
         * jnp.take_along_axis(sources, (shift_idx + a)[:, None, None, :], axis=3)
         for a in range(shift_w.shape[-1])
     ).astype(dtype)
-    refined = jnp.einsum("fk,cskt->csft", interp, shifted)  # (c, 3, k_fine, chi)
-    theta = jnp.einsum("csft,flst->clf", refined, bessel)  # (c, l, k_fine)
-    theta_e = jnp.einsum("cft,flt->clf", refined[:, 2], bessel_e)
+    n_fine = interp.shape[0]
+    step = n_fine if k_chunk is None else max(1, min(int(k_chunk), n_fine))
+    thetas, thetas_e = [], []
+    for f0 in range(0, n_fine, step):
+        f1 = min(f0 + step, n_fine)
+        # k_fine leading, the batch axis of the Bessel contraction: with (c, 3,
+        # k_fine, chi) XLA transposed the refined array first; (k_fine, l, c)
+        # out is the batched GEMM's own layout
+        refined = jnp.einsum("fk,cskt->fcst", interp[f0:f1], shifted)
+        thetas.append(jnp.einsum("fcst,flst->flc", refined, bessel[f0:f1]))
+        thetas_e.append(jnp.einsum("fct,flt->flc", refined[:, :, 2], bessel_e[f0:f1]))
+    theta = jnp.transpose(jnp.concatenate(thetas), (2, 1, 0))  # (c, l, k_fine)
+    theta_e = jnp.transpose(jnp.concatenate(thetas_e), (2, 1, 0))
     return (
         jnp.where(band, theta, 0.0).astype(jnp.float64),
         jnp.where(band, theta_e, 0.0).astype(jnp.float64),
@@ -684,11 +734,11 @@ def dl_power_spectrum(cl, ells, T_cmb):
     return ell * (ell + 1.0) * jnp.asarray(cl) / (2.0 * jnp.pi) * T_cmb**2 * 1.0e12
 
 
-def _projection_group_size(n_cosmologies, n_k_fine, n_tau, dtype) -> int:
-    per_cosmology = 4 * n_k_fine * n_tau * jnp.dtype(dtype).itemsize * 2
-    return max(
-        1, min(n_cosmologies, int(PROJECTION_BUDGET_BYTES // max(per_cosmology, 1)))
-    )
+def _projection_k_chunk(n_cosmologies, n_k_fine, n_tau, dtype) -> int:
+    """Fine wave modes per chunk of :func:`theta_ell_batch` within :data:`PROJECTION_BUDGET_BYTES`."""
+
+    per_mode = 3 * n_cosmologies * n_tau * jnp.dtype(dtype).itemsize * 2
+    return max(1, min(n_k_fine, int(PROJECTION_BUDGET_BYTES // max(per_mode, 1))))
 
 
 # =============================================================================
@@ -708,6 +758,50 @@ def _dtau_da(a, *dens):
     return np.sqrt(3.0 / _grhoa4(a, *dens))
 
 
+SUMMARY_K = 1.0e-3
+"""Wave mode (Mpc^-1) of the one trajectory whose recombination block the grid summary reads."""
+
+
+@functools.lru_cache(maxsize=64)
+def _kernel_thermal_history(cosmology, n_grid: int = N_THERMO_GRID, n_save: int = 1000):
+    """``(tau_grid, a, opacity, tau0)`` of one cosmology on ``n_grid`` uniform ``log tau`` points, from the CMB kernel itself.
+
+    One trajectory of the source-hooked perturbation launch (the kernel the
+    spectra use, so nothing more is compiled) records the opacity
+    ``kappa'``, with reionization, from its recombination block's dense
+    output; the scale factor is the background quadrature's. The grid is
+    :func:`~discoeb.perturbations.host_thermal_history`'s. The kernel's save
+    grid has ``n_save`` times, part of its identity, and every launch starts
+    at ``TAU_START``, so the grid is read in launches of ``n_save - 1``
+    points.
+    """
+
+    from .perturbations import _prepare_solve, background_history
+
+    prepared = _prepare_solve((cosmology,), extra=(LineOfSightSources,))
+    a_bg, tau_bg = background_history(cosmology)
+    tau0 = float(tau_bg[-1])
+    tau_grid = np.exp(np.linspace(np.log(TAU_START), np.log(tau0), n_grid))
+    hook = source_hook(prepared.layout)
+    opacity = np.empty(n_grid)
+    for c0 in range(0, n_grid, n_save - 1):
+        chunk = tau_grid[c0 : c0 + n_save - 1]
+        times = np.full(n_save, tau_grid[-1])
+        times[0] = TAU_START
+        times[1 : 1 + len(chunk)] = chunk
+        out, _ = _solve_with_hook(
+            prepared,
+            np.asarray([SUMMARY_K]),
+            times,
+            hook,
+            SOURCE_CHANNELS * n_save,
+            {},
+        )
+        channels = np.asarray(out).reshape(n_save, SOURCE_CHANNELS)
+        opacity[c0 : c0 + len(chunk)] = channels[1 : 1 + len(chunk), 4]
+    return tau_grid, np.interp(tau_grid, tau_bg, a_bg), opacity, tau0
+
+
 def _cmb_grid_summary(cosmology) -> dict[str, float]:
     return _grid_summary(_as_cosmology(cosmology))
 
@@ -724,8 +818,7 @@ def _grid_summary(cosmology) -> dict[str, float]:
     """
 
     dens = density_coefficients(cosmology)
-    tau_grid, values, tau0 = host_thermal_history(cosmology)
-    a_vals, opacity = values[0], values[1]
+    tau_grid, a_vals, opacity, tau0 = _kernel_thermal_history(cosmology)
 
     _, vis, _ = visibility_on_grid(tau_grid, opacity, tau_grid, float(tau0))
     peak = int(np.argmax(vis))
@@ -1288,16 +1381,10 @@ def _compute_transfer_batch(
         solve_kwargs,
     )
     # (n_k, n_cosmo, 6 n_tau) -> (n_cosmo, 6, n_k, n_tau), then the visibility weighting
-    recorded = jnp.transpose(
-        out.reshape(len(k_sorted), len(cosmologies), len(tau_save), SOURCE_CHANNELS),
-        (1, 3, 0, 2),
+    chi_star, channels = _channels_from_hook(
+        out, jnp.asarray(tau_save), jnp.asarray(tau0_all)
     )
     del out
-    chi_star = jnp.asarray(tau0_all) - visibility_peak_times(
-        recorded, tau_save, tau0_all
-    )
-    channels = weight_channels(recorded, tau_save, tau0_all)
-    del recorded
 
     interp, bessel, bessel_e, lnk_weights = projection_operator(
         ells, k_sorted, k_fine, tau_save, tau0_ref, projection_dtype
@@ -1317,32 +1404,23 @@ def _compute_transfer_batch(
     T_cmb = jnp.asarray([float(c.T_cmb) for c in cosmologies])
     k_pivot = float(cosmologies[0].k_pivot)
 
-    # The projection of a group of cosmologies is one set of GEMMs; the group
-    # is sized so its fine-k source arrays fit the memory budget. The groups
-    # stay separate eager calls: under one ``jax.jit`` XLA merges the sliced
-    # einsums back into a single whole-batch one (2.3 GB at N=128), which the
-    # allocator cannot place beside the kernel's local memory and retries for
-    # tens of seconds.
-    thetas, thetas_e = [], []
-    group = _projection_group_size(
-        len(cosmologies), len(k_fine), len(tau_save), projection_dtype
+    # The whole batch is one call, chunked over the fine wave modes so the
+    # Bessel table is read once and a chunk's sources fit the memory budget;
+    # chunking over cosmologies instead read the table once per group (60 ms
+    # a batch of 128 against 37).
+    theta, theta_e = theta_ell_batch(
+        channels,
+        tau_d,
+        shift_idx,
+        shift_w,
+        bands,
+        interp,
+        bessel,
+        bessel_e,
+        k_chunk=_projection_k_chunk(
+            len(cosmologies), len(k_fine), len(tau_save), projection_dtype
+        ),
     )
-    for g0 in range(0, len(cosmologies), group):
-        g1 = min(g0 + group, len(cosmologies))
-        theta, theta_e = theta_ell_batch(
-            channels[g0:g1],
-            tau_d,
-            shift_idx[g0:g1],
-            shift_w[g0:g1],
-            bands[g0:g1],
-            interp,
-            bessel,
-            bessel_e,
-        )
-        thetas.append(theta)
-        thetas_e.append(theta_e)
-    theta = jnp.concatenate(thetas)
-    theta_e = jnp.concatenate(thetas_e)
     if lensing_potential_ells is None:
         transfer = TransferBatch(theta, theta_e, None, None, T_cmb)
         tgrids = TransferGrids(

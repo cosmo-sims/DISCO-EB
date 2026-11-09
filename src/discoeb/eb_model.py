@@ -711,13 +711,26 @@ NQ_NEUTRINO_TABLE = 100
 and the budget closing both integrate the Fermi-Dirac distribution on these."""
 
 
+_MOMENTUM_BINS: dict = {}
+
+
 def get_neutrino_momentum_bins(nqmax: int) -> tuple[jax.Array, jax.Array]:
     """The momentum nodes ``q`` (in units of ``k_B T_nu0 / c``) and weights ``w``.
 
     ``w`` is normalised so that one massless flavour integrates to unit density.
     ``nqmax = 3, 4, 5`` are CAMB's high-accuracy formulas; higher counts use a
-    generalised Gauss-Laguerre rule.
+    generalised Gauss-Laguerre rule. Computed once per ``nqmax`` and precision:
+    the rule's eigendecomposition, op by op, cost a second of compiles a call.
     """
+
+    key = (int(nqmax), bool(jax.config.jax_enable_x64))
+    if key not in _MOMENTUM_BINS:
+        with jax.ensure_compile_time_eval():
+            _MOMENTUM_BINS[key] = _neutrino_momentum_bins(int(nqmax))
+    return _MOMENTUM_BINS[key]
+
+
+def _neutrino_momentum_bins(nqmax: int) -> tuple[jax.Array, jax.Array]:
 
     fermi_dirac_const = 7 * jnp.pi**4 / 120
     if nqmax == 3:

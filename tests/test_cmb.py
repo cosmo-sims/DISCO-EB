@@ -389,11 +389,12 @@ def test_power_spectra_match_class_with_massive_neutrinos():
 
 
 def _kernel_builds() -> int:
-    """How many Rodas5P kernels modax has built so far in this process."""
+    """How many Rodas5P kernels modax has built so far in this process, hierarchy kernels included."""
 
+    from modax._hierarchy import make_hierarchy_kernel
     from modax.rodas5P import _make_kernel
 
-    return _make_kernel.cache_info().misses
+    return _make_kernel.cache_info().misses + make_hierarchy_kernel.cache_info().misses
 
 
 @pytest.mark.skipif(not _cuda_available(), reason="numba-CUDA requires a CUDA GPU")

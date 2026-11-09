@@ -804,8 +804,8 @@ def _packed(cosmologies, model, tau0, lna_start, z_re, k_bytes, tau_bytes):
     k_sorted = k_arr[order]
     rows = np.array(
         [
-            [_row(c, t, z).get(name, 0.0) for name in PARAM_COLUMNS]
-            for c, t, z in zip(cosmologies, tau0, z_re)
+            [row.get(name, 0.0) for name in PARAM_COLUMNS]
+            for row in (_row(c, t, z) for c, t, z in zip(cosmologies, tau0, z_re))
         ]
     )
     params = np.tile(rows, (len(k_sorted), 1))
@@ -813,11 +813,21 @@ def _packed(cosmologies, model, tau0, lna_start, z_re, k_bytes, tau_bytes):
     params[:, IX_COSMOLOGY] = np.tile(
         np.arange(n_cosmo, dtype=np.float64), len(k_sorted)
     )
-    y0 = make_initial_states(
-        cosmologies * len(k_sorted),
+    # the per-cosmology inputs once, tiled over the wave modes (row = k_idx * n_cosmo + c)
+    densities = np.array([density_coefficients(c) for c in cosmologies]).T
+    tile = lambda values: np.tile(np.asarray(values, dtype=np.float64), len(k_sorted))
+    y0 = model.initial_state(
         params[:, IX_K],
-        model,
-        np.tile(lna_start, len(k_sorted)),
+        tau=TAU_START,
+        **dict(
+            zip(
+                ("grhog", "grhornomass", "grhoc", "grhob", "grhov"), map(tile, densities)
+            )
+        ),
+        w_DE_0=tile([c.w_DE_0 for c in cosmologies]),
+        w_DE_a=tile([c.w_DE_a for c in cosmologies]),
+        lna_start=tile(lna_start),
+        Tcmb=tile([c.T_cmb for c in cosmologies]),
     )
     if tau_bytes is None:
         t_span = np.asarray((TAU_START, float(np.max(tau0))), dtype=np.float64)
@@ -850,9 +860,10 @@ def _pack_batch(prepared, k_values, tau_save=None):
     return _packed(
         prepared.cosmologies,
         prepared.model,
-        tuple(map(float, prepared.tau0)),
-        tuple(map(float, prepared.lna_start)),
-        tuple(map(float, prepared.z_re)),
+        # one host copy of each array, not a device read per element
+        tuple(np.asarray(prepared.tau0, dtype=np.float64).tolist()),
+        tuple(np.asarray(prepared.lna_start, dtype=np.float64).tolist()),
+        tuple(np.asarray(prepared.z_re, dtype=np.float64).tolist()),
         k_bytes,
         tau_bytes,
     )
@@ -1358,22 +1369,36 @@ def host_thermal_history(cosmology, n_grid: int = N_THERMO_GRID):
 
     ``values`` is ``(3, n_grid)``: ``a``, the opacity ``kappa'`` (with
     reionization) and ``c_s^2`` from the stand-alone RECFAST solve and the
-    background quadrature. Used to design the CMB grids and by the
-    thermodynamics tests; the perturbation kernel reads none of it.
+    background quadrature. Used by the thermodynamics tests; the CMB grids
+    read the perturbation kernel's own recombination block instead
+    (:func:`discoeb.cmb._kernel_thermal_history`).
     """
 
     return _host_thermal_history(_as_cosmology(cosmology), n_grid)
 
 
+def background_history(cosmology):
+    """``(a, tau)`` of the background quadrature of one cosmology, host arrays ending at ``tau0``."""
+
+    return _background_history(_as_cosmology(cosmology))
+
+
 @functools.lru_cache(maxsize=64)
-def _host_thermal_history(cosmology: _ParamCosmology, n_grid: int):
-    hist = thermal_history_batch([cosmology], n_grid)
+def _background_history(cosmology: _ParamCosmology):
     params = cosmology.to_background_params()
     d = density_parameters({k: v for k, v in params.items() if k != "tau_reio"}, xp=np)
     a_bg, tau_bg = (
         np.asarray(x)
         for x in _background_tau({k: jnp.asarray(v) for k, v in d.items()})
     )
+    return a_bg, tau_bg
+
+
+@functools.lru_cache(maxsize=64)
+def _host_thermal_history(cosmology: _ParamCosmology, n_grid: int):
+    hist = thermal_history_batch([cosmology], n_grid)
+    params = cosmology.to_background_params()
+    a_bg, tau_bg = _background_history(cosmology)
     tau0 = float(tau_bg[-1])
     tau_grid = np.exp(np.linspace(np.log(TAU_START), np.log(tau0), n_grid))
     a_vals = np.interp(tau_grid, tau_bg, a_bg)
