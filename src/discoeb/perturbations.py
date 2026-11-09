@@ -910,9 +910,9 @@ def _launch(
 ):
     """One modax Rodas5P launch of the prepared hierarchy over the packed trajectories."""
 
-    from modax.rodas5P import solve as rodas5P_solve
+    from modax import solve as modax_solve
 
-    return rodas5P_solve(
+    return modax_solve(
         prepared.ode_fn,
         y0,
         t_span,
@@ -1137,7 +1137,7 @@ def solve_history_jax(
     ``(n_k, n_save, nvar)`` in ascending ``k``.
     """
 
-    from modax.rodas5P import solve as rodas5P_solve
+    from modax import solve as modax_solve
 
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_save)
     if densities is None:
@@ -1192,7 +1192,7 @@ def solve_history_jax(
 
     @jax.custom_jvp
     def saved_history(x):
-        return rodas5P_solve(
+        return modax_solve(
             prepared.ode_fn,
             y0_j,
             t_span,
@@ -1207,7 +1207,7 @@ def solve_history_jax(
         p_rep = with_inputs(params_rep, x)
 
         def along_directions(eps):
-            return rodas5P_solve(
+            return modax_solve(
                 prepared.ode_fn,
                 y0_rep,
                 t_span,
