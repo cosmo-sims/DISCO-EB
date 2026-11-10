@@ -190,7 +190,7 @@ class Metric(Component):
 
 class ColdDarkMatter(Species):
     clxc = State(
-        initial=lambda clxg: 0.75 * clxg
+        initial=lambda theta: 0.75 * theta[0]
     )  # the adiabatic mode: 3/4 of the photon density
 
     def grhoc(self, grhoc_nominal, eps, dir_grhoc):
@@ -213,8 +213,8 @@ class ColdDarkMatter(Species):
 class Baryons(Species):
     """Baryon continuity and Euler equations; the Thomson drag is :class:`ThomsonScattering`."""
 
-    clxb = State(initial=lambda clxg: 0.75 * clxg)
-    vb = State(initial=lambda qg: 0.75 * qg)
+    clxb = State(initial=lambda theta: 0.75 * theta[0])
+    vb = State(initial=lambda theta: 0.75 * theta[1])
 
     def grhob(self, grhob_nominal, eps, dir_grhob):
         return grhob_nominal + eps * dir_grhob
@@ -236,6 +236,55 @@ class Baryons(Species):
 
     def d_vb(self, adotoa, vb, k, cs2, clxb):
         return -adotoa * vb + k * cs2 * clxb
+
+
+# --- the radiation streaming approximation ------------------------------------------
+
+
+class RadiationStreaming(Component):
+    """The radiation streaming approximation of CLASS (Blas, Lesgourgues & Tram 2011).
+
+    Well inside the horizon and once the photons have decoupled, the photon
+    and massless-neutrino hierarchies oscillate at ``k`` about a particular
+    solution driven by the metric, and the oscillation decays as ``1/(k tau)``.
+    ``rsa`` is 1 there and the hierarchies are replaced by that solution,
+
+        delta = 4 (aH h' - k^2 eta) / k^2,   theta = -h'/2,   no shear, no polarization,
+
+    (synchronous gauge, ``h' = 2 k z``, ``k eta = etak``), with ``h'`` taken
+    without the streaming species as CLASS does; their states are frozen.
+    The switch is CLASS's: ``k tau > RSA_K_TAU`` (45) and ``kappa' tau <
+    RSA_KAPPA_TAU`` (``tau_c / tau > 5``). It is one-way, as in CLASS, which
+    switches at a fixed ``tau_free_streaming``: past ``a = RSA_A_LATCH`` it
+    stays on through reionization. CLASS's Thomson corrections for
+    reionization are not included. ``RSA = 0`` (``DISCO_RSA=0``) turns it off.
+    """
+
+    RSA = Setting(1)
+    RSA_K_TAU = Setting(45.0)
+    RSA_KAPPA_TAU = Setting(0.2)
+    RSA_A_LATCH = Setting(0.02)
+
+    def rsa(self, k, tau, opacity, a):
+        # branch-free steps 0.5 + 0.5 sign(x), and "or" as x + y - x y: the same
+        # expression serves the device, plain floats and JAX arrays on the host
+        inside = 0.5 + 0.5 * math.copysign(1.0, k * tau - self.RSA_K_TAU)
+        decoupled = 0.5 + 0.5 * math.copysign(1.0, self.RSA_KAPPA_TAU - opacity * tau)
+        latched = 0.5 + 0.5 * math.copysign(1.0, a - self.RSA_A_LATCH)
+        return self.RSA * inside * (decoupled + latched - decoupled * latched)
+
+    def rsa_delta(self, adotoa, z, etak, k):
+        """The streaming radiation's density contrast, ``4 (aH h' - k^2 eta) / k^2``."""
+        return (8.0 * adotoa * z - 4.0 * etak) / k
+
+    def rsa_q(self, z):
+        """The streaming radiation's ``q = 4 theta / (3k)`` with ``theta = -h'/2 = -k z``."""
+        return -(4.0 / 3.0) * z
+
+    def dgrho_streaming(self, rsa, rsa_delta, grhog_t, grhor_t):
+        """The streaming photons' and neutrinos' density, left out of ``dgrho`` (and so of ``h'``)
+        under the RSA but, as in CLASS, part of everything else that reads the density."""
+        return rsa * rsa_delta * (grhog_t + grhor_t)
 
 
 # --- radiation ----------------------------------------------------------------------
@@ -293,21 +342,22 @@ class Photons(Species):
     def grho(self, grhog_t):
         return grhog_t
 
-    def clxg(self, theta):
-        return theta[0]
+    def clxg(self, theta, rsa, rsa_delta):
+        return theta[0] + rsa * (rsa_delta - theta[0])
 
-    def qg(self, theta):
-        return theta[1]
+    def qg(self, theta, rsa, rsa_q):
+        return theta[1] + rsa * (rsa_q - theta[1])
 
-    def pig(self, theta):
-        return theta[2]
+    def pig(self, theta, rsa):
+        return (1.0 - rsa) * theta[2]
 
-    def E2(self, e):
-        """The E-mode quadrupole, ``e[0]``."""
-        return e[0]
+    def E2(self, e, rsa):
+        """The E-mode quadrupole, ``e[0]`` (none under the RSA)."""
+        return (1.0 - rsa) * e[0]
 
-    def dgrho(self, grhog_t, clxg):
-        return grhog_t * clxg
+    def dgrho(self, grhog_t, theta, rsa):
+        """The hierarchy's density; none under the RSA, as in CLASS's ``h'``, which the RSA density reads."""
+        return grhog_t * (1.0 - rsa) * theta[0]
 
     def dgq(self, grhog_t, qg):
         return grhog_t * qg
@@ -318,7 +368,7 @@ class Photons(Species):
     def dgpi(self, grhog_t, pig):
         return grhog_t * pig
 
-    def d_theta(self, k, z, sigma, theta, inv_tau, output):
+    def d_theta(self, k, z, sigma, theta, inv_tau, rsa, output):
         output[0] = -k * ((4.0 / 3.0) * z + theta[1])
         output[1] = k * theta[0] * (1.0 / 3.0) - (2.0 / 3.0) * k * theta[2]
         output[2] = (
@@ -327,8 +377,10 @@ class Photons(Species):
             + (8.0 / 15.0) * k * sigma
         )
         stream(k, theta, inv_tau, output)
+        for l in range(len(theta)):
+            output[l] = (1.0 - rsa) * output[l]
 
-    def d_e(self, k, e, inv_tau, output):
+    def d_e(self, k, e, inv_tau, rsa, output):
         lmax = len(e) + 1
         output[0] = -k * e[1] * (1.0 / 3.0)
         for l in range(3, lmax):
@@ -338,6 +390,8 @@ class Photons(Species):
             k * lmax * e[lmax - 3] * (1.0 / (2 * lmax + 1))
             - (lmax + 3) * e[lmax - 2] * inv_tau
         )
+        for l in range(len(e)):
+            output[l] = (1.0 - rsa) * output[l]
 
 
 class ThomsonScattering(Interaction):
@@ -363,16 +417,18 @@ class ThomsonScattering(Interaction):
     def d_vb(self, photbar, opacity, slip):
         return -photbar * opacity * slip
 
-    def d_theta(self, opacity, slip, polter, theta, output):
-        output[1] = opacity * slip
-        output[2] = -opacity * (theta[2] - polter)
+    def d_theta(self, opacity, slip, polter, theta, rsa, output):
+        damp = (1.0 - rsa) * opacity
+        output[1] = damp * slip
+        output[2] = -damp * (theta[2] - polter)
         for l in range(3, len(theta)):
-            output[l] = -opacity * theta[l]
+            output[l] = -damp * theta[l]
 
-    def d_e(self, opacity, polter, e, output):
-        output[0] = -opacity * (e[0] - polter)
+    def d_e(self, opacity, polter, e, rsa, output):
+        damp = (1.0 - rsa) * opacity
+        output[0] = -damp * (e[0] - polter)
         for i in range(1, len(e)):
-            output[i] = -opacity * e[i]
+            output[i] = -damp * e[i]
 
 
 class MasslessNeutrinos(Species):
@@ -380,9 +436,9 @@ class MasslessNeutrinos(Species):
 
     LMAX_NR = Setting(15)
 
-    def _n_initial(self, x, Rv, Rp15, omtau, clxg, output):
+    def _n_initial(self, x, Rv, Rp15, omtau, theta, output):
         """The growing mode's neutrino monopole, dipole, quadrupole and octupole."""
-        output[0] = clxg
+        output[0] = theta[0]
         output[1] = (4.0 * Rv + 23.0) / Rp15 * x**3 / 27.0
         output[2] = (
             -4.0
@@ -409,25 +465,27 @@ class MasslessNeutrinos(Species):
     def grho(self, grhor_t):
         return grhor_t
 
-    def dgrho(self, grhor_t, n):
-        return grhor_t * n[0]
+    def dgrho(self, grhor_t, n, rsa):
+        return grhor_t * (1.0 - rsa) * n[0]
 
-    def dgq(self, grhor_t, n):
-        return grhor_t * n[1]
+    def dgq(self, grhor_t, n, rsa, rsa_q):
+        return grhor_t * (n[1] + rsa * (rsa_q - n[1]))
 
     def gpres(self, grhor_t):
         return grhor_t * (1.0 / 3.0)
 
-    def dgpi(self, grhor_t, n):
-        return grhor_t * n[2]
+    def dgpi(self, grhor_t, n, rsa):
+        return grhor_t * (1.0 - rsa) * n[2]
 
-    def d_n(self, k, z, sigma, n, inv_tau, output):
+    def d_n(self, k, z, sigma, n, inv_tau, rsa, output):
         output[0] = -k * ((4.0 / 3.0) * z + n[1])
         output[1] = k * (n[0] - 2.0 * n[2]) / 3.0
         output[2] = (
             (2.0 / 5.0) * k * n[1] - (3.0 / 5.0) * k * n[3] + (8.0 / 15.0) * k * sigma
         )
         stream(k, n, inv_tau, output)
+        for l in range(len(n)):
+            output[l] = (1.0 - rsa) * output[l]
 
 
 class MassiveNeutrinos(Species):
@@ -624,6 +682,7 @@ def perturbation_model(
 
     components = [
         Background(),
+        RadiationStreaming(),
         AdiabaticMode(),
         Curvature(),
         Metric(),

@@ -668,7 +668,9 @@ def test_sources_come_from_the_component_model():
     reference = _reference_sources(layout, y, k, a, densities)
     base = dict(row)
     base.update(model.state_values(jnp.asarray(y), xp=jnp))
-    base.update(k=jnp.asarray(k)[:, None], a=jnp.asarray(a)[None, :])
+    # a time with every mode outside k tau = 45, where the radiation is not
+    # yet replaced by its streaming solution and the written-out sources hold
+    base.update(k=jnp.asarray(k)[:, None], a=jnp.asarray(a)[None, :], tau=10.0)
     channels = jnp.stack(
         model.evaluate("m0", "m1", "m2", "phi", math=jnp, **base), axis=0
     )
@@ -691,7 +693,7 @@ def test_sources_come_from_the_component_model():
     for i in range(n_k):
         for j in range(n_tau):
             p = params[i].copy()
-            out = quantities(tuple(y[i, j]), 300.0, float(a[j]), tuple(p))
+            out = quantities(tuple(y[i, j]), 10.0, float(a[j]), tuple(p))
             np.testing.assert_allclose(
                 np.asarray(out), np.asarray(channels[:, i, j]), rtol=1e-12
             )

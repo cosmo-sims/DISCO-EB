@@ -108,7 +108,7 @@ def test_the_einstein_sources_sum_over_the_enabled_species():
         " + Photons__grho(Photons_self, grhog_t) + MasslessNeutrinos__grho(MasslessNeutrinos_self, grhor_t) + CosmologicalConstant__grho(CosmologicalConstant_self, grhov_t)"
     ) in lines
     assert (
-        "dgq = Baryons__dgq(Baryons_self, grhob_t, vb) + Photons__dgq(Photons_self, grhog_t, qg) + MasslessNeutrinos__dgq(MasslessNeutrinos_self, grhor_t, n)"
+        "dgq = Baryons__dgq(Baryons_self, grhob_t, vb) + Photons__dgq(Photons_self, grhog_t, qg) + MasslessNeutrinos__dgq(MasslessNeutrinos_self, grhor_t, n, rsa, rsa_q)"
         in lines
     )
     assert "rhonu" not in model.source  # the massive-neutrino table is not read
@@ -138,12 +138,12 @@ def test_thomson_scattering_writes_the_photon_and_baryon_derivatives():
         in lines
     )
     assert lines.index(
-        "Photons__d_theta(Photons_self, k, z, sigma, theta, inv_tau, c_Photons__d_theta)"
+        "Photons__d_theta(Photons_self, k, z, sigma, theta, inv_tau, rsa, c_Photons__d_theta)"
     ) < lines.index(
-        "ThomsonScattering__d_theta(ThomsonScattering_self, opacity, slip, polter, theta, c_ThomsonScattering__d_theta)"
+        "ThomsonScattering__d_theta(ThomsonScattering_self, opacity, slip, polter, theta, rsa, c_ThomsonScattering__d_theta)"
     )
     assert (
-        "ThomsonScattering__d_e(ThomsonScattering_self, opacity, polter, e, c_ThomsonScattering__d_e)"
+        "ThomsonScattering__d_e(ThomsonScattering_self, opacity, polter, e, rsa, c_ThomsonScattering__d_e)"
         in lines
     )
     # Neutrinos are collisionless: one writer.

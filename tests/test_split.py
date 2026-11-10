@@ -25,11 +25,12 @@ def test_the_recombination_block_publishes_the_thermal_quantities():
     assert recombination.n == 5 and recombination.n_outputs == len(THERMAL_QUANTITIES)
     assert perturbations.n == layout.nvar and perturbations.reads == (recombination,)
     assert model.state_indices(THERMAL_STATES) == list(thermal_indices(model))
-    # the hierarchy alone, as perturbation_sparsity traces it: 165 entries, 11 colours
+    # the hierarchy alone, as perturbation_sparsity traces it: 173 entries
+    # (165 and the slip's reading of z under the radiation streaming approximation), 11 colours
     main = (
         perturbations.sparsity
     )  # normalised by the block: the sorted columns of each row
-    assert sum(len(cols) for cols in main) == 165
+    assert sum(len(cols) for cols in main) == 173
     assert colour_sparsity(main).n_colours == 11
 
 
@@ -73,7 +74,8 @@ def test_the_recombination_block_steps_on_its_own():
     # the thermal history does not know the wave number, but the error the
     # hierarchy inherits from it does, so the block's steps vary with k
     assert 50 < driver.min() and driver.max() < 500, driver
-    assert np.all(driver < accepted[1:].min() * 2), (
-        driver,
-        accepted,
-    )  # and the hierarchy steps more at high k
+    # ... while the hierarchy's own steps, with the radiation streaming
+    # approximation cutting its late oscillations, range far more widely: the
+    # block is not stepping with it
+    assert np.ptp(driver) * 4 < np.ptp(accepted), (driver, accepted)
+    assert accepted[-1] > accepted[0], accepted  # and the hierarchy steps more at high k

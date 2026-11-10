@@ -59,8 +59,8 @@ def entries(pattern) -> set[tuple[int, int]]:
     return {(int(r), int(c)) for r, c in pattern}
 
 
-def finite_difference_pattern(layout, seed=0) -> set[tuple[int, int]]:
-    """The nonzeros of the host-built right-hand side's Jacobian at a random state."""
+def finite_difference_pattern(layout, seed=0, tau=100.0) -> set[tuple[int, int]]:
+    """The nonzeros of the host-built right-hand side's Jacobian at a random state and ``tau``."""
     model = perturbation_model(layout, ConstantThermalHistory())
     rhs = model.build(PARAM_COLUMNS, **HOST)
     rng = np.random.default_rng(seed)
@@ -71,7 +71,7 @@ def finite_difference_pattern(layout, seed=0) -> set[tuple[int, int]]:
     y = rng.standard_normal(layout.nvar)
 
     def f(state):
-        return np.asarray(rhs(tuple(state), 100.0, tuple(p)))
+        return np.asarray(rhs(tuple(state), tau, tuple(p)))
 
     jacobian = np.zeros((layout.nvar, layout.nvar))
     for j in range(layout.nvar):
@@ -118,13 +118,28 @@ def diagonal(layout) -> set[tuple[int, int]]:
 
 @pytest.mark.parametrize("name", list(LAYOUTS))
 def test_the_pattern_is_the_jacobians(name):
-    """Traced through the providers, the pattern is exactly the nonzeros of the Jacobian."""
+    """Traced through the providers, the pattern is exactly the nonzeros of the Jacobian.
+
+    Of both regimes of the radiation streaming approximation: at ``tau = 1``
+    every mode is outside ``k tau = 45`` and the hierarchies stream, at
+    ``tau = 100`` (``a = 0.5``, past the latch) they are replaced and frozen.
+    The pattern is their union, which a colouring needs, and a few entries
+    more: the baryon velocity and the photon dipole read ``z`` through the
+    slip's ``rsa * (rsa_q - qg)`` while the slip itself is scaled by ``1 -
+    rsa``, a coefficient zero in both regimes that a tracer cannot see
+    through, so those two rows carry the extra, safe superset.
+    """
     layout = LAYOUTS[name]
     pattern = perturbation_sparsity(layout)
 
     assert pattern.ndim == 2 and pattern.shape[1] == 2 and pattern.dtype == np.int64
     assert pattern.min() >= 0 and pattern.max() < layout.nvar
-    assert entries(pattern) == finite_difference_pattern(layout)
+    streaming = finite_difference_pattern(layout, tau=1.0)
+    approximated = finite_difference_pattern(layout, tau=100.0)
+    assert streaming | approximated <= entries(pattern)
+    extra = entries(pattern) - (streaming | approximated)
+    assert {r for r, _ in extra} <= {layout.ix_vb, layout.ix_g + 1}
+    assert approximated < entries(pattern), "the approximation freezes the hierarchies' rows"
     assert not diagonal(layout) <= entries(pattern), (
         "an undamped multipole has no diagonal"
     )
@@ -163,7 +178,7 @@ def test_the_pattern_has_the_physics_structure(name):
 
 
 def test_the_flat_lcdm_pattern_is_the_expected_size():
-    """50 variables, 165 entries.
+    """50 variables, 173 entries.
 
     The metric reads ``z`` (``etak`` and the four densities) and ``dgq`` (the
     three momenta): 8. CDM reads ``z``: 5; the baryon density ``z`` and
@@ -174,6 +189,10 @@ def test_the_flat_lcdm_pattern_is_the_expected_size():
     the last 2. ``E_2`` reads ``E_3``, itself and the quadrupole: 3; the E-mode
     tail 3 each and 2 at the end. The neutrino monopole 6, the dipole 2, the
     quadrupole its neighbours and ``sigma``: 9; the undamped tail 2 each.
+    The radiation streaming approximation adds 8: under it the photon
+    momentum in the slip is ``-4 z / 3``, so the baryon velocity and the
+    photon dipole also read ``z``'s ``etak``, ``clxc`` and the monopole or
+    density they did not already: 4 each.
     """
     layout = LAYOUTS["flat-lcdm"]
     assert layout.nvar == 50
@@ -187,8 +206,9 @@ def test_the_flat_lcdm_pattern_is_the_expected_size():
             + (6 + 4 + 11 + 12 * 3 + 2)
             + (3 + 12 * 3 + 2)
             + (6 + 2 + 9 + 12 * 2 + 2)
+            + 8
         )
-        == 165
+        == 173
     )
 
 
@@ -230,13 +250,13 @@ def test_the_solver_and_the_kernel_share_one_layout():
         solver.compressed.n_colours == 11
     )  # 12 Enzyme sweeps, not 51; the dense core needed 13
     assert (
-        solver.compressed.size == solver.nnz == 198
-    )  # 165 entries, 14 undeclared diagonals, 19 of fill
+        solver.compressed.size == solver.nnz == 203
+    )  # 173 entries, 14 undeclared diagonals, 16 of fill
     slots = [
         solver.compressed.slot(r, c) for r, cols in enumerate(pattern) for c in cols
     ]
-    assert len(set(slots)) == len(slots) == 165, "every entry has a slot of its own"
-    assert set(slots) <= set(range(198))
+    assert len(set(slots)) == len(slots) == 173, "every entry has a slot of its own"
+    assert set(slots) <= set(range(203))
 
 
 @pytest.mark.parametrize("name", list(LAYOUTS))

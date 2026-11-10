@@ -152,8 +152,9 @@ class LineOfSightSources(Component):
     enters through the sums.
     """
 
-    def phi(self, dgrho, dgq, dgpi, adotoa, k, inv_k2):
-        return -(dgrho + 3.0 * dgq * adotoa / k + dgpi) * 0.5 * inv_k2
+    def phi(self, dgrho, dgrho_streaming, dgq, dgpi, adotoa, k, inv_k2):
+        """The Weyl potential, with the radiation's density under the streaming approximation."""
+        return -(dgrho + dgrho_streaming + 3.0 * dgq * adotoa / k + dgpi) * 0.5 * inv_k2
 
     def monopole(self, etak, k, phi, clxg):
         return -etak / k + 2.0 * phi + 0.25 * clxg
@@ -416,6 +417,7 @@ def source_channels_jax(model, history, k_sorted, tau_save, tau0, row):
     base = dict(row)
     base.update(model.state_values(history, xp=jnp))
     base["k"] = jnp.asarray(k_sorted)[:, None]
+    base["tau"] = jnp.asarray(tau_save)[None, :]  # the radiation streaming switch reads it
     m0, m1, m2, phi, kappa_prime = model.evaluate(
         "m0", "m1", "m2", "phi", "opacity", math=jnp, **base
     )
