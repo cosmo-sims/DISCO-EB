@@ -139,7 +139,9 @@ def test_the_pattern_is_the_jacobians(name):
     assert streaming | approximated <= entries(pattern)
     extra = entries(pattern) - (streaming | approximated)
     assert {r for r, _ in extra} <= {layout.ix_vb, layout.ix_g + 1}
-    assert approximated < entries(pattern), "the approximation freezes the hierarchies' rows"
+    assert approximated < entries(pattern), (
+        "the approximation freezes the hierarchies' rows"
+    )
     assert not diagonal(layout) <= entries(pattern), (
         "an undamped multipole has no diagonal"
     )

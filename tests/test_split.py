@@ -78,4 +78,6 @@ def test_the_recombination_block_steps_on_its_own():
     # approximation cutting its late oscillations, range far more widely: the
     # block is not stepping with it
     assert np.ptp(driver) * 4 < np.ptp(accepted), (driver, accepted)
-    assert accepted[-1] > accepted[0], accepted  # and the hierarchy steps more at high k
+    assert accepted[-1] > accepted[0], (
+        accepted
+    )  # and the hierarchy steps more at high k

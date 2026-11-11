@@ -45,13 +45,17 @@ def _modules() -> list[str]:
 def test_the_cmb_part_uses_the_einstein_boltzmann_interface_only():
     for module in CMB_PART:
         outside = _imported_modules(module) - CMB_MAY_IMPORT
-        assert not outside, f"discoeb.{module} imports {sorted(outside)} past discoeb.eb"
+        assert not outside, (
+            f"discoeb.{module} imports {sorted(outside)} past discoeb.eb"
+        )
 
 
 def test_the_einstein_boltzmann_part_does_not_import_the_cmb_part():
     for module in set(_modules()) - CMB_PART:
         crossing = _imported_modules(module) & CMB_PART
-        assert not crossing, f"discoeb.{module} imports the CMB part: {sorted(crossing)}"
+        assert not crossing, (
+            f"discoeb.{module} imports the CMB part: {sorted(crossing)}"
+        )
 
 
 def test_the_interface_exports_what_it_lists():

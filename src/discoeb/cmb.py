@@ -239,7 +239,9 @@ def polarization_error_weights(cosmology) -> dict:
     """
 
     def weight(k):
-        return np.clip(POLARIZATION_WEIGHT_K / np.asarray(k), 1.0, POLARIZATION_WEIGHT_MAX)
+        return np.clip(
+            POLARIZATION_WEIGHT_K / np.asarray(k), 1.0, POLARIZATION_WEIGHT_MAX
+        )
 
     names = eb.state_names(cosmology)
     weighted = ["theta_2", "e_0"] + [
@@ -430,7 +432,9 @@ def _bessel_tables(ells, x_max, dx):
     # releases the GIL: the rows are computed on every core (85 s on one).
     # j_l / x^2 is the same row divided through, so it is not recomputed.
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
-        rows = dict(zip(unique, pool.map(lambda ell: _bessel_row(ell, n_x, dx), unique)))
+        rows = dict(
+            zip(unique, pool.map(lambda ell: _bessel_row(ell, n_x, dx), unique))
+        )
     return (
         0.0,
         1.0 / dx,
@@ -1434,7 +1438,9 @@ def cl_power_spectrum_jax(
             ]
         )[None]
     k_sorted = np.sort(np.asarray(k_values, dtype=np.float64))
-    solution = solve_sources((cosmology,), k_sorted, tau_save, inputs=inputs, **solve_kwargs)
+    solution = solve_sources(
+        (cosmology,), k_sorted, tau_save, inputs=inputs, **solve_kwargs
+    )
     chi_star, channels = _channels_from_solution(
         solution.values, jnp.asarray(tau_save), jnp.asarray([tau0])
     )

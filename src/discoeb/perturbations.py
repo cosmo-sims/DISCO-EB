@@ -821,7 +821,8 @@ def _packed(cosmologies, model, tau0, lna_start, z_re, k_bytes, tau_bytes):
         tau=TAU_START,
         **dict(
             zip(
-                ("grhog", "grhornomass", "grhoc", "grhob", "grhov"), map(tile, densities)
+                ("grhog", "grhornomass", "grhoc", "grhob", "grhov"),
+                map(tile, densities),
             )
         ),
         w_DE_0=tile([c.w_DE_0 for c in cosmologies]),
@@ -1934,14 +1935,20 @@ def solve_eb(
         # JAX arithmetic throughout, also for parameters given as plain numbers
         theta = jnp.asarray(theta, dtype=jnp.float64)
         if isinstance(theta, jax.core.Tracer) or n_cosmo == 1:
-            return jnp.stack([_input_vector(fixed[i], theta[i]) for i in range(n_cosmo)])
+            return jnp.stack(
+                [_input_vector(fixed[i], theta[i]) for i in range(n_cosmo)]
+            )
         # concrete parameters: the whole batch through one set of eager JAX
         # operations, elementwise, so bit for bit what each cosmology alone
         # gives (a last-bit difference in a density can move a step acceptance)
         keys = set(fixed[0])
         if any(set(f) != keys for f in fixed):
-            return jnp.stack([_input_vector(fixed[i], theta[i]) for i in range(n_cosmo)])
-        columns = {k: jnp.asarray([f[k] for f in fixed], dtype=jnp.float64) for k in keys}
+            return jnp.stack(
+                [_input_vector(fixed[i], theta[i]) for i in range(n_cosmo)]
+            )
+        columns = {
+            k: jnp.asarray([f[k] for f in fixed], dtype=jnp.float64) for k in keys
+        }
         theta = jnp.asarray(theta, dtype=jnp.float64)
         return _input_vector(columns, [theta[:, j] for j in range(theta.shape[1])]).T
 
@@ -1994,7 +2001,10 @@ def directed_inputs(cosmologies) -> np.ndarray:
         cosmologies = (cosmologies,)
     fixed, theta = _split_cosmologies(cosmologies)
     return np.stack(
-        [np.asarray(_input_vector(fixed[i], jnp.asarray(theta[i]))) for i in range(len(fixed))]
+        [
+            np.asarray(_input_vector(fixed[i], jnp.asarray(theta[i])))
+            for i in range(len(fixed))
+        ]
     )
 
 
