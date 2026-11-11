@@ -5,6 +5,20 @@ Releases are cut by python-semantic-release from the Conventional Commits on
 
 <!-- version list -->
 
+## v2.0.0 (2026-11-11)
+
+### Features
+
+- Release the modax rewrite as disco-eb 2
+  ([`2752e09`](https://github.com/cosmo-sims/DISCO-EB/commit/2752e09460d3ae0f009ff3f6be72df7a148a9984))
+
+### Breaking Changes
+
+- The diffrax evolve_perturbations* functions are gone. Solve with solve_eb or
+  solve_matter_power_spectrum_batch, and get derivatives from matter_power_spectrum_jax. The CMB
+  code moved to DISCO-CMB, and the stand-alone RECFAST solve was removed.
+
+
 ## v1.0.1 (2026-11-11)
 
 ### Bug Fixes
