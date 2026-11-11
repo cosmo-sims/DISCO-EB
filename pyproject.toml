@@ -34,10 +34,9 @@ dependencies = [
     "numpy>=2.2.6",
     # The hierarchy of blocks the joint solve is built on (Block, Hierarchy),
     # its forward sensitivities and quantity_hook, whose Enzyme tangents
-    # solve_eb's derivatives use. modax brings numba-cuda-mlir with it. Capped
-    # below 0.2: modax's next minor release moves `lu_precision`, `pcoeff` and
-    # `icoeff` out of `solve`'s keywords, which _launch still passes.
-    "modax-solvers>=0.1.0,<0.2",
+    # solve_eb's derivatives use. 0.2.0 for the Rodas5P method object that
+    # carries the LU precision and the PI gains. modax brings numba-cuda-mlir.
+    "modax-solvers>=0.2.0",
     # 0.3.0 for the O3 prepasses the kernels need and Blackwell support.
     "numba-enzyme-cuda>=0.3.0",
 ]

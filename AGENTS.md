@@ -52,9 +52,10 @@ uv run --no-sync sphinx-build -W docs docs/_build/html   # as CI builds it
 ```
 
 Requires Python >= 3.10 (`.python-version` pins 3.13). modax-solvers and
-numba-enzyme-cuda come from PyPI; modax is capped below 0.2, whose `solve`
-no longer takes the `lu_precision`, `pcoeff` and `icoeff` keywords
-`perturbations._launch` passes. numba-enzyme-cuda's CPU-only cap on numba
+numba-enzyme-cuda come from PyPI. modax >= 0.2 takes the Rodas5P numerics
+on the method object: `perturbations._launch` passes
+`method=Rodas5P(lu_precision=..., gains=PIDGains(pcoeff=0.3, icoeff=0.4))`
+and every other option as a keyword of `solve`. numba-enzyme-cuda's CPU-only cap on numba
 and llvmlite is lifted by `override-dependencies`, since only the CUDA
 backend is used. To develop against a modax checkout, `uv pip install
 --no-deps -e ../modax`; never replace `site-packages/numba_enzyme` by a

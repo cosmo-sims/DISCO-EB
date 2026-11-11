@@ -798,22 +798,33 @@ def _launch(
     max_registers=CUDA_MAX_REGISTERS,
     **extra,
 ):
-    """One modax Rodas5P launch of the prepared hierarchy over the packed trajectories."""
+    """One modax Rodas5P launch of the prepared hierarchy over the packed trajectories.
 
+    The method carries the numerics: the LU's precision on the hierarchy and
+    the PI step controller's gains. The recombination block, which the
+    hierarchy reads, factorises in double regardless.
+    """
+
+    from modax import PIDGains, Rodas5P
     from modax import solve as modax_solve
 
+    # modax 0.2.0 hands a block without a method of its own the whole solve
+    # method, and refuses an explicit "fp32" on a block others read. Left
+    # None, the precision defaults to fp32 on the final block alone.
+    method = Rodas5P(
+        lu_precision=None if lu_precision == "fp32" else lu_precision,
+        gains=PIDGains(pcoeff=0.3, icoeff=0.4),
+    )
     return modax_solve(
         prepared.ode_fn,
         y0,
         t_span,
         params,
-        lu_precision=lu_precision,
+        method=method,
         rtol=rtol,
         atol=atol,
         first_step=first_step,
         max_steps=max_steps,
-        pcoeff=0.3,
-        icoeff=0.4,
         trajectories_per_block=TRAJECTORIES_PER_BLOCK,
         tf_index=IX_TAU_END,
         max_registers=max_registers,
