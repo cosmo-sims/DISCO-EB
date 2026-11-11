@@ -145,7 +145,6 @@ def test_matter_power_spectrum_derivatives(benchmark):
     import jax.numpy as jnp
 
     from discoeb.perturbations import (
-        PHYSICAL_DENSITY_COLUMNS,
         _as_cosmology,
         density_coefficients,
         matter_power_spectrum_jax,
@@ -155,7 +154,7 @@ def test_matter_power_spectrum_derivatives(benchmark):
     densities = jnp.asarray(
         np.asarray(density_coefficients(_as_cosmology(cosmology)), dtype=np.float64)
     )
-    assert densities.shape == (len(PHYSICAL_DENSITY_COLUMNS),)
+    assert densities.shape == (len(DENSITY_NAMES),)
 
     def total_power(d):
         return jnp.sum(matter_power_spectrum_jax(MATTER_POWER_K, cosmology, d))

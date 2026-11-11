@@ -340,13 +340,6 @@ PARAM_COLUMNS = {
 """The row's columns by the names the component model's providers take them under
 (:mod:`discoeb.eb_model`, :mod:`discoeb.recombination`)."""
 
-PHYSICAL_DENSITY_COLUMNS = (0, 1, 2, 3, 4)
-"""Packed-parameter columns carrying the background densities
-``(grhog, grhornomass, grhoc, grhob, grhov)``."""
-
-THERMAL_COLUMNS = (IX_YHE, IX_TCMB, IX_H0, IX_OMEGAB)
-"""Packed-parameter columns the recombination rates read: ``(YHe, Tcmb, H0, Omegab)``."""
-
 TRAJECTORIES_PER_BLOCK = 32
 """Wave modes packed into one CUDA block by modax's thread-local Rodas5P kernel."""
 
@@ -915,157 +908,6 @@ def solve_matter_power_spectrum_batch(
 # ============================================================
 
 
-def _row_by_name(params_row, densities=None, thermal=None) -> dict:
-    """The parameter row by name, with the traced densities and thermal inputs in place."""
-
-    row = {name: float(params_row[column]) for name, column in PARAM_COLUMNS.items()}
-    if densities is not None:
-        for name, column in PARAM_COLUMNS.items():
-            if column in PHYSICAL_DENSITY_COLUMNS:
-                row[name] = densities[column]
-    if thermal is not None:
-        for i, name in enumerate(THERMAL_PARAMETERS[:4]):
-            row[name] = thermal[i]
-    return row
-
-
-def solve_history_jax(
-    prepared,
-    k_values,
-    densities=None,
-    thermal=None,
-    tau_save=None,
-    *,
-    rtol: float = PERTURB_RTOL,
-    atol: float = PERTURB_ATOL,
-    first_step: float = PERTURB_FIRST_STEP,
-    max_steps: int = PERTURB_MAX_STEPS,
-    sens_error_control: bool = False,
-    error_weights=None,
-    thermo_weight: float = THERMO_ERROR_WEIGHT,
-):
-    """The saved history of one cosmology's modes, differentiable in the cosmology.
-
-    ``densities`` is the five-vector of :data:`PHYSICAL_DENSITY_COLUMNS` and
-    ``thermal`` the four-vector ``(YHe, Tcmb, H0, Omegab)`` of
-    :data:`THERMAL_COLUMNS`, each defaulting to the cosmology's own; the row
-    is built from them so that ``jax.grad`` through this function is the
-    derivative of the solve with respect to those nine numbers, recombination
-    included: modax's forward sensitivities run over both blocks of the
-    hierarchy. The initial state is held fixed (its dependence on the densities is
-    of order ``(k tau_start)^2``). Without ``tau_save`` the trajectory stops
-    at the conformal age of the densities given, so a finite difference sees
-    the end-time dependence that :func:`matter_power_spectrum_jax` carries
-    as an explicit term in the derivative.
-
-    The value is the plain fp64 launch. The tangent replicates every mode once
-    per directed input (:data:`DIRECTED_COLUMNS`), replica ``j`` carrying the
-    single sensitivity column ``S = dy / d eps`` along the unit direction
-    ``e_j`` through ``IX_EPS`` and ``IX_DIR``, and contracts the columns with
-    the input tangent; the contraction is linear, so ``jax.grad`` transposes
-    it with no adjoint solve. One column per thread keeps the joint system
-    at ``2 nvar`` components and the kernel's thread-local memory at a fifth
-    of the nine-column layout's (82 KB a thread, whose reserve beside a CMB
-    batch's XLA pool was a launch failure on a 12 GB card); the nine replicas
-    run on threads the launch would otherwise leave idle.
-
-    Returns ``(history, densities, thermal, k_sorted, order)`` with ``history``
-    ``(n_k, n_save, nvar)`` in ascending ``k``.
-    """
-
-    from modax import solve as modax_solve
-
-    params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_save)
-    if densities is None:
-        densities = params[0, list(PHYSICAL_DENSITY_COLUMNS)]
-    if thermal is None:
-        thermal = params[0, list(THERMAL_COLUMNS)]
-    densities = jnp.asarray(densities, dtype=jnp.float64)
-    thermal = jnp.asarray(thermal, dtype=jnp.float64)
-    n_traj = params.shape[0]
-    n_dir = len(DIRECTED_COLUMNS)
-    columns = jnp.asarray(DIRECTED_COLUMNS)
-    t_span = jnp.asarray(t_span)
-    params_j = jnp.asarray(params)
-    if tau_save is None:
-        # The trajectory stops at the conformal age of the densities given,
-        # so a finite difference of the final state sees the same end-time
-        # dependence the sensitivity's explicit term carries.
-        tau0 = jax.lax.stop_gradient(_tau0_of(densities, _row_by_name(params[0])))
-        params_j = params_j.at[:, IX_TAU_END].set(tau0)
-        t_span = t_span.at[-1].set(tau0)
-    settings = dict(
-        lu_precision="fp64",
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
-        pcoeff=0.3,
-        icoeff=0.4,
-        trajectories_per_block=TRAJECTORIES_PER_BLOCK,
-        tf_index=IX_TAU_END,
-        # The joint system's thread-local memory, not its registers, bounds the
-        # occupancy: an uncapped register budget halves the resident threads
-        # the driver reserves local memory for.
-        max_registers=None,
-        sens_error_control=sens_error_control,
-        cache=True,
-    )
-    weights = error_weights_for(prepared, n_traj, error_weights, thermo_weight)
-    y0_j = jnp.asarray(y0)
-
-    def with_inputs(base, x):
-        return base.at[:, columns].set(jnp.broadcast_to(x, (base.shape[0], n_dir)))
-
-    # Replica j of mode i is row i * n_dir + j, so a block of consecutive rows
-    # still spans neighbouring wave modes and their similar step sequences.
-    params_rep = jnp.asarray(np.repeat(np.asarray(params_j), n_dir, axis=0))
-    params_rep = params_rep.at[:, IX_DIR : IX_DIR + n_dir].set(
-        jnp.tile(jnp.eye(n_dir), (n_traj, 1))
-    )
-    y0_rep = jnp.asarray(np.repeat(y0, n_dir, axis=0))
-    weights_rep = np.repeat(weights, n_dir, axis=0)
-
-    @jax.custom_jvp
-    def saved_history(x):
-        return modax_solve(
-            prepared.ode_fn,
-            y0_j,
-            t_span,
-            with_inputs(params_j, x),
-            error_weights=weights,
-            **settings,
-        )
-
-    @saved_history.defjvp
-    def saved_history_jvp(primals, tangents):
-        (x,), (dx,) = primals, tangents
-        p_rep = with_inputs(params_rep, x)
-
-        def along_directions(eps):
-            return modax_solve(
-                prepared.ode_fn,
-                y0_rep,
-                t_span,
-                p_rep.at[:, IX_EPS].set(eps),
-                sens_param_columns=(IX_EPS,),
-                error_weights=weights_rep,
-                **settings,
-            )
-
-        # d/d(eps) at eps = 0 along every replica at once: one joint launch of
-        # n_traj * n_dir trajectories, each carrying its own single column.
-        n_rep = p_rep.shape[0]
-        sol, dsol = jax.jvp(along_directions, (jnp.zeros(n_rep),), (jnp.ones(n_rep),))
-        # Every replica of a mode integrates the same state; keep the first.
-        history = sol[::n_dir]
-        sens = dsol.reshape(n_traj, n_dir, *dsol.shape[1:])
-        return history, jnp.einsum("ijtv,j->itv", sens, dx)
-
-    history = saved_history(jnp.concatenate([densities, thermal]))
-    return history, densities, thermal, k_sorted, order
-
-
 def _tau0_of(densities, row):
     """The conformal age as a function of the five densities (JAX), the other background inputs from ``row``."""
 
@@ -1096,57 +938,64 @@ def matter_power_spectrum_jax(
     atol: float = PERTURB_ATOL,
     first_step: float = PERTURB_FIRST_STEP,
     max_steps: int = PERTURB_MAX_STEPS,
-    sens_error_control: bool = False,
     thermo_weight: float = MATTER_THERMO_WEIGHT,
 ):
     """``P(k)`` as a JAX array, differentiable in the densities and the thermal inputs.
 
-    ``densities`` (five, :data:`PHYSICAL_DENSITY_COLUMNS`) and ``thermal``
+    ``densities`` (the five of :data:`DIRECTED_NAMES`) and ``thermal``
     (``YHe, Tcmb, H0, Omegab``) default to the cosmology's own. The derivative
     is the total one: the densities enter the hierarchy, the recombination
     rates (through the expansion rate), the matter weighting of ``delta_m``
     and the conformal age at which the state is read, and all four paths are
     differentiated -- the last through ``y(tau_0(d)) = y(tau_0^*) +
     y'(tau_0^*) (tau_0(d) - tau_0^*)``, which is zero in value and carries
-    ``d tau_0 / d(densities)`` from the background quadrature. What is held
-    fixed is the initial state.
+    ``d tau_0 / d(densities)`` from the background quadrature. The value is
+    read at the conformal age of the densities given, so a finite difference
+    sees the same end-time dependence. What is held fixed is the initial state.
+    The solve is :func:`_kept_values`' hooked launch, keeping the contrasts
+    and the rates of the end-time term at ``tau_0``.
     """
 
     cosmology = _as_cosmology(cosmology)
     prepared = _prepare_solve((cosmology,))
-    history, densities, thermal, k_sorted, order = solve_history_jax(
+    d = _densities(cosmology)
+    if densities is None:
+        densities = [d[name] for name in DIRECTED_NAMES[:5]]
+    if thermal is None:
+        thermal = [cosmology.Y_He, cosmology.T_cmb, cosmology.H0, cosmology.Omegab]
+    x = jnp.concatenate(
+        [
+            jnp.asarray(densities, dtype=jnp.float64),
+            jnp.asarray(thermal, dtype=jnp.float64),
+        ]
+    )
+    row = _row(cosmology, 0.0, 0.0)
+    kept = _kept_values(
         prepared,
         k_values,
-        densities,
-        thermal,
+        # one save past every conformal age: the state today
+        np.array([TAU_START, 2.0 * float(prepared.tau0[0])]),
+        ("clxc", "clxb", "z", "vb"),
+        tau_end_of=lambda xs: jnp.stack([_tau0_of(xi[:5], row) for xi in xs]),
         rtol=rtol,
         atol=atol,
         first_step=first_step,
         max_steps=max_steps,
-        sens_error_control=sens_error_control,
         thermo_weight=thermo_weight,
     )
-    y_final = history[:, -1, :]
-    params = _pack_batch(prepared, k_values)[0]
-    row = _row_by_name(params[0], densities, thermal)
+    clxc, clxb, z, vb = kept(x[None, :])[0, :, :, 0]
 
-    # The end-time term: the state's rate at tau0 from the model's own
-    # equations on the final state, times how tau0 moves with the densities.
-    model = prepared.model
-    base = dict(row)
-    base.update(model.state_values(y_final, xp=jnp))
-    base["k"] = jnp.asarray(k_sorted)
-    base["tau"] = jnp.full((len(k_sorted),), float(prepared.tau0[0]))
-    z, vb = model.evaluate("z", "vb", math=jnp, **base)
-    ks = jnp.asarray(k_sorted)
-    tau0 = _tau0_of(densities, row)
+    # The end-time term: the state's rate at tau0, from the equations the
+    # hook evaluates on the final state, times how tau0 moves with the densities.
+    ks = jnp.asarray(np.asarray(k_values, dtype=np.float64))
+    tau0 = _tau0_of(x[:5], row)
     dtau = tau0 - jax.lax.stop_gradient(tau0)
-    clxc = y_final[:, IX_CLXC] - ks * z * dtau
-    clxb = y_final[:, IX_CLXB] - ks * (z + vb) * dtau
+    clxc = clxc - ks * z * dtau
+    clxb = clxb - ks * (z + vb) * dtau
 
-    grhoc_val, grhob_val = densities[2], densities[3]
-    delta_m = (grhoc_val * clxc + grhob_val * clxb) / (grhoc_val + grhob_val)
-    pk_sorted = (
+    grhoc, grhob = x[2], x[3]
+    delta_m = (grhoc * clxc + grhob * clxb) / (grhoc + grhob)
+    pk = (
         2.0
         * jnp.pi**2
         / ks**3
@@ -1154,7 +1003,7 @@ def matter_power_spectrum_jax(
         * (ks / cosmology.k_pivot) ** (cosmology.n_s - 1.0)
         * delta_m**2
     )
-    return pk_sorted[jnp.asarray(np.argsort(order))]
+    return pk
 
 
 def background_history(cosmology):
@@ -1412,6 +1261,7 @@ def _kept_values(
     *,
     drop_first: bool = True,
     error_weights=None,
+    tau_end_of=None,
     rtol: float = PERTURB_RTOL,
     atol: float = PERTURB_ATOL,
     first_step: float = PERTURB_FIRST_STEP,
@@ -1432,8 +1282,10 @@ def _kept_values(
     derivative too is formed in the kernel and no history is stored. The joint
     launch uses the fp64 LU and keeps the sensitivities out of step control;
     its primal agrees with the plain fp32-LU one to ~1e-6 of a quantity's
-    scale. ``tau0`` and the reionization redshift are those of ``prepared``,
-    held fixed.
+    scale. The reionization redshift is that of ``prepared``, held fixed, and
+    so is ``tau0``, unless ``tau_end_of`` maps the inputs ``x`` to each
+    cosmology's conformal age: the trajectories then stop at the age of the
+    inputs given (its value; the derivative is still the one at fixed ``tau0``).
     """
 
     layout = prepared.layout
@@ -1460,8 +1312,12 @@ def _kept_values(
 
     def with_inputs(base, x, replicas=1):
         # Row k_idx * n_cosmo + ci (times replicas) takes cosmology ci's row of x.
-        rows = jnp.repeat(jnp.tile(x, (n_k, 1)), replicas, axis=0)
-        return jnp.asarray(base).at[:, columns].set(rows)
+        per_row = lambda v: jnp.repeat(jnp.tile(v, (n_k, 1)), replicas, axis=0)
+        base = jnp.asarray(base).at[:, columns].set(per_row(x))
+        if tau_end_of is not None:
+            tau_end = jnp.asarray(tau_end_of(jax.lax.stop_gradient(x)))
+            base = base.at[:, IX_TAU_END].set(per_row(tau_end[:, None])[:, 0])
+        return base
 
     def arrange(rows):
         # Rows are packed k-major (row = k_idx * n_cosmo + cosmology_idx) and
@@ -1510,7 +1366,8 @@ def _kept_values(
             save_history=False,
             lu_precision="fp64",
             # The joint system's thread-local memory, not its registers,
-            # bounds the occupancy (see solve_history_jax).
+            # bounds the occupancy: an uncapped register budget halves the
+            # resident threads the driver reserves local memory for.
             max_registers=None,
             sensitivity=eps_sensitivity(nvar),
             **settings,
