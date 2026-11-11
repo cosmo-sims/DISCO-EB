@@ -808,13 +808,7 @@ def _launch(
     from modax import PIDGains, Rodas5P
     from modax import solve as modax_solve
 
-    # modax 0.2.0 hands a block without a method of its own the whole solve
-    # method, and refuses an explicit "fp32" on a block others read. Left
-    # None, the precision defaults to fp32 on the final block alone.
-    method = Rodas5P(
-        lu_precision=None if lu_precision == "fp32" else lu_precision,
-        gains=PIDGains(pcoeff=0.3, icoeff=0.4),
-    )
+    method = Rodas5P(lu_precision=lu_precision, gains=PIDGains(pcoeff=0.3, icoeff=0.4))
     return modax_solve(
         prepared.ode_fn,
         y0,

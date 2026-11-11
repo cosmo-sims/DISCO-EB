@@ -52,7 +52,7 @@ uv run --no-sync sphinx-build -W docs docs/_build/html   # as CI builds it
 ```
 
 Requires Python >= 3.10 (`.python-version` pins 3.13). modax-solvers and
-numba-enzyme-cuda come from PyPI. modax >= 0.2 takes the Rodas5P numerics
+numba-enzyme-cuda come from PyPI. modax >= 0.2.2 takes the Rodas5P numerics
 on the method object: `perturbations._launch` passes
 `method=Rodas5P(lu_precision=..., gains=PIDGains(pcoeff=0.3, icoeff=0.4))`
 and every other option as a keyword of `solve`. numba-enzyme-cuda's CPU-only cap on numba
