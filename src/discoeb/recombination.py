@@ -1,3 +1,28 @@
+####################################################################################################################
+# This file is not licensed under the GNU GPL license!
+# Large portions of this code, which is part of the DISCO-EB module have been adapted from the recfast code base.
+# The original recfast code can be found at: https://www.astro.ubc.ca/people/scott/recfast.html
+# The recfast code base is distributed under the following license:
+####################################################################################################################
+# Integrator for Cosmic Recombination of Hydrogen and Helium,
+# developed by Douglas Scott (dscott@astro.ubc.ca)
+# based on calculations in the papers Seager, Sasselov & Scott
+# (ApJ, 523, L1, 1999; ApJS, 128, 407, 2000)
+# and "fudge" updates in Wong, Moss & Scott (2008).
+#
+# Permission to use, copy, modify and distribute without fee or royalty at
+# any tier, this software and its documentation, for any purpose and without
+# fee or royalty is hereby granted, provided that you agree to comply with
+# the following copyright notice and statements, including the disclaimer,
+# and that the same appear on ALL copies of the software and documentation,
+# including modifications that you make for internal use or for distribution:
+#
+# Copyright 1999-2010 by University of British Columbia.  All rights reserved.
+####################################################################################################################
+# This file contains a numba-CUDA version of the recfast equations, adapted for use in the DISCO-EB module.
+# The DISCO-EB module is distributed under the GNU GPL license.
+####################################################################################################################
+
 """The recombination history as states of each wave mode's trajectory.
 
 RECFAST's ``(x_H, x_He, T_m)`` (:mod:`discoeb.thermodynamics_recfast`, statement
