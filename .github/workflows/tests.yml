@@ -1,0 +1,92 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      force_badge:
+        description: >
+          Rewrite the coverage gist even when the percentage is unchanged.
+          The action skips an identical write, so this is what proves the
+          badge path works end to end after rotating GIST_TOKEN.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Most of this suite launches the perturbation kernel, so it wants a GPU
+    # runner. GitHub's GPU-enabled larger runners carry a label chosen when the
+    # runner group is created, so there is no name that could be hard-coded
+    # here: set the repository variable `GPU_RUNNER` to that label. Without it
+    # the job falls back to an ordinary runner and conftest.py skips every test
+    # that needs a device -- what survives is the component model, the traced
+    # sparsity pattern and the interface checks. That run is green but says
+    # little, which is why it is not allowed to write the badge.
+    runs-on: ${{ vars.GPU_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Show the device
+        if: vars.GPU_RUNNER != ''
+        run: nvidia-smi
+
+      - name: Install
+        # The CUDA extra only where there is a device to use it: on the
+        # fallback runner it would pull a few GB of nvidia wheels that nothing
+        # can load. The dev group brings classy, the CLASS references the
+        # accuracy tests compare against.
+        run: uv sync --frozen ${{ vars.GPU_RUNNER != '' && '--extra cuda13' || '' }}
+
+      - name: Tests
+        # `-rs` lists the skips: a CLASS comparison that skipped is not a pass.
+        run: >
+          uv run --no-sync pytest tests -q -rs
+          --cov --cov-report=xml --cov-report=term-missing:skip-covered
+
+      - name: Coverage total
+        id: coverage
+        run: echo "percent=$(uv run --no-sync coverage report --format=total)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        # Kept even when the suite fails, which is when the line-by-line report
+        # is worth having.
+        if: always()
+        with:
+          name: coverage-${{ github.run_id }}
+          path: coverage.xml
+          if-no-files-found: ignore
+
+      - name: Update the coverage badge
+        # Only from main, and only once the gist is set up: a pull request
+        # from a fork gets no secrets, and the badge is meant to report the
+        # state of main. The gist is named by the repository variable
+        # `COVERAGE_GIST_ID` and written with the secret `GIST_TOKEN`, a token
+        # carrying the `gist` scope. It shares modax's gist, as a second file.
+        if: >
+          github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+          && vars.COVERAGE_GIST_ID != ''
+        uses: schneegans/dynamic-badges-action@v1.9.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ vars.COVERAGE_GIST_ID }}
+          filename: discoeb-coverage.json
+          label: coverage
+          message: ${{ steps.coverage.outputs.percent }}%
+          valColorRange: ${{ steps.coverage.outputs.percent }}
+          minColorRange: 50
+          maxColorRange: 90
+          forceUpdate: ${{ inputs.force_badge || false }}

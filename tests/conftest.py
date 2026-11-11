@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import jax
 import numpy as np
+import pytest
 
 jax.config.update("jax_enable_x64", True)
 
@@ -68,6 +69,21 @@ class ConstantThermalHistory(Component):
         self.cs2 = lambda: cs2
         self.rhonu = lambda: rhonu
         self.pnu = lambda: pnu
+
+
+GPU_MODULES = {"test_perturbations", "test_thermo", "test_reionization"}
+"""Test modules whose every test launches the perturbation kernel."""
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip the kernel tests without a GPU, as on CI's fallback runner."""
+
+    if _cuda_available():
+        return
+    skip = pytest.mark.skip(reason="needs a CUDA GPU")
+    for item in items:
+        if item.module is not None and item.module.__name__ in GPU_MODULES:
+            item.add_marker(skip)
 
 
 def pytest_sessionstart(session):
