@@ -11,9 +11,9 @@ site does not repeat them.
   <a href="https://github.com/cosmo-sims/DISCO-EB/actions/workflows/tests.yml"><img alt="coverage" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Flawrenceberry%2Fb451e14a9620fabb0d49c345f13b5414%2Fraw%2Fdiscoeb-coverage.json"></a>
   <a href="https://github.com/cosmo-sims/DISCO-EB/actions/workflows/lint.yml"><img alt="lint" src="https://github.com/cosmo-sims/DISCO-EB/actions/workflows/lint.yml/badge.svg?branch=main"></a>
   <a href="https://github.com/cosmo-sims/DISCO-EB/actions/workflows/types.yml"><img alt="types" src="https://github.com/cosmo-sims/DISCO-EB/actions/workflows/types.yml/badge.svg?branch=main"></a>
-  <a href="https://pypi.org/project/discoeb/"><img alt="PyPI" src="https://img.shields.io/pypi/v/discoeb"></a>
-  <a href="https://pypi.org/project/discoeb/"><img alt="Downloads" src="https://img.shields.io/pypi/dm/discoeb"></a>
-  <a href="https://pypi.org/project/discoeb/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/discoeb"></a>
+  <a href="https://pypi.org/project/disco-eb/"><img alt="PyPI" src="https://img.shields.io/pypi/v/disco-eb"></a>
+  <a href="https://pypi.org/project/disco-eb/"><img alt="Downloads" src="https://img.shields.io/pypi/dm/disco-eb"></a>
+  <a href="https://pypi.org/project/disco-eb/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/disco-eb"></a>
   <a href="https://docs.jax.dev/"><img alt="JAX" src="https://img.shields.io/badge/JAX-compatible-3f51b5"></a>
   <a href="https://arxiv.org/abs/2311.03291"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-2311.03291-b31b1b.svg"></a>
   <a href="https://www.conventionalcommits.org/en/v1.0.0/"><img alt="Conventional Commits" src="https://img.shields.io/badge/Conventional%20Commits-1.0.0-%23FE5196?logo=conventionalcommits&logoColor=white"></a>
@@ -43,7 +43,7 @@ The [documentation](https://cosmo-sims.github.io/DISCO-EB/) covers the API and h
 <!-- start:install -->
 
 ```bash
-pip install "discoeb[cuda13]"   # or [cuda12], which Python 3.10 needs
+pip install "disco-eb[cuda13]"   # or [cuda12], which Python 3.10 needs
 ```
 
 You need a GPU to run a solve, but not to import the package. modax brings the CUDA compiler stack with it. The CMB spectra live in a separate package, [DISCO-CMB](https://github.com/lawrenceberry/DISCO-CMB), which builds on this one.

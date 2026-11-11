@@ -1,5 +1,5 @@
 [project]
-name = "discoeb"
+name = "disco-eb"
 version = "1.0.0"
 description = "A differentiable linear Einstein-Boltzmann solver for cosmology, on the GPU"
 readme = "README.md"

@@ -1084,7 +1084,7 @@ wheels = [
 ]
 
 [[package]]
-name = "discoeb"
+name = "disco-eb"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [
