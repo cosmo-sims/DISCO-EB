@@ -6,10 +6,10 @@ components with numba.
 """
 
 import math
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from conftest import HOST
 
 from discoeb.component import (
     Component,
@@ -23,13 +23,6 @@ from discoeb.component import (
     load_setting,
 )
 
-HOST = dict(
-    jit=lambda f: f,
-    cuda=SimpleNamespace(
-        local=SimpleNamespace(array=lambda shape, dtype: np.zeros(shape))
-    ),
-    float64=np.float64,
-)
 FLOOR = 1e-30  # a module constant a provider reads
 
 

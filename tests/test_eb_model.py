@@ -7,12 +7,10 @@ that each layout builds and runs as plain Python, and that the sums the
 Einstein constraints read are the sums over the species the layout enables.
 """
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
+from conftest import HOST, LAYOUTS, ConstantThermalHistory
 
-from discoeb.component import Component
 from discoeb.eb_model import (
     MassiveNeutrinos,
     Photons,
@@ -24,34 +22,6 @@ from discoeb.perturbations import (
     PerturbationLayout,
     make_initial_states,
 )
-
-HOST = dict(
-    jit=lambda f: f,
-    cuda=SimpleNamespace(
-        local=SimpleNamespace(array=lambda shape, dtype: np.zeros(shape))
-    ),
-    float64=np.float64,
-)
-
-LAYOUTS = {
-    "flat-lcdm": PerturbationLayout(),
-    "dark-energy": PerturbationLayout(enable_dark_energy=True),
-    "massive-nu": PerturbationLayout(nqmax=3, lmaxnu=8),
-    "ragged-blocks": PerturbationLayout(
-        lmaxg=11, lmaxpol=13, lmaxr=17, nqmax=2, lmaxnu=9, enable_dark_energy=True
-    ),
-}
-
-
-class ConstantThermalHistory(Component):
-    """A thermal history frozen at one epoch, standing in for the spline tables."""
-
-    def __init__(self, a=1e-3, opacity=50.0, cs2=1e-8, rhonu=3.0, pnu=0.5):
-        self.a = lambda: a
-        self.opacity = lambda: opacity
-        self.cs2 = lambda: cs2
-        self.rhonu = lambda: rhonu
-        self.pnu = lambda: pnu
 
 
 def build(layout):

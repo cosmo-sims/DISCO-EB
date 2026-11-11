@@ -6,53 +6,23 @@ and symbolic factorisation that turn it into a compiled solver run on the host
 when the kernel is built. Nothing here needs a GPU.
 """
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
+from conftest import HOST, LAYOUTS, ConstantThermalHistory
 
-from discoeb.component import Component
 from discoeb.eb_model import perturbation_model, perturbation_sparsity
-from discoeb.perturbations import N_PARAM, PARAM_COLUMNS, PerturbationLayout
+from discoeb.perturbations import N_PARAM, PARAM_COLUMNS
 
 sparse_direct = pytest.importorskip("modax._sparse_direct")
 colour_sparsity = pytest.importorskip("modax._sparsity").colour_sparsity
 normalize_sparsity = pytest.importorskip("modax._sparsity").normalize_sparsity
 
 
-LAYOUTS = {
-    "flat-lcdm": PerturbationLayout(),
-    "dark-energy": PerturbationLayout(enable_dark_energy=True),
-    "massive-nu": PerturbationLayout(nqmax=3, lmaxnu=8),
-    # The hand-written Schur solver required every tridiagonal block to have the
-    # same length, so this layout used to raise NotImplementedError.
-    "ragged-blocks": PerturbationLayout(
-        lmaxg=11, lmaxpol=13, lmaxr=17, nqmax=2, lmaxnu=9, enable_dark_energy=True
-    ),
-}
-
-HOST = dict(
-    jit=lambda f: f,
-    cuda=SimpleNamespace(
-        local=SimpleNamespace(array=lambda shape, dtype: np.zeros(shape))
-    ),
-    float64=np.float64,
-)
-
-
-class ConstantThermalHistory(Component):
-    """A thermal history frozen at one epoch, every channel of order one.
-
-    The finite differences below must resolve every coupling: at a realistic
-    ``cs2 ~ 1e-8`` or ``a ~ 1e-3`` the baryon pressure and the dark-energy
-    density fall below the rounding of the rest of the row.
-    """
-
-    def __init__(self, a=0.5, opacity=3.0, cs2=0.3, rhonu=2.0):
-        self.a = lambda: a
-        self.opacity = lambda: opacity
-        self.cs2 = lambda: cs2
-        self.rhonu = lambda: rhonu
+ORDER_ONE = dict(a=0.5, opacity=3.0, cs2=0.3, rhonu=2.0)
+"""Thermal channels of order one: the finite differences below must resolve
+every coupling, and at a realistic ``cs2 ~ 1e-8`` or ``a ~ 1e-3`` the baryon
+pressure and the dark-energy density fall below the rounding of the rest of
+the row."""
 
 
 def entries(pattern) -> set[tuple[int, int]]:
@@ -61,7 +31,7 @@ def entries(pattern) -> set[tuple[int, int]]:
 
 def finite_difference_pattern(layout, seed=0, tau=100.0) -> set[tuple[int, int]]:
     """The nonzeros of the host-built right-hand side's Jacobian at a random state and ``tau``."""
-    model = perturbation_model(layout, ConstantThermalHistory())
+    model = perturbation_model(layout, ConstantThermalHistory(**ORDER_ONE))
     rhs = model.build(PARAM_COLUMNS, **HOST)
     rng = np.random.default_rng(seed)
     p = rng.uniform(
