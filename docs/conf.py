@@ -57,6 +57,7 @@ intersphinx_mapping = {
 
 html_theme = "sphinx_book_theme"
 html_title = "DISCO-EB"
+html_logo = "assets/disco-eb.png"
 html_static_path: list[str] = []
 html_theme_options = {
     "repository_url": "https://github.com/cosmo-sims/DISCO-EB",
