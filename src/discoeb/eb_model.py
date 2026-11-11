@@ -672,7 +672,7 @@ def perturbation_model(
     recombination block of :func:`discoeb.perturbations.joint_kernel`);
     without it the model still gives the state layout, the initial conditions
     and the sparsity pattern. ``extra`` components (the line-of-sight sources
-    of :mod:`discoeb.cmb`) are appended. The layout's truncations are passed to the
+    of :mod:`discocmb.cmb`) are appended. The layout's truncations are passed to the
     components as their settings, so a layout built from the components' own
     (environment-loaded) settings reproduces them exactly. The state order
     reproduces the layout's indices: metric, CDM, baryons, photon temperature

@@ -47,29 +47,9 @@ The batched perturbation solve and the matter power spectrum.
 discoeb.eb module
 -----------------
 
-The Einstein-Boltzmann interface: everything the CMB part may use.
+The Einstein-Boltzmann interface: everything DISCO-CMB may use.
 
 .. automodule:: discoeb.eb
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-discoeb.cmb module
-------------------
-
-Line-of-sight sources and the angular power spectra.
-
-.. automodule:: discoeb.cmb
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-discoeb.lensing module
-----------------------
-
-The lensing potential and the lensed spectra.
-
-.. automodule:: discoeb.lensing
    :members:
    :undoc-members:
    :show-inheritance:

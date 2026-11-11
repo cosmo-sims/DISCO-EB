@@ -424,7 +424,7 @@ class Recombination(Component):
     (``d ln a / d tau = adotoa``); ``thermo`` holds RECFAST's three states,
     whose rates in ``z`` are converted with ``dz/dtau = -adotoa / a``;
     ``kappa`` is ``int_{tau_start}^tau kappa' dtau``, from which the hook of
-    :mod:`discoeb.cmb` forms the visibility as ``kappa'(tau) exp(-(kappa(tau_0) -
+    :mod:`discocmb.cmb` forms the visibility as ``kappa'(tau) exp(-(kappa(tau_0) -
     kappa(tau)))``. The quantities the hierarchy reads: ``a``, ``opacity``
     (``kappa' = x_e n_H sigma_T a``, with reionization), ``cs2`` (from ``T_m``
     and its own rate, no spline derivative) and ``rhonu`` (the

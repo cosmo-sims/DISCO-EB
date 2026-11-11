@@ -1,17 +1,16 @@
-"""The Einstein-Boltzmann interface: what the rest of the code -- the CMB -- may use.
+"""The Einstein-Boltzmann interface: what the CMB code -- DISCO-CMB -- may use.
 
-DISCO-EB has two parts. The Einstein-Boltzmann part solves the background,
-the thermal history (RECFAST with reionization) and the linear perturbation
-hierarchy of each wave mode on the GPU: :mod:`discoeb.component` (the
-component model), :mod:`discoeb.eb_model` (the species and their
-equations), :mod:`discoeb.recombination` and
+DISCO-EB solves the background, the thermal history (RECFAST with
+reionization) and the linear perturbation hierarchy of each wave mode on the
+GPU: :mod:`discoeb.component` (the component model), :mod:`discoeb.eb_model`
+(the species and their equations), :mod:`discoeb.recombination` and
 :mod:`discoeb.thermodynamics_recfast` (the thermal history) and
-:mod:`discoeb.perturbations` (layouts, batching, the modax launches). The
-CMB part turns its output into angular power spectra: :mod:`discoeb.cmb`
-(line-of-sight sources, grids, transfer functions, projection) and
-:mod:`discoeb.lensing`. The CMB part imports from this module alone (and the
-generic numerics of :mod:`discoeb.spline_interpolation`); the
-Einstein-Boltzmann part does not import the CMB part.
+:mod:`discoeb.perturbations` (layouts, batching, the modax launches). The CMB
+code, the separate package ``discocmb`` (DISCO-CMB), turns its output into
+angular power spectra -- line-of-sight sources, grids, transfer functions,
+projection and lensing. It imports from this module alone (and the generic
+numerics of :mod:`discoeb.spline_interpolation`); DISCO-EB does not depend
+on it.
 
 **The contract.** A caller asks for *named quantities at chosen conformal
 times* of a batch of cosmologies and wave modes, and gets them back

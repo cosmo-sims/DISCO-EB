@@ -1371,7 +1371,7 @@ def host_thermal_history(cosmology, n_grid: int = N_THERMO_GRID):
     reionization) and ``c_s^2`` from the stand-alone RECFAST solve and the
     background quadrature. Used by the thermodynamics tests; the CMB grids
     read the perturbation kernel's own recombination block instead
-    (:func:`discoeb.cmb._kernel_thermal_history`).
+    (:func:`discocmb.cmb._kernel_thermal_history`).
     """
 
     return _host_thermal_history(_as_cosmology(cosmology), n_grid)
@@ -1848,7 +1848,7 @@ def solve_eb(
         Components appended to the model for the hook: stateless
         :class:`~discoeb.component.Component` subclasses whose providers read
         the model's quantities and add their own (the line-of-sight sources
-        of :mod:`discoeb.cmb`); told apart by class when the compiled hook is
+        of :mod:`discocmb.cmb`); told apart by class when the compiled hook is
         cached.
     inputs
         The ``(n_cosmologies, 9)`` directed inputs of :data:`DIRECTED_NAMES`
