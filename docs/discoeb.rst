@@ -44,6 +44,16 @@ The batched perturbation solve and the matter power spectrum.
    :undoc-members:
    :show-inheritance:
 
+discoeb.eb module
+-----------------
+
+The Einstein-Boltzmann interface: everything the CMB part may use.
+
+.. automodule:: discoeb.eb
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 discoeb.cmb module
 ------------------
 

@@ -1617,23 +1617,23 @@ def _split_cosmologies(cosmologies):
                     f"differentiable parameters are {DIFFERENTIABLE_PARAMETERS}"
                 ) from error
         fixed.append(plain)
-        rows.append(
-            jnp.stack(
-                [
-                    jnp.asarray(d[k], dtype=jnp.float64)
-                    for k in DIFFERENTIABLE_PARAMETERS
-                ]
-            )
-        )
+        values = [d[k] for k in DIFFERENTIABLE_PARAMETERS]
+        if any(isinstance(v, jax.Array) for v in values):
+            rows.append(jnp.stack([jnp.asarray(v, dtype=jnp.float64) for v in values]))
+        else:
+            rows.append(np.asarray(values, dtype=np.float64))
+    if all(isinstance(r, np.ndarray) for r in rows):
+        # plain numbers: one host array, no per-cosmology device work
+        return tuple(fixed), np.stack(rows)
     return tuple(fixed), jnp.stack(rows)
 
 
-def _input_vector(fixed: dict, theta_row) -> jax.Array:
-    """The directed inputs of :data:`DIRECTED_NAMES` from a cosmology's parameters, in JAX."""
+def _input_vector(fixed: dict, theta_row, xp=jnp) -> jax.Array:
+    """The directed inputs of :data:`DIRECTED_NAMES` from a cosmology's parameters, in JAX (or ``xp``)."""
 
     param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta_row))}
-    d = density_parameters(param, xp=jnp)
-    return jnp.stack(
+    d = density_parameters(param, xp=xp)
+    return xp.stack(
         [
             d["grhog"],
             d["grhornomass"],
@@ -1648,6 +1648,27 @@ def _input_vector(fixed: dict, theta_row) -> jax.Array:
     )
 
 
+def _named_error_weights(weights, layout, k_launch):
+    """Solver error weights ``(n_traj, nvar)`` in launch order from ``{state name: weight}``.
+
+    Each weight is a number or a function of the trajectories' wave numbers
+    (``k_launch``, launch order) returning one per trajectory; the states not
+    named keep weight one. The names are the layout's
+    (:func:`~discoeb.eb_model.layout_state_names`), so a caller never needs
+    the state's index order or the launch's trajectory order.
+    """
+
+    names = layout_state_names(layout)
+    unknown = [n for n in weights if n not in names]
+    if unknown:
+        raise KeyError(f"{unknown} are not states of this layout: {names[:6]} ...")
+    k_launch = np.asarray(k_launch, dtype=np.float64)
+    out = np.ones((len(k_launch), len(names)))
+    for name, weight in weights.items():
+        out[:, names.index(name)] = weight(k_launch) if callable(weight) else weight
+    return out
+
+
 def _kept_values(
     prepared,
     k_values,
@@ -1655,6 +1676,7 @@ def _kept_values(
     names,
     extra=(),
     *,
+    drop_first: bool = True,
     error_weights=None,
     rtol: float = PERTURB_RTOL,
     atol: float = PERTURB_ATOL,
@@ -1694,7 +1716,10 @@ def _kept_values(
     nvar = prepared.model.nvar
 
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_grid)
+    if isinstance(error_weights, dict):
+        error_weights = _named_error_weights(error_weights, layout, params[:, IX_K])
     n_k, n_grid, n_keep = len(k_sorted), len(tau_grid), len(names)
+    first = 1 if drop_first else 0
     columns = jnp.asarray(DIRECTED_COLUMNS)
     n_dir = len(DIRECTED_COLUMNS)
     t_span_j = jnp.asarray(t_span)
@@ -1709,7 +1734,7 @@ def _kept_values(
         # the hook row save-major, so this reshape is a view; the transpose to
         # a cosmology-major layout copies only what was kept.
         values = rows.reshape(n_k, n_cosmo, n_grid, n_keep)
-        values = jnp.transpose(values[:, :, 1:, :], (1, 3, 0, 2))
+        values = jnp.transpose(values[:, :, first:, :], (1, 3, 0, 2))
         if np.any(order != np.arange(n_k)):
             values = values[:, :, jnp.asarray(np.argsort(order)), :]
         return values
@@ -1775,6 +1800,7 @@ def solve_eb(
     *,
     keep=None,
     extra=(),
+    inputs=None,
     rtol: float = PERTURB_RTOL,
     atol: float = PERTURB_ATOL,
     first_step: float = PERTURB_FIRST_STEP,
@@ -1804,8 +1830,9 @@ def solve_eb(
     k_values
         Wave numbers in 1/Mpc, in any order.
     tau
-        Strictly increasing conformal times in Mpc, above ``TAU_START``, at
-        which to record. A cosmology whose conformal age ``tau0`` is below a
+        Strictly increasing conformal times in Mpc, from ``TAU_START`` on, at
+        which to record (every launch starts at ``TAU_START``; a first time
+        equal to it records the initial state). A cosmology whose conformal age ``tau0`` is below a
         time holds its state today there (its trajectory ends at ``tau0``), so
         a last time past every ``tau0`` returns the present-day values of the
         whole batch.
@@ -1818,13 +1845,25 @@ def solve_eb(
         ``adotoa`` or the opacity. Default: every element of the perturbation
         state, i.e. the hierarchy's full history.
     extra
-        Components appended to the model for the hook (the line-of-sight
-        sources of :mod:`discoeb.cmb` make ``phi`` available); stateless, and
-        told apart by class when the compiled hook is cached.
+        Components appended to the model for the hook: stateless
+        :class:`~discoeb.component.Component` subclasses whose providers read
+        the model's quantities and add their own (the line-of-sight sources
+        of :mod:`discoeb.cmb`); told apart by class when the compiled hook is
+        cached.
+    inputs
+        The ``(n_cosmologies, 9)`` directed inputs of :data:`DIRECTED_NAMES`
+        -- the five background densities and ``YHe``, ``Tcmb``, ``H0``,
+        ``Omegab`` of the recombination block -- in place of those the
+        cosmologies imply (:func:`directed_inputs`), and differentiable in
+        their own right: the solution is then a function of them, at the
+        cosmologies' background endpoints held fixed.
     rtol, atol, first_step, max_steps, error_weights, thermo_weight
-        The solver settings of :func:`solve_perturbation_history_batch`;
-        ``error_weights`` are modax's, ``(n_k * n_cosmologies, nvar)`` in
-        launch order (wave modes ascending, cosmologies within).
+        The solver settings of :func:`solve_perturbation_history_batch`.
+        ``error_weights`` is ``{state name: weight}``, each weight a number
+        or a function of the trajectories' wave numbers returning one per
+        trajectory (the states not named keep one), or modax's array
+        ``(n_k * n_cosmologies, nvar)`` in launch order (wave modes
+        ascending, cosmologies within).
 
     The hook is compiled once per batch shape and set of names, like the
     right-hand side. The returned ``values`` are differentiable with respect
@@ -1847,13 +1886,14 @@ def solve_eb(
     tau = np.asarray(tau, dtype=np.float64).reshape(-1)
     if tau.size == 0 or not np.all(np.isfinite(tau)):
         raise ValueError("tau must be a non-empty array of finite conformal times")
-    if tau[0] <= TAU_START or np.any(np.diff(tau) <= 0.0):
+    if tau[0] < TAU_START or np.any(np.diff(tau) <= 0.0):
         raise ValueError(
-            f"tau must be strictly increasing and above TAU_START = {TAU_START}"
+            f"tau must be strictly increasing and from TAU_START = {TAU_START} on"
         )
-    # The launch starts at TAU_START, so it is the first save; the hook
-    # records it too and the row is dropped below.
-    tau_grid = np.concatenate(([TAU_START], tau))
+    # The launch starts at TAU_START, so it is the first save; unless the
+    # caller asked for it, the hook records it too and the row is dropped.
+    drop_first = bool(tau[0] > TAU_START)
+    tau_grid = np.concatenate(([TAU_START], tau)) if drop_first else tau
     settings = dict(
         rtol=rtol,
         atol=atol,
@@ -1885,12 +1925,45 @@ def solve_eb(
             tau_grid,
             names,
             extra,
+            drop_first=drop_first,
             error_weights=error_weights,
             **settings,
         )
 
     def inputs_of(theta):
-        return jnp.stack([_input_vector(fixed[i], theta[i]) for i in range(n_cosmo)])
+        # JAX arithmetic throughout, also for parameters given as plain numbers
+        theta = jnp.asarray(theta, dtype=jnp.float64)
+        if isinstance(theta, jax.core.Tracer) or n_cosmo == 1:
+            return jnp.stack([_input_vector(fixed[i], theta[i]) for i in range(n_cosmo)])
+        # concrete parameters: the whole batch through one set of eager JAX
+        # operations, elementwise, so bit for bit what each cosmology alone
+        # gives (a last-bit difference in a density can move a step acceptance)
+        keys = set(fixed[0])
+        if any(set(f) != keys for f in fixed):
+            return jnp.stack([_input_vector(fixed[i], theta[i]) for i in range(n_cosmo)])
+        columns = {k: jnp.asarray([f[k] for f in fixed], dtype=jnp.float64) for k in keys}
+        theta = jnp.asarray(theta, dtype=jnp.float64)
+        return _input_vector(columns, [theta[:, j] for j in range(theta.shape[1])]).T
+
+    def solution(values):
+        return EBSolution(
+            names=held["names"],
+            k=np.asarray(k_values, dtype=np.float64).reshape(-1),
+            tau=tau,
+            tau0=np.asarray(held["prepared"].tau0, dtype=np.float64),
+            values=values,
+            layout=held["prepared"].layout,
+        )
+
+    if inputs is not None:
+        # The given inputs are the solve's variables; the cosmologies set
+        # everything else, the background endpoints included, as numbers.
+        inputs = jnp.asarray(inputs, dtype=jnp.float64)
+        if inputs.shape != (n_cosmo, len(DIRECTED_NAMES)):
+            raise ValueError(
+                f"inputs must be (n_cosmologies, {len(DIRECTED_NAMES)}), got {inputs.shape}"
+            )
+        return solution(prepare(np.asarray(jax.lax.stop_gradient(theta)))(inputs))
 
     # The background endpoints need the parameters as numbers, which a custom
     # rule's primals are under jax.grad and jax.jacfwd; the tangent chains
@@ -1906,12 +1979,45 @@ def solve_eb(
         of_inputs = prepare(theta)
         return jax.jvp(lambda t: of_inputs(inputs_of(t)), (theta,), (dtheta,))
 
-    values = kept_of(theta)
-    return EBSolution(
-        names=held["names"],
-        k=np.asarray(k_values, dtype=np.float64).reshape(-1),
-        tau=tau,
-        tau0=np.asarray(held["prepared"].tau0, dtype=np.float64),
-        values=values,
-        layout=held["prepared"].layout,
+    return solution(kept_of(theta))
+
+
+def directed_inputs(cosmologies) -> np.ndarray:
+    """The ``(n_cosmologies, 9)`` directed inputs of :data:`DIRECTED_NAMES` the cosmologies imply.
+
+    The five background densities and the recombination block's ``YHe``,
+    ``Tcmb``, ``H0`` and ``Omegab``: the variables :func:`solve_eb` takes as
+    ``inputs``, and differentiates with respect to.
+    """
+
+    if isinstance(cosmologies, dict) or hasattr(cosmologies, "Omegam"):
+        cosmologies = (cosmologies,)
+    fixed, theta = _split_cosmologies(cosmologies)
+    return np.stack(
+        [np.asarray(_input_vector(fixed[i], jnp.asarray(theta[i]))) for i in range(len(fixed))]
     )
+
+
+def conformal_ages(cosmologies) -> np.ndarray:
+    """Each cosmology's conformal age ``tau0`` (Mpc), where its trajectories stop.
+
+    From the same background endpoints :func:`solve_eb` uses (and caches), so
+    a solve of the same cosmologies right after costs nothing more for them.
+    """
+
+    if isinstance(cosmologies, dict) or hasattr(cosmologies, "Omegam"):
+        cosmologies = (cosmologies,)
+    prepared = _prepare_solve(tuple(_as_cosmology(c) for c in cosmologies))
+    return np.asarray(prepared.tau0, dtype=np.float64)
+
+
+def state_names(cosmology) -> tuple[str, ...]:
+    """The names of the perturbation states of a cosmology's layout, for ``keep`` and ``error_weights``."""
+
+    return layout_state_names(_layout_for(_as_cosmology(cosmology)))
+
+
+as_cosmology = _as_cosmology
+"""Normalise a cosmology given as a parameter dictionary (``Omegam``, ``Omegab``,
+``H0``, ``Tcmb``, ``YHe``, ``Neff``, ``A_s``, ``n_s``, ... ) to the solver's
+cosmology object; one already normalised is returned as it is."""

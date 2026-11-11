@@ -46,12 +46,14 @@ has to reach ``1e4`` at ``k ~ 1e-4`` for EE at ``l = 2`` to come within
 0.2 percent of CLASS.
 
 
-**Where the sources are evaluated.** Inside the kernel launch: modax's Rodas5P
-save hook calls :func:`build_source_device_function` at every save time with
-the dense-output state, and the launch returns five numbers per save and
-trajectory (``S_noisw, S_j1, S_j2, phi, exp(-kappa)``) instead of the
-``nvar``-component history, so all cosmologies of a batch share one launch and
-nothing is chunked. The ISW term's ``phi'`` is a centered difference of the
+**Where the sources are evaluated.** Inside the Einstein-Boltzmann launch,
+through :mod:`discoeb.eb`, the only part of the Einstein-Boltzmann code this
+module uses: the sources are a :class:`LineOfSightSources` component of the
+model, and :func:`solve_sources` asks :func:`~discoeb.eb.solve_eb` to keep
+them, with the opacity and the optical depth, at every save time; the kernel
+evaluates them from the dense-output state and returns six numbers per save
+and trajectory instead of the ``nvar``-component history, so all cosmologies
+of a batch share one launch and nothing is chunked. The ISW term's ``phi'`` is a centered difference of the
 saved potential (:func:`assemble_sources`): the analytic derivative from the
 right-hand side is exact algebra but amplifies the solver's state error tenfold
 at ``l = 2``. The visibility ``g = kappa' exp(-kappa)`` comes from the
@@ -90,26 +92,15 @@ import jax.numpy as jnp
 import numpy as np
 from scipy import integrate, special
 
-from .component import Component
-from .eb_model import perturbation_model
-from .recombination import THERMO_ERROR_WEIGHT
-from .perturbations import (
-    BATCH_CACHE_SIZE,
-    PARAM_COLUMNS,
-    PHYSICAL_DENSITY_COLUMNS,
-    IX_K,
-    PERTURB_ATOL,
-    PERTURB_FIRST_STEP,
-    PERTURB_MAX_STEPS,
-    PERTURB_RTOL,
-    N_THERMO_GRID,
-    TAU_START,
-    _as_cosmology,
-    joint_model,
-    thermal_indices,
-    density_coefficients,
-)
+from . import eb
+from .eb import Component, TAU_START
 from .spline_interpolation import spline_interpolation
+
+CACHE_SIZE = 8
+"""Batches of grids whose projection operators and lensing tables are kept."""
+
+SUMMARY_GRID = 2048
+"""Points of the uniform ``log tau`` grid the grid summary reads the opacity on."""
 
 DEFAULT_CMB_K = np.geomspace(1.0e-4, 1.0, 128, dtype=np.float64)
 """Default perturbation wave modes (Mpc^-1) for a CMB solve."""
@@ -125,13 +116,10 @@ Z_REION_SEARCH_MAX = 30.0
 """Redshift below which a reionization visibility bump would be located."""
 
 SOURCE_CHANNELS = 6
-"""Numbers the hook stores per save: ``m0, m1, m2, phi, kappa', kappa``: the three
+"""Numbers the solve keeps per save (:data:`SOURCE_KEEP`): ``m0, m1, m2, phi, kappa', kappa``: the three
 sources before their visibility weighting, the Weyl potential, the opacity and
 the optical depth from ``tau_start``; :func:`weight_channels` turns them into
 ``S_noisw, S_j1, S_j2, phi, exp(-kappa)``."""
-
-SOURCE_QUANTITIES = ("m0", "m1", "m2", "phi", "opacity")
-"""The channels the component model provides; the sixth is the optical-depth state."""
 
 WEIGHTED_CHANNELS = 5
 """Numbers per save after the weighting: ``S_noisw, S_j1, S_j2, phi, exp(-kappa)``."""
@@ -148,7 +136,7 @@ class LineOfSightSources(Component):
     with the visibility ``g`` given and the scattering source ``Pi``
     (``polter``) and the shear ``sigma`` from the Thomson interaction and the
     metric. One set of equations serves the device hook and the differentiable
-    host path (:func:`source_channels_jax`), and any species the layout enables
+    differentiable path (:func:`cl_power_spectrum_jax`), and any species the layout enables
     enters through the sums.
     """
 
@@ -172,7 +160,7 @@ class LineOfSightSources(Component):
 def source_model(layout):
     """The joint model of ``layout`` (hierarchy and recombination) with the :class:`LineOfSightSources` appended."""
 
-    return joint_model(layout, extra=(LineOfSightSources,))
+    return eb.joint_model(layout, extra=(LineOfSightSources,))
 
 
 class Spectra(NamedTuple):
@@ -213,8 +201,8 @@ POLARIZATION_WEIGHT_MAX = 1.0e4
 """Cap of that weight."""
 
 
-def polarization_error_weights(k, layout):
-    """Per-trajectory solver error weights ``(n_traj, nvar)`` that resolve the small sources at low ``k``.
+def polarization_error_weights(cosmology) -> dict:
+    """``{state name: weight of k}``: solver error weights that resolve the small sources at low ``k``.
 
     The E-mode source is ``g polter`` with ``polter = pig/10 + 3/5 E_2``. At
     ``k`` well below the acoustic scale both moments are tiny through
@@ -223,40 +211,41 @@ def polarization_error_weights(k, layout):
     component's error against ``atol + rtol |y|``, does not resolve them, and
     the low multipoles of EE and TE, which those modes source, came out 10 to
     40 percent low (TT, whose sources are unit-size, was unaffected).
-    Weighting the two components by ``clip(POLARIZATION_WEIGHT_K / k, 1,
-    POLARIZATION_WEIGHT_MAX)`` divides their tolerance by that factor. The
-    trajectories it slows are the low-``k`` ones, which take the fewest steps
-    of a launch: at ``POLARIZATION_WEIGHT_K = 1`` a batch of 128 costs 10
-    percent more than unweighted (0.64 s against 0.58 s on an RTX 4070
-    SUPER) and EE agrees with CLASS to 0.35 percent at every multipole from
-    2 over the batch. At 0.1 the batch cost the same but EE at ``l = 2`` was
-    1.2 percent low, which the end-to-end lensing check amplified to 0.75
-    percent in the ``l = 2`` lensing correction (lensing adds 160 percent
-    there); neither the grids nor the save grid move that multipole, only
-    the solve's error control does. Tightening the scalar tolerances to 1e-5
-    instead reaches the same accuracy at 1.8 times the cost, and a scalar
-    ``atol`` of 1e-8 at six times.
+    Weighting the photon quadrupole ``theta_2`` and ``E_2`` (``e_0``) by
+    ``clip(POLARIZATION_WEIGHT_K / k, 1, POLARIZATION_WEIGHT_MAX)`` divides
+    their tolerance by that factor. The trajectories it slows are the
+    low-``k`` ones, which take the fewest steps of a launch: at
+    ``POLARIZATION_WEIGHT_K = 1`` a batch of 128 costs 10 percent more than
+    unweighted (0.64 s against 0.58 s on an RTX 4070 SUPER) and EE agrees
+    with CLASS to 0.35 percent at every multipole from 2 over the batch. At
+    0.1 the batch cost the same but EE at ``l = 2`` was 1.2 percent low,
+    which the end-to-end lensing check amplified to 0.75 percent in the
+    ``l = 2`` lensing correction (lensing adds 160 percent there); neither the
+    grids nor the save grid move that multipole, only the solve's error
+    control does. Tightening the scalar tolerances to 1e-5 instead reaches the
+    same accuracy at 1.8 times the cost, and a scalar ``atol`` of 1e-8 at six
+    times.
 
     The massive-neutrino monopole, dipole and quadrupole of every momentum
-    bin get the same weight: they are as small at low ``k`` and enter the
-    metric shear that generates the photon quadrupole, and without the
-    weight a 0.3 eV neutrino left EE at ``l = 2`` 2 percent low (0.3 percent
-    with it; ``test_power_spectra_match_class_with_massive_neutrinos``).
+    bin (``psi_q_0`` .. ``psi_q_2``) get the same weight: they are as small
+    at low ``k`` and enter the metric shear that generates the photon
+    quadrupole, and without the weight a 0.3 eV neutrino left EE at
+    ``l = 2`` 2 percent low (0.3 percent with it;
+    ``test_power_spectra_match_class_with_massive_neutrinos``).
 
-    ``k`` is each trajectory's wave number in launch order and ``layout`` the
-    batch's :class:`~discoeb.perturbations.PerturbationLayout`; the modax
-    solves take the result as ``error_weights``.
+    The weights are named by the cosmology's state names
+    (:func:`discoeb.eb.state_names`), the form :func:`discoeb.eb.solve_eb`
+    takes as ``error_weights``.
     """
 
-    k = np.asarray(k, dtype=np.float64)
-    weights = np.ones((len(k), int(layout.nvar)))
-    w = np.clip(POLARIZATION_WEIGHT_K / k, 1.0, POLARIZATION_WEIGHT_MAX)
-    weights[:, layout.ix_g + 2] = w
-    weights[:, layout.ix_pol] = w
-    for q in range(layout.nqmax):
-        for l in range(3):
-            weights[:, layout.ix_psi(l, q)] = w
-    return jnp.asarray(weights)
+    def weight(k):
+        return np.clip(POLARIZATION_WEIGHT_K / np.asarray(k), 1.0, POLARIZATION_WEIGHT_MAX)
+
+    names = eb.state_names(cosmology)
+    weighted = ["theta_2", "e_0"] + [
+        n for n in names if n.startswith("psi_") and int(n.rsplit("_", 1)[1]) < 3
+    ]
+    return {n: weight for n in weighted}
 
 
 # =============================================================================
@@ -367,18 +356,14 @@ def visibility_peak_times(channels, tau_save, tau0):
 
 
 @jax.jit
-def _channels_from_hook(out, tau_save, tau0):
-    """The hook rows ``(n_k, n_cosmo, 6 n_tau)`` -> ``(chi_star, weighted channels)``, as one program.
+def _channels_from_solution(recorded, tau_save, tau0):
+    """The kept channels ``(n_cosmo, 6, n_k, n_tau)`` -> ``(chi_star, weighted channels)``, as one program.
 
-    The transpose to ``(n_cosmo, 6, n_k, n_tau)``, :func:`visibility_peak_times`
-    and :func:`weight_channels` fused: run eagerly, each of their dozen steps
-    was a pass over the batch's gigabyte of sources.
+    :func:`visibility_peak_times` and :func:`weight_channels` fused: run
+    eagerly, each of their dozen steps was a pass over the batch's gigabyte of
+    sources.
     """
 
-    n_k, n_cosmo, _ = out.shape
-    recorded = jnp.transpose(
-        out.reshape(n_k, n_cosmo, tau_save.shape[0], SOURCE_CHANNELS), (1, 3, 0, 2)
-    )
     chi_star = tau0 - visibility_peak_times(recorded, tau_save, tau0)
     return chi_star, weight_channels(recorded, tau_save, tau0)
 
@@ -394,38 +379,6 @@ def assemble_sources(channels, tau):
     )
     s_j0 = s_noisw + 2.0 * _grad_last(phi, jnp.asarray(tau)) * emk
     return jnp.stack([s_j0, s_j1, s_j2], axis=-3)
-
-
-def source_channels_jax(model, history, k_sorted, tau_save, tau0, row):
-    """The five weighted source channels of a saved joint history, as JAX arithmetic.
-
-    The :func:`source_model`'s equations evaluated on the host over a history
-    ``(n_k, n_tau, nvar)`` in ascending ``k`` so that they can be
-    differentiated: the densities enter the sources through the metric
-    combinations and the background expansion rate, the thermal inputs through
-    the opacity, and both paths are part of the total derivative of ``C_l``.
-    ``row`` is the parameter row of :data:`~discoeb.perturbations.PARAM_COLUMNS`
-    by name, with the traced values in place; the opacity and ``a`` are the
-    recombination component's own providers on the thermal states of the
-    history, the optical depth one of those states.
-    Returns the channels, ``(5, n_k, n_tau)``, and ``tau_star``, where the
-    visibility peaks on the save grid.
-    """
-
-    history = jnp.asarray(history)
-    kappa = history[..., thermal_indices(model)[-1]]
-    base = dict(row)
-    base.update(model.state_values(history, xp=jnp))
-    base["k"] = jnp.asarray(k_sorted)[:, None]
-    base["tau"] = jnp.asarray(tau_save)[None, :]  # the radiation streaming switch reads it
-    m0, m1, m2, phi, kappa_prime = model.evaluate(
-        "m0", "m1", "m2", "phi", "opacity", math=jnp, **base
-    )
-    live = jnp.asarray(tau_save)[None, :] <= tau0
-    emk = jnp.where(live, jnp.exp(-(kappa[:, -1:] - kappa)), 0.0)
-    g = kappa_prime * emk
-    tau_star = jnp.asarray(tau_save)[jnp.argmax(g[0])]
-    return jnp.stack([g * m0, g * m1, g * m2, phi, emk], axis=0), tau_star
 
 
 # =============================================================================
@@ -468,7 +421,7 @@ def _build_bessel_tables(ells, x_max: float, dx: float):
     )
 
 
-@functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
+@functools.lru_cache(maxsize=CACHE_SIZE)
 def _bessel_tables(ells, x_max, dx):
     ell_arr = np.asarray(ells, dtype=np.int64)
     n_x = int(np.ceil(x_max / dx)) + 2
@@ -598,7 +551,7 @@ def projection_operator(ells, k_values, k_fine, tau_save, tau0_ref, dtype=jnp.fl
     )
 
 
-@functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
+@functools.lru_cache(maxsize=CACHE_SIZE)
 def _projection_operator(ells, k_values, k_fine, tau_save, tau0_ref, dtype):
     ells, k_values, k_fine, tau_save = (
         np.frombuffer(b, dtype=d)
@@ -765,47 +718,37 @@ SUMMARY_K = 1.0e-3
 
 
 @functools.lru_cache(maxsize=64)
-def _kernel_thermal_history(cosmology, n_grid: int = N_THERMO_GRID, n_save: int = 1000):
-    """``(tau_grid, a, opacity, tau0)`` of one cosmology on ``n_grid`` uniform ``log tau`` points, from the CMB kernel itself.
+def _kernel_thermal_history(cosmology, n_grid: int = SUMMARY_GRID, n_save: int = 1000):
+    """``(tau_grid, a, opacity, tau0)`` of one cosmology on ``n_grid`` uniform ``log tau`` points, from the sources' own solve.
 
-    One trajectory of the source-hooked perturbation launch (the kernel the
-    spectra use, so nothing more is compiled) records the opacity
-    ``kappa'``, with reionization, from its recombination block's dense
-    output; the scale factor is the background quadrature's. The grid is
-    :func:`~discoeb.perturbations.host_thermal_history`'s. The kernel's save
-    grid has ``n_save`` times, part of its identity, and every launch starts
-    at ``TAU_START``, so the grid is read in launches of ``n_save - 1``
+    One trajectory of :func:`solve_sources` (the kernel the spectra use, so
+    nothing more is compiled) records the opacity ``kappa'``, with
+    reionization, from its recombination block's dense output; the scale
+    factor is the background quadrature's. The kernel's save grid has
+    ``n_save`` times, part of its identity, and every launch records the
+    start, ``TAU_START``, so the grid is read in launches of ``n_save - 1``
     points.
     """
 
-    from .perturbations import _prepare_solve, background_history
-
-    prepared = _prepare_solve((cosmology,), extra=(LineOfSightSources,))
-    a_bg, tau_bg = background_history(cosmology)
+    a_bg, tau_bg = eb.background_history(cosmology)
     tau0 = float(tau_bg[-1])
     tau_grid = np.exp(np.linspace(np.log(TAU_START), np.log(tau0), n_grid))
-    hook = source_hook(prepared.layout)
     opacity = np.empty(n_grid)
     for c0 in range(0, n_grid, n_save - 1):
         chunk = tau_grid[c0 : c0 + n_save - 1]
         times = np.full(n_save, tau_grid[-1])
         times[0] = TAU_START
         times[1 : 1 + len(chunk)] = chunk
-        out, _ = _solve_with_hook(
-            prepared,
-            np.asarray([SUMMARY_K]),
-            times,
-            hook,
-            SOURCE_CHANNELS * n_save,
-            {},
-        )
-        channels = np.asarray(out).reshape(n_save, SOURCE_CHANNELS)
-        opacity[c0 : c0 + len(chunk)] = channels[1 : 1 + len(chunk), 4]
+        # equal times past the chunk are not strictly increasing: nudge them
+        times[1 + len(chunk) :] += np.arange(1, n_save - len(chunk)) * 1.0e-6
+        solution = solve_sources((cosmology,), np.asarray([SUMMARY_K]), times)
+        channels = np.asarray(solution.values[0, :, 0, :])  # (6, n_save)
+        opacity[c0 : c0 + len(chunk)] = channels[4, 1 : 1 + len(chunk)]
     return tau_grid, np.interp(tau_grid, tau_bg, a_bg), opacity, tau0
 
 
 def _cmb_grid_summary(cosmology) -> dict[str, float]:
-    return _grid_summary(_as_cosmology(cosmology))
+    return _grid_summary(eb.as_cosmology(cosmology))
 
 
 @functools.lru_cache(maxsize=4096)
@@ -819,7 +762,7 @@ def _grid_summary(cosmology) -> dict[str, float]:
     sources have structure, and hence where the grids must be dense.
     """
 
-    dens = density_coefficients(cosmology)
+    dens = eb.density_coefficients(cosmology)
     tau_grid, a_vals, opacity, tau0 = _kernel_thermal_history(cosmology)
 
     _, vis, _ = visibility_on_grid(tau_grid, opacity, tau_grid, float(tau0))
@@ -910,7 +853,7 @@ def cmb_k_grid(
     grid the ``C_l`` quadrature uses after the sources are interpolated.
     """
 
-    cosmology = _as_cosmology(cosmology)
+    cosmology = eb.as_cosmology(cosmology)
     summary = _cmb_grid_summary(cosmology)
     x = np.linspace(np.log(k_min), np.log(k_max), n_eval)
     k = np.exp(x)
@@ -1034,7 +977,7 @@ def cmb_grids(
     raises ``ValueError`` rather than projecting short.
     """
 
-    cosmology = _as_cosmology(cosmology)
+    cosmology = eb.as_cosmology(cosmology)
     if k_values is None:
         k_values = cmb_k_grid(cosmology, n=128, mode="ode")
     if ells is None:
@@ -1059,113 +1002,50 @@ def cmb_grids(
 
 
 # =============================================================================
-# 5. In-kernel sources: modax's save hook
-# =============================================================================
-
-
-# =============================================================================
-# 6. In-kernel sources: modax's save hook
+# 5. The sources, kept by the Einstein-Boltzmann solve
 # =============================================================================
 #
-# modax's Rodas5P kernel can call a device function at every save time with
-# the dense-output state. Two uses are built here. The *source hook* evaluates
-# the three line-of-sight sources in the kernel and stores them per save, so
-# the launch returns ``(n_traj, 3 n_save)`` numbers instead of the
-# ``(n_traj, n_save, nvar)`` history and the projection proceeds as usual on
-# the host. The *projection hook* goes all the way: it accumulates the
-# trapezoid sum of the sources against the tabulated Bessel functions per save,
-# so the launch returns ``Theta_l(k)`` for the wave modes it solved. Since
-# ``Theta_l(k)`` oscillates far faster in ``k`` than the sources do, that mode
-# has to solve on the fine ``k`` grid the host would otherwise only interpolate
-# onto.
+# The Einstein-Boltzmann launch evaluates any quantity of its model at every
+# save time from the dense-output state (discoeb.eb.solve_eb), so the sources
+# are kept in the kernel and the launch returns six numbers per save instead of
+# the ``nvar``-component history; the projection proceeds on the device.
 
 
-def build_source_device_function(model):
-    """Return a device function ``sources(save_idx, y, tau, p) -> (m0, m1, m2, phi, kappa', kappa)``.
+SOURCE_KEEP = ("m0", "m1", "m2", "phi", "opacity", "kappa")
+"""What :func:`solve_sources` keeps at every save, in channel order: the three
+CAMB-form sources of the module docstring before their visibility weighting
+and without the ISW term, the Weyl potential, the opacity ``kappa'`` and the
+optical depth ``kappa`` (a state of the thermal block). ``phi'`` is
+deliberately not kept: differentiating the right-hand side analytically at a
+save is exact algebra but amplifies the solver's state error, since the
+late-time ``phi'`` is a small residual of large cancelling terms; a difference
+of saved potentials cancels that error, so :func:`assemble_sources` differences
+``phi`` across saves."""
 
-    The three CAMB-form sources of the module docstring before their visibility
-    weighting and without the ISW term, the Weyl potential, the opacity and the
-    optical depth -- the first five from the :func:`source_model`'s equations
-    compiled by :meth:`~discoeb.component.Model.build_function`, the sixth a
-    state of the joint system. ``phi'`` is deliberately not taken here:
-    differentiating the right-hand side analytically at a save is exact algebra
-    but amplifies the solver's state error, since the late-time ``phi'`` is a
-    small residual of large cancelling terms; a difference of saved potentials
-    cancels that error, so the host differences ``phi`` across saves.
+
+def solve_sources(cosmologies, k_values, tau_save, *, inputs=None, **solve_kwargs):
+    """The source channels of a batch, ``EBSolution.values`` of ``(n_cosmo, 6, n_k, n_tau)``.
+
+    One :func:`discoeb.eb.solve_eb` launch keeping :data:`SOURCE_KEEP`, with
+    :class:`LineOfSightSources` appended to the model; ``tau_save`` starts at
+    ``TAU_START``. Unless ``solve_kwargs`` carries ``error_weights``, the
+    launch uses :func:`polarization_error_weights`. ``inputs`` are the
+    Einstein-Boltzmann part's directed inputs, given to differentiate with
+    respect to them (:func:`cl_power_spectrum_jax`).
     """
 
-    from numba_cuda_mlir import cuda
-
-    kappa_index = thermal_indices(model)[-1]
-    quantities = model.build_function(
-        SOURCE_QUANTITIES, inputs=("y", "tau"), params=PARAM_COLUMNS, name="sources"
+    cosmologies = tuple(cosmologies)
+    if solve_kwargs.get("error_weights") is None:
+        solve_kwargs["error_weights"] = polarization_error_weights(cosmologies[0])
+    return eb.solve_eb(
+        cosmologies,
+        k_values,
+        tau_save,
+        keep=SOURCE_KEEP,
+        extra=(LineOfSightSources,),
+        inputs=inputs,
+        **solve_kwargs,
     )
-
-    @cuda.jit(device=True)
-    def sources(save_idx, y, tau, p):
-        m0, m1, m2, phi, kappa_prime = quantities(y, tau, p)
-        return m0, m1, m2, phi, kappa_prime, y[kappa_index]
-
-    return sources
-
-
-def build_source_hook(sources):
-    """A save hook storing the six source channels of every save in the trajectory's row."""
-
-    from numba_cuda_mlir import cuda
-
-    @cuda.jit(device=True)
-    def hook(save_idx, y, tau, p, acc):
-        m0, m1, m2, phi, kappa_prime, kappa = sources(save_idx, y, tau, p)
-        base = SOURCE_CHANNELS * save_idx
-        acc[base] = m0
-        acc[base + 1] = m1
-        acc[base + 2] = m2
-        acc[base + 3] = phi
-        acc[base + 4] = kappa_prime
-        acc[base + 5] = kappa
-
-    return hook
-
-
-@functools.cache
-def source_hook(layout):
-    """The compiled source hook of a layout, built once."""
-
-    return build_source_hook(build_source_device_function(source_model(layout)))
-
-
-def _solve_with_hook(prepared, k_values, tau_save, hook, hook_size, solve_kwargs):
-    """One hooked launch of the whole chunk; returns ``(hook_out, k_sorted)``.
-
-    ``hook_out`` is ``(n_k, n_cosmo, hook_size)``; no history is kept. Unless
-    ``solve_kwargs`` carries ``error_weights``, the launch uses
-    :func:`polarization_error_weights`.
-    """
-
-    from .perturbations import _launch, _pack_batch
-
-    params, y0, t_span, _, k_sorted = _pack_batch(prepared, k_values, tau_save)
-    weights = solve_kwargs.get("error_weights")
-    if weights is None:
-        weights = polarization_error_weights(params[:, IX_K], prepared.layout)
-    _, out = _launch(
-        prepared,
-        y0=y0,
-        params=params,
-        t_span=t_span,
-        rtol=solve_kwargs.get("rtol", PERTURB_RTOL),
-        atol=solve_kwargs.get("atol", PERTURB_ATOL),
-        first_step=solve_kwargs.get("first_step", PERTURB_FIRST_STEP),
-        max_steps=solve_kwargs.get("max_steps", PERTURB_MAX_STEPS),
-        error_weights=weights,
-        thermo_weight=solve_kwargs.get("thermo_weight", THERMO_ERROR_WEIGHT),
-        save_hook=hook,
-        hook_size=hook_size,
-        save_history=False,
-    )
-    n_cosmo = len(prepared.cosmologies)
-    return jnp.asarray(out).reshape(len(k_sorted), n_cosmo, hook_size), k_sorted
 
 
 # =============================================================================
@@ -1314,7 +1194,7 @@ def compute_cl_power_spectrum_batch(
     ``first_step``, ``max_steps``).
     """
 
-    cosmologies = tuple(_as_cosmology(c) for c in cosmologies)
+    cosmologies = tuple(eb.as_cosmology(c) for c in cosmologies)
     transfer, tgrids = compute_transfer_batch(
         cosmologies,
         grids=grids,
@@ -1348,11 +1228,8 @@ def _compute_transfer_batch(
     lensing_potential_ells,
     **solve_kwargs,
 ):
-    from .perturbations import _prepare_solve
-
-    cosmologies = tuple(_as_cosmology(c) for c in cosmologies)
-    prepared = _prepare_solve(cosmologies, extra=(LineOfSightSources,))
-    tau0_all = np.asarray(prepared.tau0, dtype=np.float64)
+    cosmologies = tuple(eb.as_cosmology(c) for c in cosmologies)
+    tau0_all = eb.conformal_ages(cosmologies)
     if grids is None:
         grids = cmb_grids(
             cosmologies[0],
@@ -1371,22 +1248,15 @@ def _compute_transfer_batch(
             f"end {tau0_ref:.1f} Mpc: build the grids with a larger tau_end_margin"
         )
 
-    # The hook is part of modax's kernel-cache key; like the right-hand side it
-    # is compiled once per layout, and nothing per batch is uploaded.
-    n_save_grid = len(tau_save)
-    out, k_sorted = _solve_with_hook(
-        prepared,
-        k_values,
-        tau_save,
-        source_hook(prepared.layout),
-        SOURCE_CHANNELS * n_save_grid,
-        solve_kwargs,
+    # The kept sources are part of the kernel-cache key; like the right-hand
+    # side they are compiled once per layout, and nothing per batch is uploaded.
+    k_sorted = np.sort(np.asarray(k_values, dtype=np.float64))
+    solution = solve_sources(cosmologies, k_sorted, tau_save, **solve_kwargs)
+    # (n_cosmo, 6, n_k, n_tau), then the visibility weighting
+    chi_star, channels = _channels_from_solution(
+        solution.values, jnp.asarray(tau_save), jnp.asarray(tau0_all)
     )
-    # (n_k, n_cosmo, 6 n_tau) -> (n_cosmo, 6, n_k, n_tau), then the visibility weighting
-    chi_star, channels = _channels_from_hook(
-        out, jnp.asarray(tau_save), jnp.asarray(tau0_all)
-    )
-    del out
+    del solution
 
     interp, bessel, bessel_e, lnk_weights = projection_operator(
         ells, k_sorted, k_fine, tau_save, tau0_ref, projection_dtype
@@ -1472,7 +1342,7 @@ def _lensing_operators(ells, k_sorted, tau_save, tau0_ref, dtype):
     )
 
 
-@functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
+@functools.lru_cache(maxsize=CACHE_SIZE)
 def _lensing_operators_cached(ells, k_sorted, tau_save, tau0_ref, dtype):
     from .lensing import LIMBER_LMIN, lensing_potential_operator, limber_interpolation
 
@@ -1517,35 +1387,25 @@ def cl_power_spectrum_jax(
 
     The counterpart of :func:`discoeb.perturbations.matter_power_spectrum_jax`
     for the unlensed spectra (a :class:`Spectra` each, ``tt, te, ee`` of
-    shape ``(n_ell,)``). ``densities`` (the five of
-    :data:`~discoeb.perturbations.PHYSICAL_DENSITY_COLUMNS`) and ``thermal``
-    (``YHe, Tcmb, H0, Omegab``) default to the cosmology's own;
-    differentiating with respect to them runs modax's forward sensitivity
-    system over both blocks of the hierarchy, so the recombination history
-    is differentiated along with the hierarchy, and the densities enter again
-    through the source algebra (:func:`source_channels_jax`). The grids, the
-    save grid and the reionization redshift are held fixed. The solve uses
-    :func:`polarization_error_weights` unless ``error_weights`` is given.
-
-    A hooked modax launch cannot be differentiated (the hook's accumulator is
-    outside the sensitivity rule), so unlike :func:`compute_cl_power_spectrum`
-    this path saves the state history on the ``tau`` grid and forms the sources
-    on the host; for one cosmology that history is a few hundred megabytes. The
-    projection defaults to ``float64``: the ``float32`` matrix products cost
-    2.6e-4 in ``D_l``, which a derivative of the spectrum cannot afford.
+    shape ``(n_ell,)``). ``densities`` (the five background densities
+    ``grhog, grhornomass, grhoc, grhob, grhov``) and ``thermal`` (``YHe,
+    Tcmb, H0, Omegab``) -- together the Einstein-Boltzmann part's directed
+    inputs (:data:`discoeb.eb.DIRECTED_NAMES`) -- default to the cosmology's
+    own; given as JAX values, the spectra are differentiable in them. The
+    derivative is formed in the kernel: :func:`solve_sources` keeps the
+    sources and, for a tangent, their derivatives along each input, by the
+    forward sensitivities of both blocks of the hierarchy, so the
+    recombination history is differentiated along with the hierarchy and the
+    densities enter again through the source algebra; no history is stored.
+    The grids, the save grid, ``tau0`` and the reionization redshift are held
+    fixed. The solve uses :func:`polarization_error_weights` unless
+    ``error_weights`` is given. The projection defaults to ``float64``: the
+    ``float32`` matrix products cost 2.6e-4 in ``D_l``, which a derivative of
+    the spectrum cannot afford.
     """
 
-    from .perturbations import (
-        _pack_batch,
-        _prepare_solve,
-        _row_by_name,
-        solve_history_jax,
-    )
-
-    cosmology = _as_cosmology(cosmology)
-    prepared = _prepare_solve((cosmology,), extra=(LineOfSightSources,))
-    cosmology = prepared.cosmologies[0]
-    tau0 = float(prepared.tau0[0])
+    cosmology = eb.as_cosmology(cosmology)
+    tau0 = float(eb.conformal_ages(cosmology)[0])
     if grids is None:
         grids = cmb_grids(
             cosmology,
@@ -1564,28 +1424,19 @@ def cl_power_spectrum_jax(
             "build the grids with a larger tau_end_margin"
         )
 
-    history, densities, thermal, k_sorted, _ = solve_history_jax(
-        prepared,
-        k_values,
-        densities,
-        thermal,
-        tau_save,
-        rtol=solve_kwargs.get("rtol", PERTURB_RTOL),
-        atol=solve_kwargs.get("atol", PERTURB_ATOL),
-        first_step=solve_kwargs.get("first_step", PERTURB_FIRST_STEP),
-        max_steps=solve_kwargs.get("max_steps", PERTURB_MAX_STEPS),
-        sens_error_control=solve_kwargs.get("sens_error_control", False),
-        error_weights=solve_kwargs.get("error_weights")
-        if solve_kwargs.get("error_weights") is not None
-        else polarization_error_weights(
-            np.sort(np.asarray(k_values, dtype=np.float64)), prepared.layout
-        ),
-        thermo_weight=solve_kwargs.get("thermo_weight", THERMO_ERROR_WEIGHT),
-    )
-    params = _pack_batch(prepared, k_values, tau_save)[0]
-    row = _row_by_name(params[0], densities, thermal)
-    channels, tau_star = source_channels_jax(
-        prepared.model, history, k_sorted, tau_save, tau0, row
+    inputs = None
+    if densities is not None or thermal is not None:
+        own = jnp.asarray(eb.directed_inputs(cosmology)[0])
+        inputs = jnp.concatenate(
+            [
+                own[:5] if densities is None else jnp.asarray(densities, jnp.float64),
+                own[5:] if thermal is None else jnp.asarray(thermal, jnp.float64),
+            ]
+        )[None]
+    k_sorted = np.sort(np.asarray(k_values, dtype=np.float64))
+    solution = solve_sources((cosmology,), k_sorted, tau_save, inputs=inputs, **solve_kwargs)
+    chi_star, channels = _channels_from_solution(
+        solution.values, jnp.asarray(tau_save), jnp.asarray([tau0])
     )
 
     interp, bessel, bessel_e, lnk_weights = projection_operator(
@@ -1594,18 +1445,13 @@ def cl_power_spectrum_jax(
     ells_d = jnp.asarray(ells, dtype=jnp.float64)
     k_fine_d = jnp.asarray(k_fine)
     idx, w = _lagrange_shift_stencil(tau_save, tau0 - tau0_ref)
-    band = _k_band(
-        ells_d,
-        k_fine_d,
-        float(tau0_ref - tau_save[0]),
-        tau0 - tau_star,
-    )
+    band = _k_band(ells_d, k_fine_d, float(tau0_ref - tau_save[0]), chi_star)
     theta, theta_e = theta_ell_batch(
-        channels[None],
+        channels,
         jnp.asarray(tau_save),
         jnp.asarray(idx)[None],
         jnp.asarray(w)[None],
-        band[None],
+        band,
         interp,
         bessel,
         bessel_e,
