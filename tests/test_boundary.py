@@ -1,6 +1,6 @@
-"""The Einstein-Boltzmann interface :mod:`discoeb.eb`, which DISCO-CMB builds on.
+"""The Einstein-Boltzmann interface :mod:`discoeb`, which DISCO-CMB builds on.
 
-DISCO-CMB (the ``discocmb`` package) imports from :mod:`discoeb.eb` and
+DISCO-CMB (the ``discocmb`` package) imports from :mod:`discoeb` itself and
 :mod:`discoeb.spline_interpolation` alone and checks so itself; here the
 interface must export what it lists, and no module of this package may
 import DISCO-CMB.
@@ -15,9 +15,7 @@ PACKAGE = Path(discoeb.__file__).parent
 
 
 def test_the_interface_exports_what_it_lists():
-    from discoeb import eb
-
-    assert all(hasattr(eb, name) for name in eb.__all__)
+    assert all(hasattr(discoeb, name) for name in discoeb.__all__)
 
 
 def test_the_package_does_not_import_discocmb():

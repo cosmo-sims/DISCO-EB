@@ -1,6 +1,13 @@
 discoeb package
 ===============
 
+The Einstein-Boltzmann interface: everything DISCO-CMB may use.
+
+.. automodule:: discoeb
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Submodules
 ----------
 
@@ -40,16 +47,6 @@ discoeb.perturbations module
 The batched perturbation solve and the matter power spectrum.
 
 .. automodule:: discoeb.perturbations
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-discoeb.eb module
------------------
-
-The Einstein-Boltzmann interface: everything DISCO-CMB may use.
-
-.. automodule:: discoeb.eb
    :members:
    :undoc-members:
    :show-inheritance:
