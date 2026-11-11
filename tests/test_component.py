@@ -134,7 +134,7 @@ def test_the_driver_injects_by_name_in_dependency_order():
     """Baryons and Thomson scattering both write ``vb``; Photons and Thomson ``qg``."""
     model = toy_model()
     model.build(PARAMS, **HOST)
-    lines = [l.strip() for l in model.source.splitlines()]
+    lines = [ell.strip() for ell in model.source.splitlines()]
     assert (
         "d_vb = Baryons__d_vb(a, adotoa, vb, cs2b, k, clxb) + ThomsonScattering__d_vb(R, kappa, qg, vb)"
         in lines
@@ -184,8 +184,10 @@ def test_initial_conditions_are_declared_on_the_states():
 def stream(kv, x, inv_tau, output):
     """A helper shared between hierarchies, compiled for the device by the framework."""
     lmax = len(x) - 1
-    for l in range(1, lmax):
-        output[l] = kv * (l * x[l - 1] - (l + 1) * x[l + 1]) * (1.0 / (2 * l + 1))
+    for ell in range(1, lmax):
+        output[ell] = (
+            kv * (ell * x[ell - 1] - (ell + 1) * x[ell + 1]) * (1.0 / (2 * ell + 1))
+        )
     output[lmax] = kv * x[lmax - 1] - (lmax + 1) * x[lmax] * inv_tau
 
 
@@ -220,7 +222,7 @@ def test_vector_states_are_arrays_and_their_output_buffers_are_provided():
     )
     # The helper the provider calls is compiled too, before the provider.
     assert compiled.index("stream") < compiled.index("d_x")
-    lines = [l.strip() for l in model.source.splitlines()]
+    lines = [ell.strip() for ell in model.source.splitlines()]
     assert "c_Hierarchy__d_x = cuda.local.array(4, float64)" in lines
     assert "Hierarchy__d_x(k, x, inv_tau, c_Hierarchy__d_x)" in lines
     assert "d_x[i] += c_Hierarchy__d_x[i]" in lines
@@ -409,8 +411,8 @@ def test_partial_writes_of_a_vector_accumulate():
 
     class Damping(Interaction):
         def d_x(opacity, x, output):
-            for l in range(2, len(x)):
-                output[l] = -opacity * x[l]
+            for ell in range(2, len(x)):
+                output[ell] = -opacity * x[ell]
 
     model = Model([Hierarchy(), Damping()])
     rhs = model.build({"k": 0, "opacity": 1}, **HOST)
@@ -419,7 +421,7 @@ def test_partial_writes_of_a_vector_accumulate():
     np.testing.assert_allclose(
         rhs(x, tau, (k, op)), np.add(undamped, (0.0, 0.0, -op * 4.0, -op * 8.0))
     )
-    lines = [l.strip() for l in model.source.splitlines()]
+    lines = [ell.strip() for ell in model.source.splitlines()]
     assert lines.index("Hierarchy__d_x(k, x, inv_tau, c_Hierarchy__d_x)") < lines.index(
         "Damping__d_x(opacity, x, c_Damping__d_x)"
     )

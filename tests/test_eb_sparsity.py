@@ -61,7 +61,7 @@ def structure(layout):
     ]
     if layout.has_massive_neutrinos:
         for q in range(layout.nqmax):
-            tails.append([layout.ix_psi(l, q) for l in range(3, layout.lmaxnu + 1)])
+            tails.append([layout.ix_psi(ell, q) for ell in range(3, layout.lmaxnu + 1)])
     in_tail = {i for tail in tails for i in tail}
     return [i for i in range(layout.nvar) if i not in in_tail], tails
 

@@ -1,13 +1,13 @@
 import functools
 import os
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .component import _compile
+from .component import Model, _compile
 from .eb_model import (
     MassiveNeutrinos,
     MasslessNeutrinos,
@@ -127,7 +127,7 @@ class PerturbationLayout:
     def has_massive_neutrinos(self) -> bool:
         return self.nqmax > 0
 
-    def ix_psi(self, l: int, q: int) -> int:
+    def ix_psi(self, ell: int, q: int) -> int:
         """Return the state index of massive-neutrino multipole ``psi_l`` of bin ``q``.
 
         The bins follow the dark-energy block, **bin-major, multipole-minor**, so
@@ -139,9 +139,9 @@ class PerturbationLayout:
             raise AttributeError("massive neutrinos are not enabled in this layout")
         if not (0 <= q < self.nqmax):
             raise IndexError(f"momentum bin q={q} out of range [0, {self.nqmax})")
-        if not (0 <= l <= self.lmaxnu):
-            raise IndexError(f"multipole l={l} out of range [0, {self.lmaxnu}]")
-        return self._ix_after_dark_energy + q * (self.lmaxnu + 1) + l
+        if not (0 <= ell <= self.lmaxnu):
+            raise IndexError(f"multipole ell={ell} out of range [0, {self.lmaxnu}]")
+        return self._ix_after_dark_energy + q * (self.lmaxnu + 1) + ell
 
     # --- Total size -----------------------------------------------------------
 
@@ -573,8 +573,8 @@ class _PreparedSolve(NamedTuple):
     """What a batch shares: the compiled joint model and each cosmology's endpoints."""
 
     cosmologies: tuple
-    layout: object
-    model: object
+    layout: PerturbationLayout
+    model: Model
     ode_fn: object  # the modax Hierarchy
     tau0: np.ndarray  # (n_cosmologies,)
     lna_start: np.ndarray
@@ -684,7 +684,10 @@ def make_initial_states(
     """
 
     cosmologies = [_as_cosmology(c) for c in _as_batch(cosmology)]
-    per = lambda values: values[0] if len(values) == 1 else np.asarray(values)
+
+    def per(values):
+        return values[0] if len(values) == 1 else np.asarray(values)
+
     return model.initial_state(
         k_values,
         tau=TAU_START,
@@ -706,7 +709,10 @@ def _packed(cosmologies, model, tau0, lna_start, z_re, k_bytes, tau_bytes):
         np.arange(n_cosmo, dtype=np.float64), len(k_sorted)
     )
     # the per-cosmology inputs once, tiled over the wave modes (row = k_idx * n_cosmo + c)
-    tile = lambda values: np.tile(np.asarray(values, dtype=np.float64), len(k_sorted))
+
+    def tile(values):
+        return np.tile(np.asarray(values, dtype=np.float64), len(k_sorted))
+
     y0 = model.initial_state(
         params[:, IX_K],
         tau=TAU_START,
@@ -1131,7 +1137,7 @@ def build_keep_hook(model, names, *, tangent: bool = False):
         N_PARAM,
         eps_sensitivity(model.nvar) if tangent else None,
     )
-    hook._generated_source = source
+    setattr(hook, "_generated_source", source)
     return hook
 
 
@@ -1282,7 +1288,7 @@ def _kept_values(
     n_cosmo = len(prepared.cosmologies)
     names = tuple(names)
     extra = tuple(extra)
-    settings = dict(
+    settings: dict[str, Any] = dict(
         rtol=rtol,
         atol=atol,
         first_step=first_step,
@@ -1302,7 +1308,9 @@ def _kept_values(
 
     def with_inputs(base, x, replicas=1):
         # Row k_idx * n_cosmo + ci (times replicas) takes cosmology ci's row of x.
-        per_row = lambda v: jnp.repeat(jnp.tile(v, (n_k, 1)), replicas, axis=0)
+        def per_row(v):
+            return jnp.repeat(jnp.tile(v, (n_k, 1)), replicas, axis=0)
+
         base = jnp.asarray(base).at[:, columns].set(per_row(x))
         if tau_end_of is not None:
             tau_end = jnp.asarray(tau_end_of(jax.lax.stop_gradient(x)))
@@ -1446,6 +1454,8 @@ def solve_eb(
         ``(n_k * n_cosmologies, nvar)`` in launch order (wave modes
         ascending, cosmologies within).
 
+    Notes
+    -----
     The hook is compiled once per batch shape and set of names, like the
     right-hand side. The returned ``values`` are differentiable with respect
     to the cosmologies' ``Omegam``, ``Omegab``, ``H0``, ``Tcmb`` and ``Neff``
@@ -1473,7 +1483,7 @@ def solve_eb(
     # caller asked for it, the hook records it too and the row is dropped.
     drop_first = bool(tau[0] > TAU_START)
     tau_grid = np.concatenate(([TAU_START], tau)) if drop_first else tau
-    settings = dict(
+    settings: dict[str, Any] = dict(
         rtol=rtol,
         atol=atol,
         first_step=first_step,

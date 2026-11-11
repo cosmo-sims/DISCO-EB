@@ -1,46 +1,91 @@
-[build-system]
-requires = ["setuptools >= 61.0"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "discoeb"
-version = "0.1.0"
+version = "1.0.0"
+description = "A differentiable linear Einstein-Boltzmann solver for cosmology, on the GPU"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Oliver Hahn", email = "oliver.hahn@univie.ac.at" },
+    { name = "Florian List" },
+    { name = "Natalia Porqueres" },
+    { name = "Lawrence Berry" },
+]
+# PEP 639: an SPDX expression and the files themselves. recombination.py also
+# carries the Recfast license, which its header reproduces.
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+# Only what `src/discoeb` imports. The CUDA build of JAX is an extra, as in
+# modax: the CPU install is enough to import the package, build the docs and
+# type check it.
 dependencies = [
-    # JAX's CUDA 13 build starts after it dropped Python 3.10, so 3.10 takes the
-    # CUDA 12 one (jax 0.6.2, the last release for 3.10, which modax supports).
-    "jax[cuda13]; python_version >= '3.11'",
-    "jax[cuda12]; python_version < '3.11'",
-    # The perturbation solve runs on modax's sparse direct linear solver, whose
-    # fill-reducing ordering is SuiteSparse's AMD (through cvxopt's wheel since
-    # modax-solvers 0.0.3; the `sparse` extra is kept for older checkouts).
-    # 0.0.8 for the hierarchy of blocks the joint solve is built on (Block,
-    # Hierarchy) and quantity_hook, whose Enzyme tangents solve_eb's derivatives use.
-    "modax-solvers[sparse]>=0.0.8",
-    "equinox>=0.13",
-    "xprof>=2.21.6",
-    "tensorflow>=2.20.0",
-    "pytest>=8.4.2",
-    "pytest-benchmark>=5.2.3",
-    "pytest-regressions>=2.8.3",
-    "camb>=1.6.0",
-    "pandas>=2.3.3",
-    "matplotlib>=3.9.4",
+    "jax>=0.6.2",
+    "numpy>=2.2.6",
+    # The hierarchy of blocks the joint solve is built on (Block, Hierarchy),
+    # its forward sensitivities and quantity_hook, whose Enzyme tangents
+    # solve_eb's derivatives use. modax brings numba-cuda-mlir with it. Capped
+    # below 0.2: modax's next minor release moves `lu_precision`, `pcoeff` and
+    # `icoeff` out of `solve`'s keywords, which _launch still passes.
+    "modax-solvers>=0.1.0,<0.2",
     # 0.3.0 for the O3 prepasses the kernels need and Blackwell support.
     "numba-enzyme-cuda>=0.3.0",
 ]
-authors = [{ name = "Oliver Hahn", email = "oliver.hahn@univie.ac.at" }]
 
-description = "..."
-readme = "README.md"
-license = { file = "LICENSE" }
-requires-python = ">=3.10"
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
-    "Operating System :: POSIX :: Linux",
-    "Topic :: Scientific/Engineering :: Astronomy",
+[project.urls]
+Documentation = "https://cosmo-sims.github.io/DISCO-EB/"
+Source = "https://github.com/cosmo-sims/DISCO-EB"
+Issues = "https://github.com/cosmo-sims/DISCO-EB/issues"
+
+[project.optional-dependencies]
+cuda12 = ["jax[cuda12]>=0.6.2"]
+# JAX's CUDA 13 build starts after it dropped Python 3.10, so on 3.10 this
+# extra installs nothing and only `cuda12` gives a GPU-enabled JAX.
+cuda13 = ["jax[cuda13]>=0.9.1; python_version >= '3.11'"]
+
+[dependency-groups]
+# The docs build (Sphinx, MyST and autodoc) imports the package, so its
+# environment is the project with its CPU dependencies plus this group:
+# `uv sync --no-default-groups --group docs`. No GPU is needed.
+docs = [
+    "sphinx>=8.1",
+    "myst-parser>=4.0",
+    "sphinx-book-theme>=1.1",
+    "sphinx-design>=0.6",
+    "sphinx-autobuild>=2024.10",
 ]
+dev = [
+    # The CLASS references the accuracy tests compare against. The tests skip
+    # without it, so a missing classy reads as a pass in `-q` output.
+    "classy>=3.3.4.0",
+    "ipykernel>=6.31.0",
+    "matplotlib>=3.9.4",
+    "pre-commit>=4.4.0",
+    "pytest>=9.0.2",
+    "pytest-benchmark>=5.2.3",
+    "pytest-cov>=7.0.0",
+    "pytest-regressions>=2.10.0",
+    "ruff>=0.15.5",
+    # The same type checker CI and the pre-commit hook run.
+    "ty>=0.0.83",
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 # The GPU stack must match modax's lock: these kernels are compiled by
 # numba-cuda-mlir and linked by nvjitlink, and 0.5.2 with CUDA 13.4 emits a
@@ -52,7 +97,6 @@ constraint-dependencies = [
     "numba-cuda-mlir==0.5.1",
     "cuda-toolkit==13.2.1; python_version >= '3.11'",
 ]
-
 # numba-enzyme caps numba below 0.62 and llvmlite below 0.45 for its CPU
 # pipeline, which hands llvmlite's IR to its vendored LLVM 15 tools. This
 # project only uses its CUDA backend, where numba-cuda-mlir emits the IR, so
@@ -60,12 +104,72 @@ constraint-dependencies = [
 # the LLVM 15 releases (numba 0.61, numpy 2.2).
 override-dependencies = ["numba>=0.61", "llvmlite>=0.44"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
-[project.optional-dependencies]
-dev = ["pytest", "pytest-benchmark", "pytest-regressions", "camb>=1.6.0", "classy>=3.3.4.0", "ipykernel>=6.31.0", "matplotlib>=3.9.4", "pandas"]
-docs = ["sphinx", "nbsphinx"]
+[tool.semantic_release]
+# python-semantic-release (the `publish` workflow) reads the Conventional
+# Commits since the last `v*` tag, picks the next version, writes it here,
+# updates CHANGELOG.md, commits, tags and builds.
+version_toml = ["pyproject.toml:project.version"]
+tag_format = "v{version}"
+commit_parser = "conventional"
+commit_message = "chore(release): v{version}"
+allow_zero_version = true
+major_on_zero = false
+# uv.lock records the project's own version, so the build refreshes that one
+# entry and stages it with the release commit. `set -e`: a failed step must
+# stop the release.
+build_command = """
+set -e
+python -m pip install "uv==0.13.7"
+uv lock --upgrade-package "$PACKAGE_NAME"
+git add uv.lock
+uv build
+"""
 
-[project.urls]
-Homepage = "https://github.com/ohahn/DISCO-EB"
-Issues = "https://github.com/ohahn/DISCO-EB/issues"
-Repository = "https://github.com/ohahn/DISCO-EB.git"
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.changelog]
+mode = "update"
+insertion_flag = "<!-- version list -->"
+exclude_commit_patterns = ['^chore\(release\):']
+
+[tool.semantic_release.changelog.default_templates]
+changelog_file = "CHANGELOG.md"
+
+[tool.ruff]
+# The notebooks still call the removed diffrax `evolve_perturbations*` API and
+# await porting to solve_eb; they are not linted until then.
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+# On top of the default `select`, enable import sorting.
+extend-select = ["I"]
+
+[tool.ruff.lint.per-file-ignores]
+# The examples set environment variables and enable x64 before importing JAX
+# and DISCO-EB, which must happen first.
+"examples/*" = ["E402"]
+
+[tool.coverage.run]
+source = ["discoeb"]
+branch = true
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.ty.src]
+# The shipped package is what the type check gates.
+include = ["src/discoeb"]
+
+[tool.ty.rules]
+# numba-cuda-mlir assembles `cuda.local` and friends onto the `cuda` namespace
+# at import time rather than as real submodules.
+possibly-missing-submodule = "ignore"

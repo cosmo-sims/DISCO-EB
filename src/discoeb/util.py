@@ -41,7 +41,7 @@ def generalized_gauss_laguerre_weights(n, alpha):
 
     # The weights are given by the square of the first component of the eigenvectors,
     # multiplied by the zeroth moment: Γ(α+1).
-    if type(alpha) == int:
+    if isinstance(alpha, int):
         weights = (V[0, :] ** 2) * jax.scipy.special.factorial(alpha)
     else:
         weights = (V[0, :] ** 2) * jax.scipy.special.gamma(alpha + 1)

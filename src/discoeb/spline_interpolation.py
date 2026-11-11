@@ -163,9 +163,11 @@ class FastUniformCubicSpline1D(object):
         n = yin.shape[0]
 
         # 1. Forward-fill trailing NaNs in y using lax.scan
-        _, y = jax.lax.scan(
-            lambda c, v: (jnp.where(jnp.isnan(v), c, v),) * 2, yin[0], yin
-        )
+        def _fill_forward(last, v):
+            v = jnp.where(jnp.isnan(v), last, v)
+            return v, v
+
+        _, y = jax.lax.scan(_fill_forward, yin[0], yin)
 
         if n < 3:
             raise ValueError("There must be at least three data points.")

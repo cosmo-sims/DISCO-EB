@@ -130,7 +130,7 @@ import os
 import types
 from collections import namedtuple
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Generic, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 import numpy as np
 
@@ -306,7 +306,7 @@ class State:
             )
 
     def resolve(self, component) -> tuple[int, ...]:
-        spec = self.shape(component) if callable(self.shape) else self.shape
+        spec: Any = self.shape(component) if callable(self.shape) else self.shape
         if spec is None or spec == ():
             return ()
         if isinstance(spec, int):
@@ -520,7 +520,7 @@ def _providers(component: Component, states: Mapping[str, _State]) -> list[_Prov
 
 
 def _bound_function(
-    fn: Callable, jit: Callable, names: Mapping[str, object], memo: dict
+    fn: types.FunctionType, jit: Callable, names: Mapping[str, object], memo: dict
 ) -> Callable:
     """``fn`` compiled by ``jit`` with its globals resolved.
 
@@ -797,7 +797,7 @@ class Model:
         self.components = list(components)
         self.sums = tuple(sums)
         labels = [c.label for c in self.components]
-        duplicates = sorted({l for l in labels if labels.count(l) > 1})
+        duplicates = sorted({label for label in labels if labels.count(label) > 1})
         if duplicates:
             raise ValueError(f"two components of one class: {duplicates}")
         self.states: dict[str, _State] = {}
@@ -1057,7 +1057,10 @@ class Model:
 
         def call(provider, buffer=None):
             namespace[provider.symbol] = _bound_function(provider.fn, jit, names, memo)
-            args = [buffer if n == OUTPUT else n for n in provider.signature]
+            args = [
+                buffer if n == OUTPUT and buffer is not None else n
+                for n in provider.signature
+            ]
             if provider.takes_self:
                 namespace[provider.self_symbol] = provider.component.device_self()
                 args.insert(0, provider.self_symbol)
@@ -1289,13 +1292,23 @@ def _zeros(target: str, shape: tuple) -> list[str]:
     ]
 
 
-def _compile(name: str, source: str, namespace: dict[str, object]) -> Callable:
+class _Generated(Protocol):
+    """A generated function, carrying the source it was compiled from."""
+
+    _generated_source: str
+
+    def __call__(self, *args: Any) -> Any: ...
+
+    def __hash__(self) -> int: ...
+
+
+def _compile(name: str, source: str, namespace: dict[str, object]) -> _Generated:
     """Exec ``source`` under a filename ``linecache`` knows, so numba can read it back."""
 
     filename = f"<discoeb generated {name} {next(_SOURCES)}>"
     linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
     scope: dict[str, object] = {}
     exec(compile(source, filename, "exec"), namespace, scope)  # noqa: S102
-    fn = scope[name]
+    fn: Any = scope[name]
     fn._generated_source = source
     return fn

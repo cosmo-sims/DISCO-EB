@@ -1,0 +1,38 @@
+# https://pre-commit.com -- install the hooks once with `uv run pre-commit
+# install`, after which every `git commit` runs the same three checks the
+# `lint` workflow runs, on the files being committed.
+#
+# `default_install_hook_types` makes that one install cover the commit-msg
+# stage too, where conventional-pre-commit checks the message's format.
+#
+# The revisions below are pinned to the versions in uv.lock, so a local commit
+# and CI cannot disagree about what counts as formatted. Bump them together.
+default_install_hook_types: [pre-commit, commit-msg]
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.5
+    hooks:
+      # Lint before format: `--fix` can leave a rewritten line the formatter
+      # then wants to wrap differently, and this way the formatter has the last
+      # word rather than a second commit.
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/astral-sh/ty-pre-commit
+    rev: v0.0.83
+    hooks:
+      # Deliberately passed no filenames: ty checks the project as configured
+      # by `[tool.ty.src]` in pyproject.toml, which scopes it to `src/discoeb`.
+      # Checking a file in isolation would report imports it cannot see.
+      - id: ty
+
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.5.0
+    hooks:
+      # Commit messages follow Conventional Commits: `type(scope): subject`,
+      # with the default types (feat, fix, build, chore, ci, docs, perf,
+      # refactor, revert, style, test).
+      - id: conventional-pre-commit
+        stages: [commit-msg]

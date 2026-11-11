@@ -1,15 +1,34 @@
-.idea/
-docs/_build
-*.egg-info/
-dist/
-build/
-
-*/__pycache__
-uv.lock
-
-# cache files
-.pyc
+# Python-generated files
 __pycache__/
+*.py[oc]
+build/
+dist/
+*.egg-info
 
-# test cache files
+# Virtual environments
+.venv
+.venv-docs
+
+# Editors
+.idea/
+
+# AI assistant memory and local settings. CLAUDE.md is a local symlink to
+# AGENTS.md, which is the tracked guidance for every coding agent.
+CLAUDE.md
+CLAUDE.local.md
+GEMINI.md
+.claude/settings.json
+.claude/settings.local.json
+
+# Sphinx build output
+docs/_build/
+
+# Coverage output (pytest --cov); CI uploads coverage.xml as an artifact
+.coverage
+coverage.xml
+htmlcov/
+
+# Test caches
+.pytest_cache/
+.ruff_cache/
 tests/resources/cmb_test_data_cache.pkl

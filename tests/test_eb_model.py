@@ -45,8 +45,8 @@ def test_the_state_order_is_the_layout(name):
         assert model.index["clxq"] == layout.ix_clxq
     if layout.has_massive_neutrinos:
         for q in range(layout.nqmax):
-            for l in range(layout.lmaxnu + 1):
-                assert model.index[f"psi_{q}_{l}"] == layout.ix_psi(l, q)
+            for ell in range(layout.lmaxnu + 1):
+                assert model.index[f"psi_{q}_{ell}"] == layout.ix_psi(ell, q)
 
 
 @pytest.mark.parametrize("name", list(LAYOUTS))
@@ -70,7 +70,7 @@ def test_the_rhs_builds_and_is_finite(name):
 
 def test_the_einstein_sources_sum_over_the_enabled_species():
     model, _ = build(LAYOUTS["flat-lcdm"])
-    lines = [l.strip() for l in model.source.splitlines()]
+    lines = [ell.strip() for ell in model.source.splitlines()]
     assert (
         "grho = Curvature__grho(Curvature_self, grhok) + ColdDarkMatter__grho(ColdDarkMatter_self, grhoc_t) + Baryons__grho(Baryons_self, grhob_t)"
         " + Photons__grho(Photons_self, grhog_t) + MasslessNeutrinos__grho(MasslessNeutrinos_self, grhor_t) + CosmologicalConstant__grho(CosmologicalConstant_self, grhov_t)"
@@ -100,7 +100,7 @@ def test_the_einstein_sources_sum_over_the_enabled_species():
 
 def test_thomson_scattering_writes_the_photon_and_baryon_derivatives():
     model, _ = build(LAYOUTS["flat-lcdm"])
-    lines = [l.strip() for l in model.source.splitlines()]
+    lines = [ell.strip() for ell in model.source.splitlines()]
     assert (
         "d_vb = Baryons__d_vb(Baryons_self, adotoa, vb, k, cs2, clxb) + ThomsonScattering__d_vb(ThomsonScattering_self, photbar, opacity, slip)"
         in lines
@@ -115,7 +115,7 @@ def test_thomson_scattering_writes_the_photon_and_baryon_derivatives():
         in lines
     )
     # Neutrinos are collisionless: one writer.
-    assert sum("__d_n(" in l for l in lines) == 1
+    assert sum("__d_n(" in ell for ell in lines) == 1
 
 
 def test_a_hierarchy_needs_an_octupole():

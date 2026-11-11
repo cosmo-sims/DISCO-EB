@@ -68,7 +68,7 @@ line-of-sight sources needs. Spatial curvature enters ``grho`` through
 def _needs_octupole(**lmax):
     """The quadrupole equations couple to ``l = 3``, so a hierarchy truncates at 3 or above."""
 
-    low = {name: l for name, l in lmax.items() if l < 3}
+    low = {name: ell for name, ell in lmax.items() if ell < 3}
     if low:
         raise ValueError(f"a hierarchy must reach at least the octupole; got {low}")
 
@@ -313,8 +313,10 @@ def stream(k, kv, z, sigma, dlnf0, x, inv_tau, output):
         kv * (1.0 / 5.0) * (2.0 * x[1] - 3.0 * x[3]) - (2.0 / 15.0) * k * sigma * dlnf0
     )
     lmax = len(x) - 1
-    for l in range(3, lmax):
-        output[l] = kv * (l * x[l - 1] - (l + 1) * x[l + 1]) * (1.0 / (2 * l + 1))
+    for ell in range(3, lmax):
+        output[ell] = (
+            kv * (ell * x[ell - 1] - (ell + 1) * x[ell + 1]) * (1.0 / (2 * ell + 1))
+        )
     output[lmax] = kv * x[lmax - 1] - (lmax + 1) * x[lmax] * inv_tau
 
 
@@ -382,21 +384,23 @@ class Photons(Species):
 
     def d_theta(self, k, z, sigma, theta, inv_tau, rsa, output):
         stream(k, k, z, sigma, -4.0, theta, inv_tau, output)
-        for l in range(len(theta)):
-            output[l] = (1.0 - rsa) * output[l]
+        for ell in range(len(theta)):
+            output[ell] = (1.0 - rsa) * output[ell]
 
     def d_e(self, k, e, inv_tau, rsa, output):
         lmax = len(e) + 1
         output[0] = -k * e[1] * (1.0 / 3.0)
-        for l in range(3, lmax):
-            upfac = (l + 3.0) * (l - 1.0) / (l + 1.0)
-            output[l - 2] = k * (l * e[l - 3] - upfac * e[l - 1]) * (1.0 / (2 * l + 1))
+        for ell in range(3, lmax):
+            upfac = (ell + 3.0) * (ell - 1.0) / (ell + 1.0)
+            output[ell - 2] = (
+                k * (ell * e[ell - 3] - upfac * e[ell - 1]) * (1.0 / (2 * ell + 1))
+            )
         output[lmax - 2] = (
             k * lmax * e[lmax - 3] * (1.0 / (2 * lmax + 1))
             - (lmax + 3) * e[lmax - 2] * inv_tau
         )
-        for l in range(len(e)):
-            output[l] = (1.0 - rsa) * output[l]
+        for ell in range(len(e)):
+            output[ell] = (1.0 - rsa) * output[ell]
 
 
 class ThomsonScattering(Interaction):
@@ -426,8 +430,8 @@ class ThomsonScattering(Interaction):
         damp = (1.0 - rsa) * opacity
         output[1] = damp * slip
         output[2] = -damp * (theta[2] - polter)
-        for l in range(3, len(theta)):
-            output[l] = -damp * theta[l]
+        for ell in range(3, len(theta)):
+            output[ell] = -damp * theta[ell]
 
     def d_e(self, opacity, polter, e, rsa, output):
         damp = (1.0 - rsa) * opacity
@@ -484,8 +488,8 @@ class MasslessNeutrinos(Species):
 
     def d_n(self, k, z, sigma, n, inv_tau, rsa, output):
         stream(k, k, z, sigma, -4.0, n, inv_tau, output)
-        for l in range(len(n)):
-            output[l] = (1.0 - rsa) * output[l]
+        for ell in range(len(n)):
+            output[ell] = (1.0 - rsa) * output[ell]
 
 
 class MassiveNeutrinos(Species):
@@ -510,8 +514,8 @@ class MassiveNeutrinos(Species):
     def _psi_initial(self, n, output):
         """Still relativistic: each bin starts as the massless hierarchy scaled by dlnf0/dlnq."""
         for i in range(self.NQMAX):
-            for l in range(4):
-                output[i, l] = -0.25 * n[l] * self.dlnf0[i]
+            for ell in range(4):
+                output[i, ell] = -0.25 * n[ell] * self.dlnf0[i]
 
     psi = State(lambda self: (self.NQMAX, self.LMAX_NU + 1), initial=_psi_initial)
 
@@ -564,23 +568,27 @@ class MassiveNeutrinos(Species):
 # --- dark energy --------------------------------------------------------------------
 
 
-class CosmologicalConstant(Species):
-    """A cosmological constant: density only, no perturbations."""
+class _DarkEnergyDensity(Species):
+    """The dark-energy density today and its part of the Friedmann sum, for either kind."""
 
     def grhov(self, grhov_nominal, eps, dir_grhov):
         return grhov_nominal + eps * dir_grhov
 
-    def grhov_t(self, grhov, a2):
-        return grhov * a2
-
     def grho(self, grhov_t):
         return grhov_t
+
+
+class CosmologicalConstant(_DarkEnergyDensity):
+    """A cosmological constant: density only, no perturbations."""
+
+    def grhov_t(self, grhov, a2):
+        return grhov * a2
 
     def gpres(self, grhov_t):
         return -grhov_t
 
 
-class DarkEnergy(CosmologicalConstant):
+class DarkEnergy(_DarkEnergyDensity):
     """A CPL fluid ``w = w_0 + w_a (1 - a)`` with rest-frame sound speed ``cs2_DE``.
 
     Synchronous-gauge fluid equations after Ballesteros & Lesgourgues 2010, with
@@ -774,7 +782,7 @@ def neutrino_momentum_bins(nqmax: int):
     rule's eigendecomposition, op by op, cost a second of compiles a call.
     """
 
-    return _momentum_bins(int(nqmax), bool(jax.config.jax_enable_x64))
+    return _momentum_bins(int(nqmax), bool(jax.config.read("jax_enable_x64")))
 
 
 @functools.lru_cache(maxsize=None)
@@ -804,7 +812,7 @@ def _neutrino_table(n_y_grid: int = 1000):
     setting in force then, and concretely even when first used inside a ``jit``.
     """
 
-    key = (n_y_grid, bool(jax.config.jax_enable_x64))
+    key = (n_y_grid, bool(jax.config.read("jax_enable_x64")))
     table = _NEUTRINO_TABLE.get(key)
     if table is None:
         with jax.ensure_compile_time_eval():
