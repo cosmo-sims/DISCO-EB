@@ -1,3 +1,7 @@
+<p align="center">
+  <img alt="DISCO-EB logo" src="docs/assets/disco-eb.png" width="600">
+</p>
+
 <h1 align="center">DISCO-EB</h1>
 
 <!--
