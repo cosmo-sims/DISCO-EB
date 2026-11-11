@@ -51,16 +51,6 @@ The batched perturbation solve and the matter power spectrum.
    :undoc-members:
    :show-inheritance:
 
-discoeb.thermodynamics_recfast module
--------------------------------------
-
-The stand-alone recfast solve used for the grids and the tests.
-
-.. automodule:: discoeb.thermodynamics_recfast
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
 discoeb.spline_interpolation module
 -----------------------------------
 

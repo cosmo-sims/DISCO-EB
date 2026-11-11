@@ -25,9 +25,8 @@
 
 """The recombination history as states of each wave mode's trajectory.
 
-RECFAST's ``(x_H, x_He, T_m)`` (:mod:`discoeb.thermodynamics_recfast`, statement
-for statement), ``ln a`` from the model's own Friedmann sum and the optical depth
-``kappa = int kappa' dtau`` ride in front of the Einstein-Boltzmann hierarchy as
+RECFAST's ``(x_H, x_He, T_m)``, ``ln a`` from the model's own Friedmann sum
+and the optical depth ``kappa = int kappa' dtau`` ride in front of the Einstein-Boltzmann hierarchy as
 five more states of the joint system, and :class:`Recombination` provides the
 hierarchy with ``a``, the Thomson opacity, ``c_s^2`` and the massive-neutrino
 density ratio from them. These states read nothing of the hierarchy, so the
@@ -57,60 +56,113 @@ import os
 
 from .component import Component, State, float32, float64
 from .eb_model import neutrino_momentum_bins
-from .thermodynamics_recfast import (
-    CB1,
-    CDB,
-    CK,
-    CL,
-    CR,
-    CT,
-    DZ_H_SAHA_BLEND,
-    FUDGE_H,
-    NQ_NU_BACKGROUND,
-    T_0,
-    T_1,
-    Z_H_SAHA_END,
-    A2P_s,
-    A2P_t,
-    AGauss1,
-    AGauss2,
-    Bfact,
-    CB1_He1,
-    CDB_He,
-    CK_He,
-    CL_He,
-    CL_PSt,
-    H_frac,
-    L_He2St_ion,
-    L_He_2p,
-    L_He_2Pt,
-    Lambda,
-    Lambda_He,
-    a_PPB,
-    a_trip,
-    a_VF,
-    b_PPB,
-    b_trip,
-    b_VF,
-    bigH,
-    c_PPB,
-    const_c,
-    const_c_Mpc_s,
-    const_dens_fac,
-    const_EionHe12s,
-    const_h,
-    const_h_c_L_He_2St_kB,
-    const_kB,
-    const_mH,
-    const_mHe_mH,
-    d_PPB,
-    sigma_He_2Ps,
-    sigma_He_2Pt,
-    wGauss1,
-    wGauss2,
-    zGauss1,
-    zGauss2,
+
+# RECFAST's physical and atomic constants (PDG 2023 where noted).
+const_mH = 1.67353284e-27  # H atom mass [kg], PDG 2023
+const_me = 9.1093837015e-31  # Electron mass [kg], PDG 2023
+const_mHe_mH = 3.97146570884  # Helium / Hydrogen mass ratio
+const_c = 2.99792458e08  # Speed of light [m/s]
+const_h = 6.62607015e-34  # Planck's constant [Js], PDG 2023
+const_kB = 1.380649e-23  # Boltzman's constant [J/K], PDG 2023
+const_sigma = 6.6524587321e-29  # Thomson scattering cross section [m^2], PDG 2023
+const_arad = 4 * 5.670374419e-8 / const_c  # Radiation constant [Ws/m^3/K^4], PDG 2023
+
+# bigH = 100.0e3/(1.0e6*3.0856775807e16)  # Ho in s-1
+bigH = 3.2407792902755102e-18  # Ho in s-1
+const_dens_fac = (
+    11.223810928601939  # 3 bigH^2 / (8 pi G m_H), G = 6.67430e-11 m^3/kg/s^2
 )
+
+const_c_Mpc_s = 9.71561189e-15  # Mpc/s
+
+## COMMENTS FOR ALL CONSTANTS HAVE BEEN PRESERVED AS MUCH AS POSSIBLE AS THEY ARE IN THE ORIGINAL CODE
+
+const_EionHe12s = 6.314878282674e5  # HeII 1s ionization energy in [K]
+
+# 2 photon rates and atomic levels
+Lambda = 8.2245809  # H 2s-1s two photon rate
+Lambda_He = 51.3  # HeI 2s-1s two photon rate
+L_H_ion = 1.096787737e7  # level for H ionization in m^-1
+L_H_alpha = 8.225916453e6  # level for H Ly alpha in m^-1
+L_He1_ion = 1.98310772e7  # level for HeI ionization in m^-1
+L_He_2s = 1.66277434e7  # level for HeI 2s in m^-1
+L_He_2p = 1.71134891e7  # level for He 2p (21P1-11S0) in m^-1
+
+# Atomic data for HeI
+A2P_s = 1.798287e9  # Einstein A coefficient for He 21P1-11S0
+A2P_t = 177.58  # Einstein A coefficient for He 23P1-11S0
+L_He_2Pt = 1.690871466e7  # level for 23P012-11S0 in m^-1
+L_He_2St = 1.5985597526e7  # level for 23S1-11S0 in m^-1
+L_He2St_ion = 3.8454693845e6  # level for 23S1-continuum in m^-1
+sigma_He_2Ps = 1.436289e-22  # H ionization x-section at HeI 21P1-11S0 freq. in m^2
+sigma_He_2Pt = 1.484872e-22  # H ionization x-section at HeI 23P1-11S0 freq. in m^2
+
+# Gaussian fits of the hydrogen fudge (Rubino-Martin et al. 2010), at the
+# RECFAST 1.5.2 values that CLASS (recfast_AGauss2, recfast_zGauss2) and CAMB
+# use, and with them the Planck 2018 analysis.  RECFAST 1.5.0's AGauss2 = 0.05,
+# zGauss2 = 6.75 and fudge 1.105 left x_e 1.8 percent above CLASS's after
+# recombination and the TT spectrum 0.14 percent low at l = 300-2000.
+AGauss1 = -0.14  # amplitude of the 1st Gaussian for the H fudging
+AGauss2 = 0.079  # amplitude of the 2nd Gaussian for the H fudging
+zGauss1 = 7.28  # ln(1+z) central value of the 1st Gaussian
+zGauss2 = 6.73  # ln(1+z) central value of the 2nd Gaussian
+wGauss1 = 0.18  # width of the 1st Gaussian
+wGauss2 = 0.33  # width of the 2nd Gaussian
+FUDGE_H = 1.125  # hydrogen Peebles fudge with the Gaussian corrections (RECFAST 1.5.2: 1.14 - 0.015)
+
+H_frac = 1.0e-3
+
+Lalpha = 1.0 / L_H_alpha  # Ly alpha wavelength in SI units
+Lalpha_He = 1.0 / L_He_2p  # Helium I 2p-1s wavelength in SI units
+DeltaB = (
+    const_h * const_c * (L_H_ion - L_H_alpha)
+)  # energy of first excited state from continuum = 3.4eV
+CDB = DeltaB / const_kB  # CDB=DeltaB/k_B			Constants derived from B1,B2,R
+DeltaB_He = (
+    const_h * const_c * (L_He1_ion - L_He_2s)
+)  # energy of first excited state from cont. for He = 3.4eV
+CDB_He = DeltaB_He / const_kB  # CDB_He=DeltaB_He/k_B n=2-infinity for He in Kelvin
+CB1 = (
+    const_h * const_c * L_H_ion / const_kB
+)  # CDB*4.			Lalpha and sigma_Th, calculated
+CB1_He1 = const_h * const_c * L_He1_ion / const_kB  # CB1 for HeI ionization potential
+
+CR = 2.0 * math.pi * (const_me / const_h) * (const_kB / const_h)
+CK = Lalpha**3 / (8.0 * math.pi)
+CK_He = Lalpha_He**3 / (8.0 * math.pi)
+CL = const_c * const_h / (const_kB * Lalpha)
+CL_He = const_c * const_h / (const_kB / L_He_2s)
+CT = (8.0 / 3.0) * (const_sigma / (const_me * const_c)) * const_arad
+Bfact = const_h * const_c * (L_He_2p - L_He_2s) / const_kB
+CL_PSt = const_h * const_c * (L_He_2Pt - L_He_2St) / const_kB
+const_h_c_L_He_2St_kB = const_h * const_c * L_He_2St / (const_kB)
+
+# Pequignot, Petitjean & Boisson fitting parameter for Hydrogen
+a_PPB = 4.309
+b_PPB = -0.6166
+c_PPB = 0.6703
+d_PPB = 0.5300
+
+# Verner and Ferland type fitting parameter for Helium
+a_VF = 10.0 ** (-16.744)
+b_VF = 0.711
+T_0 = 10 ** (0.477121)
+T_1 = 10 ** (5.114)
+
+# HeI triplet recombination rate fitting parameters
+a_trip = 10.0 ** (-16.306)
+b_trip = 0.761
+
+NQ_NU_BACKGROUND = 8
+"""Momentum nodes of the massive-neutrino background density in the recombination block."""
+
+Z_H_SAHA_END = 1600.0
+"""Redshift below which hydrogen follows the rate equation instead of Saha equilibrium
+(CLASS's ``recfast_z_full_H_recombination``)."""
+
+DZ_H_SAHA_BLEND = 50.0
+"""Half-width in redshift of the blend from the Saha slope into the rate equation
+(CLASS's ``recfast_delta_z_full_H_recombination``)."""
 
 THERMAL_PARAMETERS = (
     "YHe_nominal",
@@ -173,7 +225,7 @@ else:
 
 
 def saha_slope(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
-    """``d x / d z`` of the Saha ionization fraction at ``z`` (:func:`thermodynamics_recfast.Saha`).
+    """``d x / d z`` of the Saha ionization fraction at ``z`` (RECFAST's Saha equation).
 
     One exit: numba-cuda-mlir gives a function returning from several branches
     a result slot, and inlining it at two call sites of one caller merges the
@@ -451,7 +503,7 @@ class Recombination(Component):
     kappa(tau)))``. The quantities the hierarchy reads: ``a``, ``opacity``
     (``kappa' = x_e n_H sigma_T a``, with reionization), ``cs2`` (from ``T_m``
     and its own rate, no spline derivative) and ``rhonu`` (the
-    ``NQ_NU_BACKGROUND``-node quadrature of the RECFAST kernel).
+    :data:`NQ_NU_BACKGROUND`-node quadrature).
     """
 
     lna = State(initial=lambda lna_start: lna_start)

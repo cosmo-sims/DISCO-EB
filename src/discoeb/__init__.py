@@ -3,9 +3,8 @@
 DISCO-EB solves the background, the thermal history (RECFAST with
 reionization) and the linear perturbation hierarchy of each wave mode on the
 GPU: :mod:`discoeb.component` (the component model), :mod:`discoeb.eb_model`
-(the species and their equations), :mod:`discoeb.recombination` and
-:mod:`discoeb.thermodynamics_recfast` (the thermal history) and
-:mod:`discoeb.perturbations` (layouts, batching, the modax launches). The CMB
+(the species and their equations), :mod:`discoeb.recombination` (the
+thermal history) and :mod:`discoeb.perturbations` (layouts, batching, the modax launches). The CMB
 code, the separate package ``discocmb`` (DISCO-CMB), turns its output into
 angular power spectra -- line-of-sight sources, grids, transfer functions,
 projection and lensing. It imports from the package itself alone (and the generic

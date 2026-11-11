@@ -9,21 +9,12 @@ class spline_interpolation(object):
         self,
         xin: jnp.ndarray,
         yin: jnp.ndarray,
-        integrate_from_start: bool = True,
-        uniform: bool = False,
     ):
-        # def spline_interpolation(x: jnp.ndarray, y: jnp.ndarray, integrate_from_start: bool = True):
         """
-        Constructs a natural cubic spline interpolator and an integrator from input data x and y.
+        Constructs a natural cubic spline interpolator from input data x and y.
 
         The spline is built by solving a tridiagonal system for the second derivatives
         (using the Thomas algorithm) under natural boundary conditions (S[0] = S[-1] = 0).
-
-        In addition to returning an interpolator function that evaluates the spline at new x values,
-        this function returns an integrator function that computes the definite integral of the spline.
-        The integrator takes an extra flag:
-        - from_start=True returns the integral from x[0] to x_new.
-        - from_start=False returns the integral from x_new to x[-1].
 
         Args:
             x: 2D array of x-coordinates (assumed sorted in increasing order).
@@ -101,84 +92,28 @@ class spline_interpolation(object):
             # Only two points – linear interpolation.
             S_full = jnp.zeros((2, B))
 
-        # Precompute coefficients and integrals on each interval.
-        # For interval i, the cubic polynomial is represented as:
-        #   P_i(x) = a_i + b_i*(x - x[i]) + c_i*(x - x[i])^2 + d_i*(x - x[i])^3
-        # where:
-        #   a_i = y[i]
-        #   b_i = (y[i+1]-y[i])/h[i] - (h[i]/6)*(S_full[i+1]+2*S_full[i])
-        #   c_i = S_full[i] / 2
-        #   d_i = (S_full[i+1]-S_full[i]) / (6*h[i])
-        a_i = y[:-1]
-        b_i = (y[1:] - y[:-1]) / h - h * (S_full[1:] + 2 * S_full[:-1]) / 6.0
-        c_i = S_full[:-1] / 2.0
-        d_i = (S_full[1:] - S_full[:-1]) / (6.0 * h)
-
-        # The exact integral over the full interval [x[i], x[i+1]] is:
-        #   I_full[i] = a_i*h[i] + b_i*h[i]^2/2 + c_i*h[i]^3/3 + d_i*h[i]^4/4
-        I_full = a_i * h + b_i * (h**2) / 2 + c_i * (h**3) / 3 + d_i * (h**4) / 4
-        zeros = jnp.zeros((1, B))
-        # Cumulative integral from x[0] up to each knot.
-        I_cum = jnp.concatenate([zeros, jnp.cumsum(I_full, axis=0)], axis=0)
-        I_total = I_cum[-1, :]
-
-        # Store the spline data.
         self._n_ = n
-        self._x_, self._y_, self._integrate_from_start_ = x, y, integrate_from_start
-        self._S_full_, self._I_total_, self._I_cum_ = S_full, I_total, I_cum
-        self._uniform_ = uniform
-        self._x0_ = x[0]
-        self._dx_inv_ = 1.0 / (x[1] - x[0])
+        self._x_, self._y_, self._S_full_ = x, y, S_full
 
     # Operations for flattening/unflattening representation
     def tree_flatten(self):
-        children = (
-            self._x_,
-            self._y_,
-            self._integrate_from_start_,
-            (self._S_full_, self._I_total_, self._I_cum_),
-            self._x0_,
-            self._dx_inv_,
-        )
-        aux_data = {"n": self._n_, "uniform": self._uniform_}
-        return children, aux_data
+        return (self._x_, self._y_, self._S_full_), {"n": self._n_}
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         obj = cls.__new__(cls)  # Create instance without calling __init__
-        (
-            obj._x_,
-            obj._y_,
-            obj._integrate_from_start_,
-            (obj._S_full_, obj._I_total_, obj._I_cum_),
-            obj._x0_,
-            obj._dx_inv_,
-        ) = children
+        obj._x_, obj._y_, obj._S_full_ = children
         obj._n_ = aux_data["n"]
-        obj._uniform_ = aux_data.get("uniform", False)
         return obj
 
     def _find_index(self, x_new):
-        """Find the interval index for spline evaluation.
-
-        For uniform grids, uses O(1) direct index computation instead of searchsorted.
-        """
-        n = self._n_
-        if self._uniform_:
-            idx = jnp.clip(
-                jnp.floor((x_new - self._x0_) * self._dx_inv_).astype(jnp.int32),
-                0,
-                n - 2,
-            )
-        else:
-            # idx = jnp.clip(jnp.searchsorted(self._x_, x_new) - 1, 0, n - 2)
-            x_new_ = jnp.atleast_2d(x_new)
-            idx = jnp.clip(
-                jnp.sum(self._x_[:, None, :] < x_new_[None, :, :], axis=0) - 1, 0, n - 2
-            )
-            # print("Naive shape = ",idx.shape, "supposed shape=",x_new.shape)
-            # idx = idx.reshape(jnp.shape(x_new))
-        return idx
+        """The interval index ``i`` with ``x[i] <= x_new < x[i+1]``, clipped to the grid."""
+        x_new_ = jnp.atleast_2d(x_new)
+        return jnp.clip(
+            jnp.sum(self._x_[:, None, :] < x_new_[None, :, :], axis=0) - 1,
+            0,
+            self._n_ - 2,
+        )
 
     def evaluate(self, x_new: jnp.ndarray):
         """
@@ -216,131 +151,12 @@ class spline_interpolation(object):
         )
         return y_new  # jnp.where(x_new.shape[0] == 1, y_new[0], y_new)
 
-    def integral(self, x_new: jnp.ndarray):
-        """
-        Evaluates the definite integral of the spline.
-
-        Args:
-            x_new: scalar or 1D array of new x values.
-            from_start: if True, returns the integral from x[0] to x_new;
-                        if False, returns the integral from x_new to x[-1].
-
-        Returns:
-            The definite integral values.
-        """
-        x_new = jnp.atleast_1d(x_new)
-        x_new = x_new.reshape(
-            x_new.shape[0], -1
-        )  # Extend last dimension if not already done
-        # Locate the interval index for each x_new.
-        idx = self._find_index(x_new)
-        xidx = jnp.take_along_axis(self._x_, idx, axis=0)
-        xidxp1 = jnp.take_along_axis(self._x_, idx + 1, axis=0)
-        yidx = jnp.take_along_axis(self._y_, idx, axis=0)
-        yidxp1 = jnp.take_along_axis(self._y_, idx + 1, axis=0)
-        Sidx = jnp.take_along_axis(self._S_full_, idx, axis=0)
-        Sidxp1 = jnp.take_along_axis(self._S_full_, idx + 1, axis=0)
-        Icumidx = jnp.take_along_axis(self._I_cum_, idx + 1, axis=0)
-
-        h_local = xidxp1 - xidx
-        d_val = x_new - xidx
-        # Compute the local coefficients for the interval.
-        a_local = yidx
-        b_local = (yidxp1 - yidx) / h_local - h_local * (yidxp1 + 2 * Sidx) / 6.0
-        c_local = Sidx / 2.0
-        d_local = (Sidxp1 - Sidx) / (6.0 * h_local)
-        # Compute the partial integral over the interval from x[idx] to x_new:
-        I_partial = (
-            a_local * d_val
-            + b_local * d_val**2 / 2
-            + c_local * d_val**3 / 3
-            + d_local * d_val**4 / 4
-        )
-        I_forward = Icumidx + I_partial
-        # If integrating from the start, return I_forward; otherwise, subtract from total.
-        if self._integrate_from_start_:
-            result = jnp.where(x_new.shape[0] == 1, I_forward[0], I_forward)
-        else:
-            result = jnp.where(
-                x_new.shape[0] == 1,
-                self._I_total_ - I_forward[0],
-                self._I_total_ - I_forward,
-            )
-        return result
-
-    def derivative(self, x_new: jnp.ndarray):
-        """
-        Computes the derivative of the spline at new x positions.
-
-        Args:
-            x_new: scalar or 1D array of new x values.
-
-        Returns:
-            The derivative (dy/dx) evaluated at x_new.
-        """
-        x_new = jnp.atleast_1d(x_new)
-        x_new = x_new.reshape(
-            x_new.shape[0], -1
-        )  # Extend last dimension if not already done
-        idx = self._find_index(x_new)
-        xidx = jnp.take_along_axis(self._x_, idx, axis=0)
-        xidxp1 = jnp.take_along_axis(self._x_, idx + 1, axis=0)
-        yidx = jnp.take_along_axis(self._y_, idx, axis=0)
-        yidxp1 = jnp.take_along_axis(self._y_, idx + 1, axis=0)
-        Sidx = jnp.take_along_axis(self._S_full_, idx, axis=0)
-        Sidxp1 = jnp.take_along_axis(self._S_full_, idx + 1, axis=0)
-
-        h_local = xidxp1 - xidx
-        d_val = x_new - xidx
-        # Local coefficients (as defined in the cubic polynomial):
-        b_local = (yidxp1 - yidx) / h_local - h_local * (Sidxp1 + 2 * Sidx) / 6.0
-        c_local = Sidx / 2.0
-        d_local = (Sidxp1 - Sidx) / (6.0 * h_local)
-        # Derivative of P_i(x) = b_i + 2*c_i*(x-x_i) + 3*d_i*(x-x_i)^2
-        dydx = b_local + 2 * c_local * d_val + 3 * d_local * d_val**2
-        return jnp.where(x_new.shape[0] == 1, dydx[0], dydx)
-
-    def derivative12(self, x_new: jnp.ndarray):
-        """
-        Computes both the first and the second derivative of the spline at new x positions.
-
-        Args:
-            x_new: scalar or 1D array of new x values.
-
-        Returns:
-            The derivatives (dy/dx),(d^2y/dx^2) evaluated at x_new.
-        """
-        x_new = jnp.atleast_1d(x_new)
-        x_new = x_new.reshape(
-            x_new.shape[0], -1
-        )  # Extend last dimension if not already done
-        idx = self._find_index(x_new)
-        xidx = jnp.take_along_axis(self._x_, idx, axis=0)
-        xidxp1 = jnp.take_along_axis(self._x_, idx + 1, axis=0)
-        yidx = jnp.take_along_axis(self._y_, idx, axis=0)
-        yidxp1 = jnp.take_along_axis(self._y_, idx + 1, axis=0)
-        Sidx = jnp.take_along_axis(self._S_full_, idx, axis=0)
-        Sidxp1 = jnp.take_along_axis(self._S_full_, idx + 1, axis=0)
-        h_local = xidxp1 - xidx
-        d_val = x_new - xidx
-        # Local coefficients (as defined in the cubic polynomial):
-        b_local = (yidxp1 - yidx) / h_local - h_local * (Sidxp1 + 2 * Sidx) / 6.0
-        c_local = Sidx / 2.0
-        d_local = (Sidxp1 - Sidx) / (6.0 * h_local)
-        # Derivative of P_i(x) = b_i + 2*c_i*(x-x_i) + 3*d_i*(x-x_i)^2
-        dydx = b_local + 2 * c_local * d_val + 3 * d_local * d_val**2
-        # 2nd derivative of P_i(x) = 2*c_i + 6*d_i*(x-x_i)
-        d2ydx2 = 2 * c_local + 6 * d_local * d_val
-        return jnp.where(x_new.shape[0] == 1, dydx[0], dydx), jnp.where(
-            x_new.shape[0] == 1, d2ydx2[0], d2ydx2
-        )
-
 
 @register_pytree_node_class
 class FastUniformCubicSpline1D(object):
-    def __init__(
-        self, xin: jnp.ndarray, yin: jnp.ndarray, integrate_from_start: bool = True
-    ):
+    """Natural cubic spline on a uniform grid, as Horner coefficients of the local coordinate."""
+
+    def __init__(self, xin: jnp.ndarray, yin: jnp.ndarray):
         h = xin[1] - xin[0]
         dx_inv = 1.0 / h
 
@@ -391,36 +207,22 @@ class FastUniformCubicSpline1D(object):
         c2 = 3.0 * S_i
         c3 = S_ip1 - S_i
 
-        # The exact integral over the full interval [x[i], x[i+1]] is:
-        I_full = h * (c0 + 0.5 * c1 + (1.0 / 3.0) * c2 + 0.25 * c3)
-        # Cumulative integral from x[0] up to each knot.
-        I_cum = jnp.pad(jnp.cumsum(I_full), (1, 0))
-        I_total = I_cum[-1]
-
-        # Store the spline data.
         self._h_ = h
-        self._integrate_from_start_ = integrate_from_start
         self._coeffs_ = jnp.stack([c0, c1, c2, c3], axis=-1)
-        self._I_total_ = I_total
-        self._I_cum_ = I_cum
         self._x0_ = xin[0]
         self._dx_inv_ = 1.0 / h
         self._max_idx_ = n - 2
 
     # Operations for flattening/unflattening representation
     def tree_flatten(self):
-        children = (self._coeffs_, self._I_cum_, self._x0_, self._h_)
-        aux_data = {"max_idx": self._max_idx_, "ifs": self._integrate_from_start_}
-        return children, aux_data
+        return (self._coeffs_, self._x0_, self._h_), {"max_idx": self._max_idx_}
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         obj = cls.__new__(cls)  # Create instance without calling __init__
-        obj._coeffs_, obj._I_cum_, obj._x0_, obj._h_ = children
+        obj._coeffs_, obj._x0_, obj._h_ = children
         obj._max_idx_ = aux_data["max_idx"]
-        obj._integrate_from_start_ = aux_data["ifs"]
         obj._dx_inv_ = 1.0 / obj._h_
-        obj._I_total_ = obj._I_cum_[-1]
         return obj
 
     def _find_index_t(self, x_new):
@@ -440,42 +242,3 @@ class FastUniformCubicSpline1D(object):
         p23 = c[..., 2] + t * c[..., 3]
         y_new = p01 + t2 * p23
         return y_new
-
-    def integral(self, x_new: jnp.ndarray):
-        """
-        Evaluates the definite integral of the spline.
-
-        Args:
-            x_new: scalar or 1D array of new x values.
-            from_start: if True, returns the integral from x[0] to x_new;
-                        if False, returns the integral from x_new to x[-1].
-
-        Returns:
-            The definite integral values.
-        """
-        # Locate the interval index for each x_new.
-        idx, t = self._find_index_t(x_new)
-        c = jax.lax.dynamic_slice(self._coeffs_, (idx, 0), (1, 4)).reshape(4)
-        I_cum = jax.lax.dynamic_slice(self._I_cum_, (idx,), (1,)).reshape(())
-
-        # Compute the local coefficients for the interval.
-        d0 = c[0]
-        d1 = 0.5 * c[1]
-        d2 = (1.0 / 3.0) * c[2]
-        d3 = 0.25 * c[3]
-
-        # 4. Estrin's scheme for degree-3 integrated polynomial (high ILP)
-        t2 = t * t
-        p01 = d0 + t * d1
-        p23 = d2 + t * d3
-        Q = p01 + t2 * p23
-
-        # 5. Local cell integral: dx * t * Q(t)
-        I_partial = self._h_ * t * Q
-
-        I_forward = I_cum + I_partial
-
-        if self._integrate_from_start_:
-            return I_forward
-        else:
-            return self._I_total_ - I_forward

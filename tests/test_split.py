@@ -37,8 +37,8 @@ def test_the_recombination_block_publishes_the_thermal_quantities():
 def test_the_recombination_block_steps_on_its_own():
     """The recombination block takes the same, fewer steps for every wave mode of a cosmology."""
     import numpy as np
+    from conftest import _cuda_available
     from test_perturbations import _perturbed_cosmologies
-    from test_reionization import _cuda_available
 
     from discoeb.perturbations import (
         PERTURB_ATOL,

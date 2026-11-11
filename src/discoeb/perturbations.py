@@ -1,7 +1,6 @@
 import functools
 import os
 from dataclasses import dataclass
-from functools import partial
 from typing import NamedTuple
 
 import jax
@@ -18,7 +17,6 @@ from .eb_model import (
     layout_state_names,
     neutrino_density_ratio,
     perturbation_model,
-    setup_background_evolution,
 )
 from .recombination import (
     THERMAL_PARAMETERS,
@@ -26,7 +24,6 @@ from .recombination import (
     Recombination,
     recombination_model,
 )
-from .thermodynamics_recfast import evaluate_thermo
 
 IX_CLXC = 1
 """State-vector index of the CDM density contrast ``clxc`` (every layout)."""
@@ -252,11 +249,7 @@ def _as_cosmology(cosmology):
 
 
 # Solver and grid presets.
-N_THERMO_GRID = 2048
-"""Points of the adaptive RECFAST grid of :func:`thermal_history_batch` and :func:`host_thermal_history`."""
 N_BACKGROUND_GRID = 4096
-THERMO_BATCH_CHUNK = 128
-"""Cosmologies per lane-padded RECFAST launch in :func:`thermal_history_batch`."""
 MATTER_THERMO_WEIGHT = 0.1
 """Thermal error weight (:data:`discoeb.recombination.THERMO_ERROR_WEIGHT`) of the
 matter power spectrum solves: a recombination history ten times looser than the
@@ -359,10 +352,6 @@ TRAJECTORIES_PER_BLOCK = 32
 
 CUDA_MAX_REGISTERS = int(os.environ.get("DISCO_CUDA_MAX_REGISTERS", "168"))
 """Per-thread register cap for that kernel: fewer registers, more resident warps."""
-
-THERMO_RTOL = 1e-5
-THERMO_ATOL = 1e-7
-"""Tolerances of the stand-alone RECFAST solve of :func:`thermal_history_batch`."""
 
 
 BATCH_CACHE_SIZE = 8
@@ -525,8 +514,12 @@ def _background_tau(d):
     return a_bg, jnp.concatenate((jnp.zeros((1,)), jnp.cumsum(steps))) + taumin
 
 
-def _reionization_redshift(a_bg, tau_bg, xe_rec, params, tau_reio):
-    """``z_re`` of CAMB's step, by bisection on the background grid, for ``tau_reio > 0``."""
+def _reionization_redshift(a_bg, tau_bg, params, tau_reio):
+    """``z_re`` of CAMB's step, by bisection on the background grid, for ``tau_reio > 0``.
+
+    The residual ionization of recombination is neglected (``xe_rec = 0``),
+    which moves ``tau_reio`` by 2e-4 of itself.
+    """
 
     dtau = jnp.gradient(tau_bg)
     thermal = {name: params[name] for name in ("YHe", "Omegab", "H0")}
@@ -537,7 +530,7 @@ def _reionization_redshift(a_bg, tau_bg, xe_rec, params, tau_reio):
             "akthom",
             math=jnp,
             inv_a=1.0 / a_bg,
-            xe_rec=xe_rec,
+            xe_rec=0.0,
             z_re=z_re,
             **thermal,
         )
@@ -570,7 +563,7 @@ def background_endpoints(stacked):
         d = density_parameters({k: v for k, v in params.items() if k != "tau_reio"})
         a_bg, tau_bg = _background_tau(d)
         lna_start = jnp.log(jnp.interp(TAU_START, tau_bg, a_bg))
-        z_re = _reionization_redshift(a_bg, tau_bg, 0.0, params, params["tau_reio"])
+        z_re = _reionization_redshift(a_bg, tau_bg, params, params["tau_reio"])
         return tau_bg[-1], lna_start, z_re
 
     return jax.vmap(one)(stacked)
@@ -1164,62 +1157,6 @@ def matter_power_spectrum_jax(
     return pk_sorted[jnp.asarray(np.argsort(order))]
 
 
-# ============================================================
-# THE RECOMBINATION HISTORY ON ITS OWN (diagnostics and grid design)
-# ============================================================
-
-
-@partial(jax.jit, static_argnames=("n_grid", "rtol", "atol"))
-def _solve_thermal_histories(
-    stacked, n_grid: int, rtol: float = THERMO_RTOL, atol: float = THERMO_ATOL
-):
-    """The RECFAST solve of :func:`discoeb.eb_model.evolve_background` alone, one vmap lane per cosmology."""
-
-    def one(params):
-        param = setup_background_evolution(amin=1e-9, amax=1.01, param=dict(params))
-        return evaluate_thermo(param=param, num_thermo=n_grid, rtol=rtol, atol=atol)
-
-    return jax.vmap(one)(stacked)
-
-
-def thermal_history_batch(cosmologies, n_grid: int = N_THERMO_GRID) -> dict:
-    """Solve the recombination history of a batch of cosmologies in one stand-alone launch.
-
-    Returns host arrays: ``a`` of shape ``(n_grid + 1,)`` (the adaptive RECFAST
-    grid), and ``xe``, ``Tm`` and ``cs2`` of shape ``(n_cosmologies, n_grid + 1)``.
-    This is RECFAST on its own, as :mod:`discoeb.thermodynamics_recfast`
-    integrates it in ``ln a``; the perturbation solve integrates the same
-    equations in conformal time inside its own kernel.
-    """
-
-    cosmologies = tuple(_as_cosmology(cosmology) for cosmology in cosmologies)
-    padded = cosmologies + (cosmologies[-1],) * (-len(cosmologies) % THERMO_BATCH_CHUNK)
-    stacked = _stack_background_params(padded)
-    a, cs2, Tm, mu, xe, dxeda = _solve_thermal_histories(
-        stacked, n_grid, rtol=THERMO_RTOL, atol=THERMO_ATOL
-    )
-    n = len(cosmologies)
-    return {
-        "a": np.asarray(a)[0],
-        "xe": np.asarray(xe)[:n, :, 0],
-        "Tm": np.asarray(Tm)[:n, :, 0],
-        "cs2": np.asarray(cs2)[:n, :, 0],
-    }
-
-
-def host_thermal_history(cosmology, n_grid: int = N_THERMO_GRID):
-    """``(tau_grid, values, tau0)`` of one cosmology on a uniform ``log tau`` grid, as host arrays.
-
-    ``values`` is ``(3, n_grid)``: ``a``, the opacity ``kappa'`` (with
-    reionization) and ``c_s^2`` from the stand-alone RECFAST solve and the
-    background quadrature. Used by the thermodynamics tests; the CMB grids
-    read the perturbation kernel's own recombination block instead
-    (:func:`discocmb.cmb._kernel_thermal_history`).
-    """
-
-    return _host_thermal_history(_as_cosmology(cosmology), n_grid)
-
-
 def background_history(cosmology):
     """``(a, tau)`` of the background quadrature of one cosmology, host arrays ending at ``tau0``."""
 
@@ -1235,49 +1172,6 @@ def _background_history(cosmology: _ParamCosmology):
         for x in _background_tau({k: jnp.asarray(v) for k, v in d.items()})
     )
     return a_bg, tau_bg
-
-
-@functools.lru_cache(maxsize=64)
-def _host_thermal_history(cosmology: _ParamCosmology, n_grid: int):
-    hist = thermal_history_batch([cosmology], n_grid)
-    params = cosmology.to_background_params()
-    a_bg, tau_bg = _background_history(cosmology)
-    tau0 = float(tau_bg[-1])
-    tau_grid = np.exp(np.linspace(np.log(TAU_START), np.log(tau0), n_grid))
-    a_vals = np.interp(tau_grid, tau_bg, a_bg)
-    a_rec, xe_rec, cs2_rec = hist["a"], hist["xe"][0], hist["cs2"][0]
-    a_recfast_start = 1.0 / 3501.0
-    xe_start = float(np.interp(np.log(a_recfast_start), np.log(a_rec), xe_rec))
-    xe_vals = np.where(
-        a_vals < a_recfast_start,
-        xe_start,
-        np.interp(np.log(a_vals), np.log(a_rec), xe_rec),
-    )
-    xe_bg = np.where(
-        a_bg < a_recfast_start, xe_start, np.interp(np.log(a_bg), np.log(a_rec), xe_rec)
-    )
-    z_re = float(
-        _reionization_redshift(
-            jnp.asarray(a_bg),
-            jnp.asarray(tau_bg),
-            jnp.asarray(xe_bg),
-            {k: jnp.asarray(v) for k, v in params.items()},
-            jnp.asarray(params["tau_reio"]),
-        )
-    )
-    opacity = recombination_model().evaluate(
-        "opacity",
-        math=np,
-        inv_a=1.0 / a_vals,
-        inv_a2=1.0 / a_vals**2,
-        xe_rec=xe_vals,
-        z_re=z_re,
-        YHe=params["YHe"],
-        Omegab=params["Omegab"],
-        H0=params["H0"],
-    )
-    cs2 = np.interp(np.log(a_vals), np.log(a_rec), cs2_rec)
-    return tau_grid, np.stack((a_vals, opacity, cs2)), tau0
 
 
 # =============================================================================

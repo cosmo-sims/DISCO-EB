@@ -1,7 +1,5 @@
 """GPU perturbation solves against CLASS: the matter power spectrum and its derivatives."""
 
-import time
-
 import numpy as np
 import pytest
 
@@ -56,55 +54,30 @@ def _perturbed_cosmologies(n):
     return cosmologies
 
 
-def _successive_batches(n_batches, n_cosmologies):
-    """``n_batches`` batches of ``n_cosmologies`` distinct nearby cosmologies.
+def _class_base(param):
+    """The CLASS settings of a flat, massless-neutrino ``param``, shared by every CLASS reference."""
 
-    The ``n_batches * n_cosmologies`` cosmologies of :func:`_perturbed_cosmologies`
-    dealt out in turn, so every batch spans the whole parameter range the
-    single-batch tests' 128 do and takes comparable solver steps. The pattern
-    of an inference loop: batch after batch of fresh parameters, all of one
-    shape.
-    """
-
-    cosmologies = _perturbed_cosmologies(n_batches * n_cosmologies)
-    return [cosmologies[i::n_batches] for i in range(n_batches)]
-
-
-def _warmup_cosmologies(n):
-    """``n`` cosmologies distinct from :func:`_perturbed_cosmologies` of the same ``n``.
-
-    What a timing warms up on so the timed call, on ``_perturbed_cosmologies(n)``
-    itself, finds its compiled programs and nothing of its own in the caches:
-    it then pays everything a fresh batch pays, the thermodynamics included.
-    """
-
-    return _perturbed_cosmologies(n + 1)[1:]
-
-
-def _wall_time(run):
-    """``(seconds, result)`` of one ``run()``."""
-
-    start = time.perf_counter()
-    result = run()
-    return time.perf_counter() - start, result
+    h = param["H0"] / 100.0
+    return {
+        "h": h,
+        "omega_b": param["Omegab"] * h**2,
+        "omega_cdm": (param["Omegam"] - param["Omegab"]) * h**2,
+        "T_cmb": param["Tcmb"],
+        "YHe": param["YHe"],
+        "N_ur": param["Neff"],
+        "N_ncdm": 0,
+        "Omega_k": 0.0,
+    }
 
 
 def _class_linear_pk(param, k_values):
     """Return the CLASS linear matter spectrum in Mpc cubed at redshift zero."""
 
     Class = pytest.importorskip("classy").Class
-    h = param["H0"] / 100.0
     cosmo = Class()
     cosmo.set(
         {
-            "h": h,
-            "omega_b": param["Omegab"] * h**2,
-            "omega_cdm": (param["Omegam"] - param["Omegab"]) * h**2,
-            "T_cmb": param["Tcmb"],
-            "YHe": param["YHe"],
-            "N_ur": param["Neff"],
-            "N_ncdm": 0,
-            "Omega_k": 0.0,
+            **_class_base(param),
             "A_s": param["A_s"],
             "n_s": param["n_s"],
             "k_pivot": 0.05,
