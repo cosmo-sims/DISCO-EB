@@ -1,0 +1,38 @@
+cff-version: 1.2.0
+message: "If you use DISCO-EB in your research, please cite the JCAP article below."
+title: DISCO-EB
+type: software
+authors:
+  - family-names: Hahn
+    given-names: Oliver
+  - family-names: List
+    given-names: Florian
+  - family-names: Porqueres
+    given-names: Natalia
+  - family-names: Berry
+    given-names: Lawrence
+version: 1.0.0
+license: MIT
+repository-code: "https://github.com/cosmo-sims/DISCO-EB"
+url: "https://cosmo-sims.github.io/DISCO-EB/"
+preferred-citation:
+  type: article
+  title: "DISCO-DJ I: a differentiable Einstein-Boltzmann solver for cosmology"
+  authors:
+    - family-names: Hahn
+      given-names: Oliver
+    - family-names: List
+      given-names: Florian
+    - family-names: Porqueres
+      given-names: Natalia
+  year: 2024
+  journal: Journal of Cosmology and Astroparticle Physics
+  volume: 2024
+  issue: 6
+  start: 63
+  doi: 10.1088/1475-7516/2024/06/063
+  url: "https://arxiv.org/abs/2311.03291"
+  identifiers:
+    - type: other
+      value: "arXiv:2311.03291"
+      description: The arXiv preprint of the article

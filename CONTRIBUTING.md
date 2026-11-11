@@ -32,7 +32,7 @@ Pull requests are the best way to propose changes to the codebase. We actively w
 5. Make sure your code lints.
 6. Issue the pull request!
 
-## Any contributions you make will be under the GPL v3 license
+## Any contributions you make will be under the MIT license
 In short, when you submit code changes, your submissions are understood to be under the same license that covers the project. Feel free to get in touch if that is a concern.
 
 ## Code of Conduct

@@ -1,5 +1,5 @@
 ####################################################################################################################
-# This file is not licensed under the GNU GPL license!
+# This file is not licensed under the MIT license that covers the rest of DISCO-EB!
 # Large portions of this code, which is part of the DISCO-EB module have been adapted from the recfast code base.
 # The original recfast code can be found at: https://www.astro.ubc.ca/people/scott/recfast.html
 # The recfast code base is distributed under the following license:
@@ -20,7 +20,7 @@
 # Copyright 1999-2010 by University of British Columbia.  All rights reserved.
 ####################################################################################################################
 # This file contains a numba-CUDA version of the recfast equations, adapted for use in the DISCO-EB module.
-# The DISCO-EB module is distributed under the GNU GPL license.
+# The rest of the DISCO-EB module is distributed under the MIT license.
 ####################################################################################################################
 
 """The recombination history as states of each wave mode's trajectory.
