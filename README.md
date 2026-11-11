@@ -1,89 +1,145 @@
-# DISCO-EB - The DISCO-DJ Einstein-Boltzmann module
-Implementation of a differentiable linear Einstein-Boltzmann solver for cosmology in JAX -- a module of the DISCO-DJ framework (DIfferentiable Simulations for COsmology, Done with Jax).
+<h1 align="center">DISCO-EB</h1>
 
-Note that this program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY.
+<!--
+The coverage badge reads a gist that the `tests` workflow rewrites on every
+push to main. The id below is the repository variable COVERAGE_GIST_ID.
+These badges sit above the `overview` snippet marker, so the documentation
+site does not repeat them.
+-->
+<p align="center">
+  <a href="https://github.com/cosmo-sims/DISCO-EB/actions/workflows/tests.yml"><img alt="tests" src="https://github.com/cosmo-sims/DISCO-EB/actions/workflows/tests.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/cosmo-sims/DISCO-EB/actions/workflows/tests.yml"><img alt="coverage" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Flawrenceberry%2Fb451e14a9620fabb0d49c345f13b5414%2Fraw%2Fdiscoeb-coverage.json"></a>
+  <a href="https://github.com/cosmo-sims/DISCO-EB/actions/workflows/lint.yml"><img alt="lint" src="https://github.com/cosmo-sims/DISCO-EB/actions/workflows/lint.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/cosmo-sims/DISCO-EB/actions/workflows/types.yml"><img alt="types" src="https://github.com/cosmo-sims/DISCO-EB/actions/workflows/types.yml/badge.svg?branch=main"></a>
+  <a href="https://pypi.org/project/discoeb/"><img alt="PyPI" src="https://img.shields.io/pypi/v/discoeb"></a>
+  <a href="https://pypi.org/project/discoeb/"><img alt="Downloads" src="https://img.shields.io/pypi/dm/discoeb"></a>
+  <a href="https://pypi.org/project/discoeb/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/discoeb"></a>
+  <a href="https://docs.jax.dev/"><img alt="JAX" src="https://img.shields.io/badge/JAX-compatible-3f51b5"></a>
+  <a href="https://arxiv.org/abs/2311.03291"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-2311.03291-b31b1b.svg"></a>
+  <a href="https://www.conventionalcommits.org/en/v1.0.0/"><img alt="Conventional Commits" src="https://img.shields.io/badge/Conventional%20Commits-1.0.0-%23FE5196?logo=conventionalcommits&logoColor=white"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
+</p>
 
-Currently supported features (the list is growing, so check back):
+<p align="center">
+  <a href="#installation">Installation</a> •
+  <a href="#quickstart">Quickstart</a> •
+  <a href="https://cosmo-sims.github.io/DISCO-EB/">Documentation</a> •
+  <a href="https://arxiv.org/abs/2311.03291">Paper</a> •
+  <a href="#citation">Citation</a>
+</p>
 
-- Autodifferentiable via JAX
-- Standard LCDM model with Quintessence DE fluid (w0,wa) and massive neutrinos (one species)
-- Thermal history from a RECFAST implementation in the module, integrated with the perturbations of every wave mode in one GPU solve (a block of a modax hierarchy that steps on its own and publishes the scale factor, opacity, sound speed and neutrino density to the perturbations as interpolants; no tabulated thermodynamics)
-- Numerous example jupyter notebooks, e.g. for Euclid-like Fisher forecasts
-  
-New modules/plugins can be easily added (see how to contribute in CONTRIBUTING.md file). We are enthusiastic if extensions/improvements that are of broader interest are re-integrated into the master branch and DISCO-EB grows as a community effort.
+<!-- start:overview -->
 
-Currently work in progress:
+DISCO-EB is a **differentiable linear Einstein-Boltzmann solver** for cosmology, and the Einstein-Boltzmann module of the DISCO-DJ framework (DIfferentiable Simulations for COsmology, Done with Jax). It evolves the background, the recombination history and the linear perturbations of every wave mode of a **batch of cosmologies in one GPU launch**.
 
-- performance improvements
+The solve runs as a [modax](https://github.com/lawrenceberry/modax) Rodas5P kernel. RECFAST and the optical depth step alongside the perturbation hierarchy in the same kernel, so the solve needs no tables. You choose which quantities to keep at which times, and the kernel evaluates them as it goes. The results are JAX arrays, differentiable in the cosmological parameters by forward sensitivities. DISCO-EB supports flat or curved ΛCDM, a CPL dark-energy fluid $(w_0, w_a)$, massive neutrinos and reionization.
+
+<!-- end:overview -->
+
+The [documentation](https://cosmo-sims.github.io/DISCO-EB/) covers the API and how to use it. The [paper](https://arxiv.org/abs/2311.03291) describes the method and its accuracy against CLASS.
 
 ## Installation
 
-Use `uv` to install the GPU compiler and solver dependencies with the
-constraints this project pins:
+<!-- start:install -->
 
 ```bash
-git clone https://github.com/cosmo-sims/DISCO-EB.git
-cd DISCO-EB
-uv sync
+pip install "discoeb[cuda13]"   # or [cuda12], which Python 3.10 needs
 ```
 
-### Current CUDA solver environment
+You need a GPU to run a solve, but not to import the package. modax brings the CUDA compiler stack with it. The CMB spectra live in a separate package, [DISCO-CMB](https://github.com/lawrenceberry/DISCO-CMB), which builds on this one.
 
-`uv sync` installs modax and numba-enzyme-cuda from PyPI, together with the
-numba-cuda-mlir and CUDA toolkit versions pinned in `[tool.uv]`. Plain
-`pip install` does not apply those constraints, nor the override that lets
-numba-enzyme-cuda run with current numba, and is not sufficient for this
-solver stack.
+<!-- end:install -->
+
+## Quickstart
+
+<!-- start:quickstart -->
+
+This example keeps the comoving curvature perturbation $\mathcal{R}$ and the CDM density contrast of 64 wave modes at 100 conformal times:
+
+```python
+import jax
+
+jax.config.update("jax_enable_x64", True)
+
+import numpy as np
+from discoeb import solve_eb
+
+h = 0.6732
+cosmology = {
+    "Omegam": 0.1424 / h**2, "Omegab": 0.02238 / h**2, "H0": 100 * h,
+    "w_DE_0": -1.0, "w_DE_a": 0.0, "cs2_DE": 1.0, "Omegak": 0.0,
+    "A_s": 2.1e-9, "n_s": 0.966, "k_p": 0.05,
+    "Tcmb": 2.7255, "YHe": 0.2454, "Neff": 3.046, "Nmnu": 0.0, "mnu": 0.0,
+}
+k = np.geomspace(1e-4, 1.0, 64)      # 1/Mpc
+tau = np.geomspace(1.0, 2e4, 100)    # Mpc, the last times past today
+
+solution = solve_eb(cosmology, k, tau, keep=("R", "clxc"))
+R = solution["R"]  # (1, 64, 100): cosmologies, wave modes, times
+```
+
+<!-- end:quickstart -->
+
+## Development
+
+<!-- start:development -->
+
+The repository uses [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv run python examples/solve_eb_comoving_curvature.py
+git clone https://github.com/cosmo-sims/DISCO-EB.git && cd DISCO-EB
+uv sync --extra cuda13  # or --extra cuda12
+
+uv run pytest tests -rs   # needs a GPU, and -rs shows skipped CLASS comparisons
+uv run ruff format && uv run ruff check --fix
+uv run ty check
+uv run pre-commit install   # the checks above, and a commit-message check
 ```
 
-On Blackwell GPUs (compute capability 10.0 and up) modax compiles Rodas5P and
-its Enzyme derivatives, including the tangents of the quantities `solve_eb`
-keeps, for `sm_90` and links the result for the actual GPU,
-which keeps both on the LLVM 7 dialect Enzyme's LLVM 15 toolchain reads.
-`NUMBA_ENZYME_CUDA_CC`, set before the first solve, chooses that target for
-both instead.
-
-### For Development
-
-`uv sync` installs this checkout in editable mode. Add the development
-dependencies and run the tests with:
+The documentation (Sphinx with MyST and autodoc) builds in an environment of
+its own, the package's CPU install plus the docs group:
 
 ```bash
-uv sync --extra dev
-uv run pytest
+export UV_PROJECT_ENVIRONMENT=.venv-docs
+uv sync --no-default-groups --group docs
+uv run --no-sync sphinx-autobuild docs docs/_build/html   # live preview
+uv run --no-sync sphinx-build -W docs docs/_build/html    # what CI runs
 ```
 
-The solver tests should be run on GPU platforms.
+<!-- end:development -->
 
+## Citation
 
-## Getting started
+<!-- start:citation -->
 
-Start with the sample notebook [nb_minimal_example.ipynb](https://github.com/ohahn/DISCO-EB/blob/master/notebooks/nb_minimal_example.ipynb) in the [notebooks subdirectory](https://github.com/ohahn/DISCO-EB/tree/master/notebooks). It explains how to compute a matter power spectrum and take a derivative w.r.t. a cosmological parameter.
+If you use DISCO-EB in your research, please cite the
+[JCAP article](https://doi.org/10.1088/1475-7516/2024/06/063):
 
-## Benchmarks 
+```bibtex
+@article{DISCO-EB:2024,
+    author = "Hahn, Oliver and List, Florian and Porqueres, Natalia",
+    title = "{DISCO-DJ I: a differentiable Einstein-Boltzmann solver for cosmology}",
+    eprint = "2311.03291",
+    archivePrefix = "arXiv",
+    primaryClass = "astro-ph.CO",
+    doi = "10.1088/1475-7516/2024/06/063",
+    journal = "JCAP",
+    volume = "06",
+    pages = "063",
+    year = "2024"
+}
+```
 
-See [BENCHMARKS.md](BENCHMARKS.md) for benchmark results on different hardware.
+<!-- end:citation -->
 
-## Contributing and Licensing
+## License
 
-See file CONTRIBUTING.md on how to contribute to the development. 
+<!-- start:license -->
 
-The software is licensed under GPL v3 (see file LICENSE).
+DISCO-EB uses the
+[MIT License](https://github.com/cosmo-sims/DISCO-EB/blob/main/LICENSE). The
+recombination module adapts code from
+[Recfast](https://www.astro.ubc.ca/people/scott/recfast.html), whose UBC
+license its file header reproduces.
 
-## Citing in scientific publications or presentations
-
-If you use DISCO-EB in your scientific work, you are required to acknowledge this by linking to this repository and citing the relevant papers:
-
-- Hahn et al. 2024 [arXiv:2311.03291](https://arxiv.org/abs/2311.03291) [JCAP OA](https://doi.org/10.1088/1475-7516/2024/06/063)
-
-
-## Required Python Packages
-- JAX
-- diffrax
-- equinox
-- jaxtyping
-- jax_cosmo
-
+<!-- end:license -->
