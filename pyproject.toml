@@ -1,6 +1,6 @@
 [project]
 name = "disco-eb"
-version = "1.0.0"
+version = "1.0.1"
 description = "A differentiable linear Einstein-Boltzmann solver for cosmology, on the GPU"
 readme = "README.md"
 requires-python = ">=3.10"
