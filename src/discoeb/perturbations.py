@@ -248,6 +248,14 @@ def _as_cosmology(cosmology):
     )
 
 
+def _as_batch(cosmologies) -> tuple:
+    """A cosmology or a sequence of them, as a tuple (dictionaries kept as they are)."""
+
+    if isinstance(cosmologies, dict) or hasattr(cosmologies, "Omegam"):
+        return (cosmologies,)
+    return tuple(cosmologies)
+
+
 # Solver and grid presets.
 N_BACKGROUND_GRID = 4096
 MATTER_THERMO_WEIGHT = 0.1
@@ -553,8 +561,7 @@ def background_endpoints(stacked):
     """
 
     def one(params):
-        d = density_parameters({k: v for k, v in params.items() if k != "tau_reio"})
-        a_bg, tau_bg = _background_tau(d)
+        a_bg, tau_bg = _background_tau(density_parameters(params))
         lna_start = jnp.log(jnp.interp(TAU_START, tau_bg, a_bg))
         z_re = _reionization_redshift(a_bg, tau_bg, params, params["tau_reio"])
         return tau_bg[-1], lna_start, z_re
@@ -629,15 +636,39 @@ def _row(cosmology, tau_end: float, z_re: float) -> dict:
     }
 
 
+def _row_vector(cosmology, tau_end: float, z_re: float) -> np.ndarray:
+    """:func:`_row` as the ``N_PARAM`` columns of :data:`PARAM_COLUMNS`, zero where it has no value."""
+
+    row = _row(cosmology, tau_end, z_re)
+    out = np.zeros(N_PARAM, dtype=np.float64)
+    for name, column in PARAM_COLUMNS.items():
+        out[column] = row.get(name, 0.0)
+    return out
+
+
+def _initial_inputs(cosmologies, spread) -> dict:
+    """What :meth:`Model.initial_state` reads of the cosmologies, each through ``spread``.
+
+    ``spread`` takes one value per cosmology to the trajectories' values.
+    """
+
+    densities = np.array([density_coefficients(c) for c in cosmologies]).T
+    return {
+        **dict(zip(DIRECTED_NAMES[:5], map(spread, densities))),
+        "w_DE_0": spread([c.w_DE_0 for c in cosmologies]),
+        "w_DE_a": spread([c.w_DE_a for c in cosmologies]),
+        "Tcmb": spread([c.T_cmb for c in cosmologies]),
+    }
+
+
 def make_params(
     cosmology, k_values: np.ndarray, tau_end: float, z_re: float = 0.0
 ) -> np.ndarray:
     """Return per-mode packed parameters for the device rhs, one row per wave mode."""
 
-    row = _row(_as_cosmology(cosmology), tau_end, z_re)
-    params = np.zeros((len(k_values), N_PARAM), dtype=np.float64)
-    for name, column in PARAM_COLUMNS.items():
-        params[:, column] = row.get(name, 0.0)
+    params = np.tile(
+        _row_vector(_as_cosmology(cosmology), tau_end, z_re), (len(k_values), 1)
+    )
     params[:, IX_K] = k_values
     return params
 
@@ -652,26 +683,13 @@ def make_initial_states(
     the initial conditions' algebra broadcasts over the trajectories.
     """
 
-    cosmologies = (
-        [cosmology]
-        if isinstance(cosmology, (dict, _ParamCosmology))
-        else list(cosmology)
-    )
-    cosmologies = [_as_cosmology(c) for c in cosmologies]
+    cosmologies = [_as_cosmology(c) for c in _as_batch(cosmology)]
     per = lambda values: values[0] if len(values) == 1 else np.asarray(values)
-    densities = np.array([density_coefficients(c) for c in cosmologies]).T
     return model.initial_state(
         k_values,
         tau=TAU_START,
-        **dict(
-            zip(
-                ("grhog", "grhornomass", "grhoc", "grhob", "grhov"), map(per, densities)
-            )
-        ),
-        w_DE_0=per([c.w_DE_0 for c in cosmologies]),
-        w_DE_a=per([c.w_DE_a for c in cosmologies]),
         lna_start=np.asarray(lna_start, dtype=np.float64),
-        Tcmb=per([c.T_cmb for c in cosmologies]),
+        **_initial_inputs(cosmologies, per),
     )
 
 
@@ -681,33 +699,19 @@ def _packed(cosmologies, model, tau0, lna_start, z_re, k_bytes, tau_bytes):
     n_cosmo = len(cosmologies)
     order = np.argsort(k_arr, kind="stable")
     k_sorted = k_arr[order]
-    rows = np.array(
-        [
-            [row.get(name, 0.0) for name in PARAM_COLUMNS]
-            for row in (_row(c, t, z) for c, t, z in zip(cosmologies, tau0, z_re))
-        ]
-    )
+    rows = np.array([_row_vector(c, t, z) for c, t, z in zip(cosmologies, tau0, z_re)])
     params = np.tile(rows, (len(k_sorted), 1))
     params[:, IX_K] = np.repeat(k_sorted, n_cosmo)
     params[:, IX_COSMOLOGY] = np.tile(
         np.arange(n_cosmo, dtype=np.float64), len(k_sorted)
     )
     # the per-cosmology inputs once, tiled over the wave modes (row = k_idx * n_cosmo + c)
-    densities = np.array([density_coefficients(c) for c in cosmologies]).T
     tile = lambda values: np.tile(np.asarray(values, dtype=np.float64), len(k_sorted))
     y0 = model.initial_state(
         params[:, IX_K],
         tau=TAU_START,
-        **dict(
-            zip(
-                ("grhog", "grhornomass", "grhoc", "grhob", "grhov"),
-                map(tile, densities),
-            )
-        ),
-        w_DE_0=tile([c.w_DE_0 for c in cosmologies]),
-        w_DE_a=tile([c.w_DE_a for c in cosmologies]),
         lna_start=tile(lna_start),
-        Tcmb=tile([c.T_cmb for c in cosmologies]),
+        **_initial_inputs(cosmologies, tile),
     )
     if tau_bytes is None:
         t_span = np.asarray((TAU_START, float(np.max(tau0))), dtype=np.float64)
@@ -853,6 +857,12 @@ def solve_perturbation_history_batch(
     return hist, k_sorted, prepared
 
 
+def _primordial_power(ks, A_s, n_s, k_pivot):
+    """``2 pi^2 / k^3`` times the primordial curvature spectrum: ``P(k) = this * delta_m^2``."""
+
+    return 2.0 * np.pi**2 / ks**3 * A_s * (ks / k_pivot) ** (n_s - 1.0)
+
+
 def _power_spectrum_from_final(y_final, k_sorted, cosmologies, k_values):
     """``P(k)`` ``(n_cosmo, n_k)`` in the caller's order from final states ``(n_k, n_cosmo, nvar)``."""
 
@@ -861,11 +871,16 @@ def _power_spectrum_from_final(y_final, k_sorted, cosmologies, k_values):
     delta_m = (grhoc * y_final[:, :, IX_CLXC] + grhob * y_final[:, :, IX_CLXB]) / (
         grhoc + grhob
     )
-    A_s = np.array([c.A_s for c in cosmologies])[None, :]
-    n_s = np.array([c.n_s for c in cosmologies])[None, :]
-    k_p = np.array([c.k_pivot for c in cosmologies])[None, :]
-    ks = k_sorted[:, None]
-    pk_sorted = 2.0 * np.pi**2 / ks**3 * A_s * (ks / k_p) ** (n_s - 1.0) * delta_m**2
+    pk_sorted = (
+        _primordial_power(
+            k_sorted[:, None],
+            *(
+                np.array([getattr(c, a) for c in cosmologies])[None, :]
+                for a in ("A_s", "n_s", "k_pivot")
+            ),
+        )
+        * delta_m**2
+    )
     order = np.argsort(np.asarray(k_values, dtype=np.float64), kind="stable")
     pk = np.empty_like(pk_sorted.T)
     pk[:, order] = pk_sorted.T
@@ -908,24 +923,10 @@ def solve_matter_power_spectrum_batch(
 # ============================================================
 
 
-def _tau0_of(densities, row):
-    """The conformal age as a function of the five densities (JAX), the other background inputs from ``row``."""
+def _tau0_of(densities, d):
+    """The conformal age as a function of the five densities (JAX), the rest of the background from ``d``."""
 
-    d = {
-        "grhog": densities[0],
-        "grhornomass": densities[1],
-        "grhoc": densities[2],
-        "grhob": densities[3],
-        "grhov": densities[4],
-        "grhok": row["grhok"],
-        "grhor_nu": row["grhor_nu"],
-        "n_mnu": row["n_mnu"],
-        "amnu": row["amnu"],
-        "w_DE_0": row["w_DE_0"],
-        "w_DE_a": row["w_DE_a"],
-        "cs2_DE": row["cs2_DE"],
-    }
-    return _background_tau(d)[1][-1]
+    return _background_tau({**d, **dict(zip(DIRECTED_NAMES[:5], densities))})[1][-1]
 
 
 def matter_power_spectrum_jax(
@@ -969,14 +970,13 @@ def matter_power_spectrum_jax(
             jnp.asarray(thermal, dtype=jnp.float64),
         ]
     )
-    row = _row(cosmology, 0.0, 0.0)
     kept = _kept_values(
         prepared,
         k_values,
         # one save past every conformal age: the state today
         np.array([TAU_START, 2.0 * float(prepared.tau0[0])]),
         ("clxc", "clxb", "z", "vb"),
-        tau_end_of=lambda xs: jnp.stack([_tau0_of(xi[:5], row) for xi in xs]),
+        tau_end_of=lambda xs: jnp.stack([_tau0_of(xi[:5], d) for xi in xs]),
         rtol=rtol,
         atol=atol,
         first_step=first_step,
@@ -988,22 +988,17 @@ def matter_power_spectrum_jax(
     # The end-time term: the state's rate at tau0, from the equations the
     # hook evaluates on the final state, times how tau0 moves with the densities.
     ks = jnp.asarray(np.asarray(k_values, dtype=np.float64))
-    tau0 = _tau0_of(x[:5], row)
+    tau0 = _tau0_of(x[:5], d)
     dtau = tau0 - jax.lax.stop_gradient(tau0)
     clxc = clxc - ks * z * dtau
     clxb = clxb - ks * (z + vb) * dtau
 
     grhoc, grhob = x[2], x[3]
     delta_m = (grhoc * clxc + grhob * clxb) / (grhoc + grhob)
-    pk = (
-        2.0
-        * jnp.pi**2
-        / ks**3
-        * cosmology.A_s
-        * (ks / cosmology.k_pivot) ** (cosmology.n_s - 1.0)
+    return (
+        _primordial_power(ks, cosmology.A_s, cosmology.n_s, cosmology.k_pivot)
         * delta_m**2
     )
-    return pk
 
 
 def background_history(cosmology):
@@ -1014,13 +1009,8 @@ def background_history(cosmology):
 
 @functools.lru_cache(maxsize=64)
 def _background_history(cosmology: _ParamCosmology):
-    params = cosmology.to_background_params()
-    d = density_parameters({k: v for k, v in params.items() if k != "tau_reio"}, xp=np)
-    a_bg, tau_bg = (
-        np.asarray(x)
-        for x in _background_tau({k: jnp.asarray(v) for k, v in d.items()})
-    )
-    return a_bg, tau_bg
+    d = {k: jnp.asarray(v) for k, v in _densities(cosmology).items()}
+    return tuple(np.asarray(x) for x in _background_tau(d))
 
 
 # =============================================================================
@@ -1469,9 +1459,7 @@ def solve_eb(
     and reionization redshift.
     """
 
-    if isinstance(cosmologies, dict) or hasattr(cosmologies, "Omegam"):
-        cosmologies = (cosmologies,)
-    fixed, theta = _split_cosmologies(cosmologies)
+    fixed, theta = _split_cosmologies(_as_batch(cosmologies))
     n_cosmo = len(fixed)
 
     tau = np.asarray(tau, dtype=np.float64).reshape(-1)
@@ -1524,22 +1512,21 @@ def solve_eb(
     def inputs_of(theta):
         # JAX arithmetic throughout, also for parameters given as plain numbers
         theta = jnp.asarray(theta, dtype=jnp.float64)
-        if isinstance(theta, jax.core.Tracer) or n_cosmo == 1:
+        keys = set(fixed[0])
+        if (
+            isinstance(theta, jax.core.Tracer)
+            or n_cosmo == 1
+            or any(set(f) != keys for f in fixed)
+        ):
             return jnp.stack(
                 [_input_vector(fixed[i], theta[i]) for i in range(n_cosmo)]
             )
         # concrete parameters: the whole batch through one set of eager JAX
         # operations, elementwise, so bit for bit what each cosmology alone
         # gives (a last-bit difference in a density can move a step acceptance)
-        keys = set(fixed[0])
-        if any(set(f) != keys for f in fixed):
-            return jnp.stack(
-                [_input_vector(fixed[i], theta[i]) for i in range(n_cosmo)]
-            )
         columns = {
             k: jnp.asarray([f[k] for f in fixed], dtype=jnp.float64) for k in keys
         }
-        theta = jnp.asarray(theta, dtype=jnp.float64)
         return _input_vector(columns, [theta[:, j] for j in range(theta.shape[1])]).T
 
     def solution(values):
@@ -1587,9 +1574,7 @@ def directed_inputs(cosmologies) -> np.ndarray:
     ``inputs``, and differentiates with respect to.
     """
 
-    if isinstance(cosmologies, dict) or hasattr(cosmologies, "Omegam"):
-        cosmologies = (cosmologies,)
-    fixed, theta = _split_cosmologies(cosmologies)
+    fixed, theta = _split_cosmologies(_as_batch(cosmologies))
     return np.stack(
         [
             np.asarray(_input_vector(fixed[i], jnp.asarray(theta[i])))
@@ -1605,10 +1590,7 @@ def conformal_ages(cosmologies) -> np.ndarray:
     a solve of the same cosmologies right after costs nothing more for them.
     """
 
-    if isinstance(cosmologies, dict) or hasattr(cosmologies, "Omegam"):
-        cosmologies = (cosmologies,)
-    prepared = _prepare_solve(tuple(_as_cosmology(c) for c in cosmologies))
-    return np.asarray(prepared.tau0, dtype=np.float64)
+    return np.asarray(_prepare_solve(_as_batch(cosmologies)).tau0, dtype=np.float64)
 
 
 def state_names(cosmology) -> tuple[str, ...]:
