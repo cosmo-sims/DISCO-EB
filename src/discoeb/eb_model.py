@@ -44,6 +44,7 @@ once, below.
 
 from __future__ import annotations
 
+import functools
 import math
 
 import jax
@@ -288,16 +289,29 @@ class RadiationStreaming(Component):
 # --- radiation ----------------------------------------------------------------------
 
 
-def stream(kv, x, inv_tau, output):
-    """Free streaming of the multipoles ``3 .. L`` of a hierarchy ``x``, into ``output``.
+def stream(k, kv, z, sigma, dlnf0, x, inv_tau, output):
+    """Free streaming of a hierarchy ``x`` (``x_0 .. x_L``), into ``output``.
 
-    ``x_l' = kv (l x_{l-1} - (l+1) x_{l+1}) / (2l+1)`` and, closing the
-    hierarchy at ``L = len(x) - 1``, ``x_L' = kv x_{L-1} - (L+1) x_L / tau``.
-    ``kv`` is ``k`` for massless particles and ``k v`` for a massive-neutrino
-    momentum bin. Collisional damping is not here: it is the Thomson
-    interaction's contribution to the same derivatives.
+    The lowest three multipoles carry the metric sources (CLASS
+    ``perturbations.c``, synchronous gauge, ``h' = 2 k z``)::
+
+        x_0' = -kv x_1 + (k z / 3) dlnf0
+        x_1' = (kv / 3) (x_0 - 2 x_2)
+        x_2' = (kv / 5) (2 x_1 - 3 x_3) - (2/15) k sigma dlnf0
+
+    and above them ``x_l' = kv (l x_{l-1} - (l+1) x_{l+1}) / (2l+1)``,
+    closing at ``L = len(x) - 1`` with ``x_L' = kv x_{L-1} - (L+1) x_L / tau``.
+    ``kv`` is ``k v`` and ``dlnf0`` the log-derivative of the background
+    distribution: ``k`` and ``-4`` for massless particles, the bin's own for a
+    massive-neutrino momentum bin. Collisional damping is not here: it is the
+    Thomson interaction's contribution to the same derivatives.
     """
 
+    output[0] = -kv * x[1] + k * z * (1.0 / 3.0) * dlnf0
+    output[1] = kv * (1.0 / 3.0) * (x[0] - 2.0 * x[2])
+    output[2] = (
+        kv * (1.0 / 5.0) * (2.0 * x[1] - 3.0 * x[3]) - (2.0 / 15.0) * k * sigma * dlnf0
+    )
     lmax = len(x) - 1
     for l in range(3, lmax):
         output[l] = kv * (l * x[l - 1] - (l + 1) * x[l + 1]) * (1.0 / (2 * l + 1))
@@ -367,14 +381,7 @@ class Photons(Species):
         return grhog_t * pig
 
     def d_theta(self, k, z, sigma, theta, inv_tau, rsa, output):
-        output[0] = -k * ((4.0 / 3.0) * z + theta[1])
-        output[1] = k * theta[0] * (1.0 / 3.0) - (2.0 / 3.0) * k * theta[2]
-        output[2] = (
-            (2.0 / 5.0) * k * theta[1]
-            - (3.0 / 5.0) * k * theta[3]
-            + (8.0 / 15.0) * k * sigma
-        )
-        stream(k, theta, inv_tau, output)
+        stream(k, k, z, sigma, -4.0, theta, inv_tau, output)
         for l in range(len(theta)):
             output[l] = (1.0 - rsa) * output[l]
 
@@ -476,12 +483,7 @@ class MasslessNeutrinos(Species):
         return grhor_t * (1.0 - rsa) * n[2]
 
     def d_n(self, k, z, sigma, n, inv_tau, rsa, output):
-        output[0] = -k * ((4.0 / 3.0) * z + n[1])
-        output[1] = k * (n[0] - 2.0 * n[2]) / 3.0
-        output[2] = (
-            (2.0 / 5.0) * k * n[1] - (3.0 / 5.0) * k * n[3] + (8.0 / 15.0) * k * sigma
-        )
-        stream(k, n, inv_tau, output)
+        stream(k, k, z, sigma, -4.0, n, inv_tau, output)
         for l in range(len(n)):
             output[l] = (1.0 - rsa) * output[l]
 
@@ -489,16 +491,9 @@ class MasslessNeutrinos(Species):
 class MassiveNeutrinos(Species):
     """Massive neutrinos on ``NQMAX`` momentum bins: ``psi[i, l]`` (Ma & Bertschinger).
 
-    Per bin ``i`` with node ``q_i``, weight ``w_i`` and ``dlnf0/dlnq``, with
-    ``v_i = q / sqrt(q^2 + a^2 amnu^2)`` and ``kv = k v_i`` (CLASS
-    ``perturbations.c``, synchronous gauge, ``h' = 2 k z``, ``metric_shear =
-    k sigma``)::
-
-        psi0' = -kv psi1 + (k z / 3) dlnf0
-        psi1' = (kv / 3) (psi0 - 2 psi2)
-        psi2' = (kv / 5) (2 psi1 - 3 psi3) - (2/15) k sigma dlnf0
-
-    and the free-streaming tail above. The bins' moments ``Sum w psi0 / v``,
+    Per bin ``i`` with node ``q_i``, weight ``w_i`` and ``dlnf0/dlnq``, each
+    bin streams freely (:func:`stream`) with ``kv = k v_i``,
+    ``v_i = q / sqrt(q^2 + a^2 amnu^2)``. The bins' moments ``Sum w psi0 / v``,
     ``Sum w psi1`` and ``Sum w v psi2`` enter the Einstein sources; the background density
     ratio ``rhonu`` and pressure ratio ``pnu`` come from the recombination block. Deep in radiation domination the
     neutrinos are still relativistic, so each bin starts as the massless
@@ -563,14 +558,7 @@ class MassiveNeutrinos(Species):
         for i in range(self.NQMAX):
             inv_v = math.sqrt(1.0 + (a * amnu * self.inv_q[i]) ** 2)
             kv = k * (1.0 / inv_v)
-            dl = self.dlnf0[i]
-            output[i, 0] = -kv * psi[i, 1] + k * z * (1.0 / 3.0) * dl
-            output[i, 1] = kv * (1.0 / 3.0) * (psi[i, 0] - 2.0 * psi[i, 2])
-            output[i, 2] = (
-                kv * (1.0 / 5.0) * (2.0 * psi[i, 1] - 3.0 * psi[i, 3])
-                - (2.0 / 15.0) * k * sigma * dl
-            )
-            stream(kv, psi[i], inv_tau, output[i])
+            stream(k, kv, z, sigma, self.dlnf0[i], psi[i], inv_tau, output[i])
 
 
 # --- dark energy --------------------------------------------------------------------
@@ -592,7 +580,7 @@ class CosmologicalConstant(Species):
         return -grhov_t
 
 
-class DarkEnergy(Species):
+class DarkEnergy(CosmologicalConstant):
     """A CPL fluid ``w = w_0 + w_a (1 - a)`` with rest-frame sound speed ``cs2_DE``.
 
     Synchronous-gauge fluid equations after Ballesteros & Lesgourgues 2010, with
@@ -620,14 +608,8 @@ class DarkEnergy(Species):
             3.0 * (a - 1.0) * w_DE_a
         )
 
-    def grhov(self, grhov_nominal, eps, dir_grhov):
-        return grhov_nominal + eps * dir_grhov
-
     def grhov_t(self, grhov, rho_Q, a2):
         return grhov * rho_Q * a2
-
-    def grho(self, grhov_t):
-        return grhov_t
 
     def gpres(self, grhov_t, w_Q):
         return w_Q * grhov_t
@@ -734,22 +716,11 @@ def perturbation_sparsity(layout) -> np.ndarray:
     return perturbation_model(layout).sparsity()
 
 
+@functools.lru_cache(maxsize=None)
 def layout_state_names(layout) -> tuple[str, ...]:
     """The state names of :func:`perturbation_model` in the layout's index order."""
 
-    names = ["etak", "clxc", "clxb", "vb"]
-    names += [f"theta_{l}" for l in range(layout.lmaxg + 1)]
-    names += [f"e_{i}" for i in range(layout.lmaxpol - 1)]
-    names += [f"n_{l}" for l in range(layout.lmaxr + 1)]
-    if layout.enable_dark_energy:
-        names += ["clxq", "thetaq"]
-    if layout.has_massive_neutrinos:
-        names += [
-            f"psi_{i}_{l}"
-            for i in range(layout.nqmax)
-            for l in range(layout.lmaxnu + 1)
-        ]
-    return tuple(names)
+    return tuple(perturbation_model(layout).state)
 
 
 # --- the expansion history ----------------------------------------------------------
@@ -766,25 +737,6 @@ C2OK = 1.62581581e4  # K / eV: amnu = m_nu c^2 / (k_B T_nu0) = mnu * C2OK / Tcmb
 NQ_NEUTRINO_TABLE = 100
 """Momentum nodes of the massive-neutrino background density: the ``rho_nu`` tables
 and the budget closing both integrate the Fermi-Dirac distribution on these."""
-
-
-_MOMENTUM_BINS: dict = {}
-
-
-def get_neutrino_momentum_bins(nqmax: int) -> tuple[jax.Array, jax.Array]:
-    """The momentum nodes ``q`` (in units of ``k_B T_nu0 / c``) and weights ``w``.
-
-    ``w`` is normalised so that one massless flavour integrates to unit density.
-    ``nqmax = 3, 4, 5`` are CAMB's high-accuracy formulas; higher counts use a
-    generalised Gauss-Laguerre rule. Computed once per ``nqmax`` and precision:
-    the rule's eigendecomposition, op by op, cost a second of compiles a call.
-    """
-
-    key = (int(nqmax), bool(jax.config.jax_enable_x64))
-    if key not in _MOMENTUM_BINS:
-        with jax.ensure_compile_time_eval():
-            _MOMENTUM_BINS[key] = _neutrino_momentum_bins(int(nqmax))
-    return _MOMENTUM_BINS[key]
 
 
 def _neutrino_momentum_bins(nqmax: int) -> tuple[jax.Array, jax.Array]:
@@ -811,17 +763,29 @@ def _neutrino_momentum_bins(nqmax: int) -> tuple[jax.Array, jax.Array]:
 
 
 def neutrino_momentum_bins(nqmax: int):
-    """Return ``(q, w, dlnf0_dlnq)`` momentum bins as NumPy arrays.
+    """Return ``(q, w, dlnf0_dlnq)`` momentum bins as read-only NumPy arrays.
 
-    ``dlnf0/dlnq = -q/(1 + exp(-q))`` is the log-derivative of the Fermi-Dirac
-    background distribution that sources the ``psi`` hierarchy.
+    ``q`` are the nodes (in units of ``k_B T_nu0 / c``) and ``w`` the weights,
+    normalised so that one massless flavour integrates to unit density;
+    ``nqmax = 3, 4, 5`` are CAMB's high-accuracy formulas, higher counts a
+    generalised Gauss-Laguerre rule. ``dlnf0/dlnq = -q/(1 + exp(-q))`` is the
+    log-derivative of the Fermi-Dirac background distribution that sources
+    the ``psi`` hierarchy. Computed once per ``nqmax`` and precision: the
+    rule's eigendecomposition, op by op, cost a second of compiles a call.
     """
 
+    return _momentum_bins(int(nqmax), bool(jax.config.jax_enable_x64))
+
+
+@functools.lru_cache(maxsize=None)
+def _momentum_bins(nqmax: int, x64: bool):
     with jax.ensure_compile_time_eval():
-        q, w = get_neutrino_momentum_bins(nqmax)
+        q, w = _neutrino_momentum_bins(nqmax)
     q = np.asarray(q, dtype=np.float64)
     w = np.asarray(w, dtype=np.float64)
     dlfdlq = -q / (1.0 + np.exp(-q))
+    for array in (q, w, dlfdlq):
+        array.flags.writeable = False
     return q, w, dlfdlq
 
 
@@ -831,7 +795,6 @@ def neutrino_momentum_bins(nqmax: int):
 # is 1; that limit also serves ``amnu = 0``.
 _LN_Y_MIN, _LN_Y_MAX = math.log(1.0e-6), math.log(1.0e4)
 _NEUTRINO_TABLE: dict = {}
-_NEUTRINO_NODES: dict = {}
 
 
 def _neutrino_table(n_y_grid: int = 1000):
@@ -846,7 +809,9 @@ def _neutrino_table(n_y_grid: int = 1000):
     if table is None:
         with jax.ensure_compile_time_eval():
             log_y = jnp.linspace(_LN_Y_MIN, _LN_Y_MAX, n_y_grid)
-            q, w = get_neutrino_momentum_bins(NQ_NEUTRINO_TABLE)
+            q, w, _ = (
+                jnp.asarray(v) for v in neutrino_momentum_bins(NQ_NEUTRINO_TABLE)
+            )
             ratio = jnp.sum(
                 w[None, :]
                 * jnp.sqrt(1.0 + (jnp.exp(log_y)[:, None] / q[None, :]) ** 2),
@@ -866,11 +831,7 @@ def neutrino_density_ratio(a, amnu, xp=jnp):
     """
 
     if xp is np:
-        nodes = _NEUTRINO_NODES.get(NQ_NEUTRINO_TABLE)
-        if nodes is None:
-            q, w, _ = neutrino_momentum_bins(NQ_NEUTRINO_TABLE)
-            nodes = _NEUTRINO_NODES[NQ_NEUTRINO_TABLE] = (q, w)
-        q, w = nodes
+        q, w, _ = neutrino_momentum_bins(NQ_NEUTRINO_TABLE)
         y = np.asarray(a, dtype=np.float64) * float(amnu)
         return np.sum(w * np.sqrt(1.0 + (y[..., None] / q) ** 2), axis=-1)
     massive = amnu > 0.0

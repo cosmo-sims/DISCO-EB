@@ -16,7 +16,6 @@ from discoeb.component import Component
 from discoeb.eb_model import (
     MassiveNeutrinos,
     Photons,
-    layout_state_names,
     perturbation_model,
 )
 from discoeb.perturbations import (
@@ -64,7 +63,6 @@ def build(layout):
 def test_the_state_order_is_the_layout(name):
     layout = LAYOUTS[name]
     model, _ = build(layout)
-    assert tuple(model.state) == layout_state_names(layout)
     assert model.nvar == layout.nvar
     assert model.index["etak"] == layout.ix_etak
     assert model.index["vb"] == layout.ix_vb
