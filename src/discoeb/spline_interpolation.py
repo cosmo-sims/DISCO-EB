@@ -194,7 +194,6 @@ class spline_interpolation(object):
         x_new = x_new.reshape(
             x_new.shape[0], -1
         )  # Extend last dimension if not already done
-        n = self._x_.shape[0]
         # Find the interval index i such that x[i] <= x_new < x[i+1]
         idx = self._find_index(x_new)
         xidx = jnp.take_along_axis(self._x_, idx, axis=0)
@@ -229,7 +228,6 @@ class spline_interpolation(object):
         Returns:
             The definite integral values.
         """
-        n = self._x_.shape[0]
         x_new = jnp.atleast_1d(x_new)
         x_new = x_new.reshape(
             x_new.shape[0], -1
@@ -280,7 +278,6 @@ class spline_interpolation(object):
         Returns:
             The derivative (dy/dx) evaluated at x_new.
         """
-        n = self._x_.shape[0]
         x_new = jnp.atleast_1d(x_new)
         x_new = x_new.reshape(
             x_new.shape[0], -1
@@ -292,7 +289,6 @@ class spline_interpolation(object):
         yidxp1 = jnp.take_along_axis(self._y_, idx + 1, axis=0)
         Sidx = jnp.take_along_axis(self._S_full_, idx, axis=0)
         Sidxp1 = jnp.take_along_axis(self._S_full_, idx + 1, axis=0)
-        Icumidx = jnp.take_along_axis(self._I_cum_, idx + 1, axis=0)
 
         h_local = xidxp1 - xidx
         d_val = x_new - xidx
@@ -304,31 +300,6 @@ class spline_interpolation(object):
         dydx = b_local + 2 * c_local * d_val + 3 * d_local * d_val**2
         return jnp.where(x_new.shape[0] == 1, dydx[0], dydx)
 
-    def derivative2(self, x_new: jnp.ndarray):
-        """
-        Computes the second derivative of the spline at new x positions.
-
-        Args:
-            x_new: scalar or 1D array of new x values.
-
-        Returns:
-            The derivative (d^2y/dx^2) evaluated at x_new.
-        """
-        n = self._x_.shape[0]
-        x_new = jnp.atleast_1d(x_new)
-        idx = self._find_index(x_new)
-        h_local = self._x_[idx + 1] - self._x_[idx]
-        d_val = x_new - self._x_[idx]
-        # Local coefficients (as defined in the cubic polynomial):
-        b_local = (self._y_[idx + 1] - self._y_[idx]) / h_local - h_local * (
-            self._S_full_[idx + 1] + 2 * self._S_full_[idx]
-        ) / 6.0
-        c_local = self._S_full_[idx] / 2.0
-        d_local = (self._S_full_[idx + 1] - self._S_full_[idx]) / (6.0 * h_local)
-        # 2nd derivative of P_i(x) = 2*c_i + 6*d_i*(x-x_i)
-        d2ydx2 = 2 * c_local + 6 * d_local * d_val
-        return jnp.where(x_new.shape[0] == 1, d2ydx2[0], d2ydx2)
-
     def derivative12(self, x_new: jnp.ndarray):
         """
         Computes both the first and the second derivative of the spline at new x positions.
@@ -339,7 +310,6 @@ class spline_interpolation(object):
         Returns:
             The derivatives (dy/dx),(d^2y/dx^2) evaluated at x_new.
         """
-        n = self._x_.shape[0]
         x_new = jnp.atleast_1d(x_new)
         x_new = x_new.reshape(
             x_new.shape[0], -1
@@ -351,9 +321,6 @@ class spline_interpolation(object):
         yidxp1 = jnp.take_along_axis(self._y_, idx + 1, axis=0)
         Sidx = jnp.take_along_axis(self._S_full_, idx, axis=0)
         Sidxp1 = jnp.take_along_axis(self._S_full_, idx + 1, axis=0)
-        Icumidx = jnp.take_along_axis(
-            self._I_cum_, idx, axis=0
-        )  # Correction: was idx+1 before, but that seems illogical
         h_local = xidxp1 - xidx
         d_val = x_new - xidx
         # Local coefficients (as defined in the cubic polynomial):
@@ -374,22 +341,18 @@ class FastUniformCubicSpline1D(object):
     def __init__(
         self, xin: jnp.ndarray, yin: jnp.ndarray, integrate_from_start: bool = True
     ):
-
         h = xin[1] - xin[0]
         dx_inv = 1.0 / h
 
         n = yin.shape[0]
-        if n < 2:
-            raise ValueError("There must be at least two data points.")
 
         # 1. Forward-fill trailing NaNs in y using lax.scan
         _, y = jax.lax.scan(
             lambda c, v: (jnp.where(jnp.isnan(v), c, v),) * 2, yin[0], yin
         )
 
-        m = n - 2  # number of interior points
-        if m <= 0:
-            return jnp.zeros((n,), dtype=yin.dtype)
+        if n < 3:
+            raise ValueError("There must be at least three data points.")
 
         dx_inv_sq = dx_inv * dx_inv
         d = (6.0 * dx_inv_sq) * (y[:-2] - 2.0 * y[1:-1] + y[2:])
@@ -430,7 +393,6 @@ class FastUniformCubicSpline1D(object):
 
         # The exact integral over the full interval [x[i], x[i+1]] is:
         I_full = h * (c0 + 0.5 * c1 + (1.0 / 3.0) * c2 + 0.25 * c3)
-        zeros = jnp.zeros((1,))
         # Cumulative integral from x[0] up to each knot.
         I_cum = jnp.pad(jnp.cumsum(I_full), (1, 0))
         I_total = I_cum[-1]
@@ -517,62 +479,3 @@ class FastUniformCubicSpline1D(object):
             return I_forward
         else:
             return self._I_total_ - I_forward
-
-    def derivative(self, x_new: jnp.ndarray):
-        """
-        Computes the derivative of the spline at new x positions.
-
-        Args:
-            x_new: scalar or 1D array of new x values.
-
-        Returns:
-            The derivative (dy/dx) evaluated at x_new.
-        """
-        # Find the interval index i such that x[i] <= x_new < x[i+1]
-        idx, t = self._find_index_t(x_new)
-        c = jax.lax.dynamic_slice(self._coeffs_, (idx, 0), (1, 4)).reshape(4)
-        # Estrin's scheme for degree-3 polynomial (higher ILP)
-        d1 = c[1]
-        d2 = 2.0 * c[2]
-        d3 = 3.0 * c[3]
-        dydx = self._dx_inv_ * (d1 + t * (d2 + t * d3))
-        return dydx
-
-    def derivative2(self, x_new: jnp.ndarray):
-        """
-        Computes the second derivative of the spline at new x positions.
-
-        Args:
-            x_new: scalar or 1D array of new x values.
-
-        Returns:
-            The derivative (d^2y/dx^2) evaluated at x_new.
-        """
-        # Find the interval index i such that x[i] <= x_new < x[i+1]
-        idx, t = self._find_index_t(x_new)
-        c = jax.lax.dynamic_slice(self._coeffs_, (idx, 0), (1, 4)).reshape(4)
-        # Estrin's scheme for degree-3 polynomial (higher ILP)
-        d2 = 2.0 * c[2]
-        d3 = 6.0 * c[3]
-        d2ydx2 = self._dx_inv_ * self._dx_inv_ * (d2 + t * d3)
-        return d2ydx2
-
-    def derivative12(self, x_new: jnp.ndarray):
-        """
-        Computes both the first and the second derivative of the spline at new x positions.
-
-        Args:
-            x_new: scalar or 1D array of new x values.
-
-        Returns:
-            The derivatives (dy/dx),(d^2y/dx^2) evaluated at x_new.
-        """
-        idx, t = self._find_index_t(x_new)
-        c = jax.lax.dynamic_slice(self._coeffs_, (idx, 0), (1, 4)).reshape(4)
-        # Estrin's scheme for degree-3 polynomial (higher ILP)
-        d1 = c[1]
-        d2 = 2.0 * c[2]
-        d3 = 3.0 * c[3]
-        dydx = self._dx_inv_ * (d1 + t * (d2 + t * d3))
-        d2ydx2 = self._dx_inv_ * self._dx_inv_ * (d2 + 2.0 * t * d3)
-        return dydx, d2ydx2

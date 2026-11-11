@@ -185,7 +185,7 @@ class Metric(Component):
 # --- matter -------------------------------------------------------------------------
 # The density coefficients ``grho_i = 8 pi G rho_i a^2`` today are inputs of the
 # row; derivatives with respect to them are modax's sensitivities over their
-# columns (:data:`discoeb.perturbations.PHYSICAL_COLUMNS`).
+# columns.
 
 
 class ColdDarkMatter(Species):
@@ -790,7 +790,6 @@ def get_neutrino_momentum_bins(nqmax: int) -> tuple[jax.Array, jax.Array]:
 
 
 def _neutrino_momentum_bins(nqmax: int) -> tuple[jax.Array, jax.Array]:
-
     fermi_dirac_const = 7 * jnp.pi**4 / 120
     if nqmax == 3:
         q = jnp.array([0.913201, 3.37517, 7.79184])

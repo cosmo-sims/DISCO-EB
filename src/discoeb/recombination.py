@@ -55,8 +55,6 @@ from __future__ import annotations
 import math
 import os
 
-import numpy as np
-
 from .component import Component, State, float32, float64
 from .eb_model import neutrino_momentum_bins
 from .thermodynamics_recfast import (

@@ -173,7 +173,6 @@ def test_the_initial_state_and_sparsity_come_from_the_components():
     """The adiabatic mode: etak ~ -k, matter at 3/4 of the photon density, zero above the octupole."""
     layout = LAYOUTS["ragged-blocks"]
     model, _ = build(layout)
-    cosmology = SimpleNamespace(w_DE_0=-0.9, w_DE_a=0.1)
     densities = (1.5e-7, 1.0e-7, 1.1e-4, 1.9e-5, 2.0e-7)
     k = np.array([1e-3, 1e-1])
     y0 = model.initial_state(

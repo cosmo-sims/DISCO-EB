@@ -1,5 +1,4 @@
 import functools
-import math
 import os
 from dataclasses import dataclass
 from functools import partial
@@ -19,7 +18,6 @@ from .eb_model import (
     layout_state_names,
     neutrino_density_ratio,
     perturbation_model,
-    perturbation_sparsity,
     setup_background_evolution,
 )
 from .recombination import (
@@ -30,54 +28,11 @@ from .recombination import (
 )
 from .thermodynamics_recfast import evaluate_thermo
 
-# Hierarchy truncations. These are the settings of the components in
-# :mod:`discoeb.eb_model` -- ``DISCO_LMAX_G`` etc. in the environment override
-# their defaults when that module is imported -- mirrored here as module-level
-# integers so the state-vector layout below and the accelerator-compiled
-# right-hand side treat them as compile-time constants. A caller may rebind a
-# component's class attribute (``Photons.LMAX_G = 11``) before the first solve,
-# since the GPU pipeline builds its layout from the classes at solve time
-# (:func:`_layout_for`). At the defaults the flat-LambdaCDM + massless-neutrino
-# layout has NVAR == 50: an 11-variable core (the metric, the fluids and the
-# lowest multipoles, coupled through the Einstein constraints) bordered by three
-# 13-variable tridiagonal free-streaming hierarchies, which is the structure
-# :func:`discoeb.eb_model.perturbation_sparsity` traces through the equations
-# and the sparse direct solver exploits.
-LMAX_G = Photons.LMAX_G
-"""Photon temperature hierarchy truncation (``Theta_0 ... Theta_LMAX_G``)."""
-
-LMAX_POL = Photons.LMAX_POL
-"""Photon E-mode polarization hierarchy truncation (``E_2 ... E_LMAX_POL``)."""
-
-LMAX_NR = MasslessNeutrinos.LMAX_NR
-"""Massless-neutrino hierarchy truncation (``N_0 ... N_LMAX_NR``)."""
-
-LMAX_NU = MassiveNeutrinos.LMAX_NU
-"""Massive-neutrino hierarchy truncation (``psi_0 ... psi_LMAX_NU`` per momentum bin)."""
-
-IX_ETAK = 0
-"""State-vector index of the metric perturbation ``etak = k eta``."""
-
 IX_CLXC = 1
-"""State-vector index of the CDM density contrast ``clxc``."""
+"""State-vector index of the CDM density contrast ``clxc`` (every layout)."""
 
 IX_CLXB = 2
-"""State-vector index of the baryon density contrast ``clxb``."""
-
-IX_VB = 3
-"""State-vector index of the baryon velocity ``vb``."""
-
-IX_G = 4
-"""Base index of the photon temperature hierarchy (``Theta_l`` at ``IX_G + l``)."""
-
-IX_POL = IX_G + LMAX_G + 1
-"""Base index of the photon polarization hierarchy (``E_l`` at ``IX_POL + (l-2)``)."""
-
-IX_R = IX_POL + LMAX_POL - 1
-"""Base index of the massless-neutrino hierarchy (``N_l`` at ``IX_R + l``)."""
-
-NVAR = IX_R + LMAX_NR + 1
-"""Total length of the perturbation state vector."""
+"""State-vector index of the baryon density contrast ``clxb`` (every layout)."""
 
 
 @dataclass(frozen=True)
@@ -159,22 +114,11 @@ class PerturbationLayout:
     # --- Optional: dynamical dark energy --------------------------------------
 
     @property
-    def has_dark_energy(self) -> bool:
-        return self.enable_dark_energy
-
-    @property
     def ix_clxq(self) -> int:
         """Index of the dark-energy density contrast (only if dark energy enabled)."""
         if not self.enable_dark_energy:
             raise AttributeError("dark energy is not enabled in this layout")
         return self._ix_after_massless
-
-    @property
-    def ix_thetaq(self) -> int:
-        """Index of the dark-energy velocity (only if dark energy enabled)."""
-        if not self.enable_dark_energy:
-            raise AttributeError("dark energy is not enabled in this layout")
-        return self._ix_after_massless + 1
 
     @property
     def _ix_after_dark_energy(self) -> int:
@@ -186,33 +130,21 @@ class PerturbationLayout:
     def has_massive_neutrinos(self) -> bool:
         return self.nqmax > 0
 
-    @property
-    def ix_massive_nu(self) -> int:
-        """Base index of the massive-neutrino momentum-bin hierarchies.
+    def ix_psi(self, l: int, q: int) -> int:
+        """Return the state index of massive-neutrino multipole ``psi_l`` of bin ``q``.
 
-        The multipole ``psi_l`` of momentum bin ``q`` is stored at
-        ``ix_massive_nu + q * (lmaxnu + 1) + l`` (**bin-major, multipole-minor**),
-        so that each bin's free-streaming tail ``psi_3 ... psi_lmaxnu`` is
+        The bins follow the dark-energy block, **bin-major, multipole-minor**, so
+        that each bin's free-streaming tail ``psi_3 ... psi_lmaxnu`` is
         contiguous and is one tridiagonal block of the sparsity pattern
         (:func:`discoeb.eb_model.perturbation_sparsity`).
         """
         if self.nqmax == 0:
             raise AttributeError("massive neutrinos are not enabled in this layout")
-        return self._ix_after_dark_energy
-
-    def ix_psi_base(self, q: int) -> int:
-        """Return the state index of ``psi_0`` for momentum bin ``q``."""
-        if self.nqmax == 0:
-            raise AttributeError("massive neutrinos are not enabled in this layout")
         if not (0 <= q < self.nqmax):
             raise IndexError(f"momentum bin q={q} out of range [0, {self.nqmax})")
-        return self.ix_massive_nu + q * (self.lmaxnu + 1)
-
-    def ix_psi(self, l: int, q: int) -> int:
-        """Return the state index of massive-neutrino multipole ``psi_l`` of bin ``q``."""
         if not (0 <= l <= self.lmaxnu):
             raise IndexError(f"multipole l={l} out of range [0, {self.lmaxnu}]")
-        return self.ix_psi_base(q) + l
+        return self._ix_after_dark_energy + q * (self.lmaxnu + 1) + l
 
     # --- Total size -----------------------------------------------------------
 
@@ -254,13 +186,6 @@ class PerturbationLayout:
         )
 
 
-FLAT_MASSLESS_LAYOUT = PerturbationLayout()
-"""Default flat-LambdaCDM + massless-neutrino layout (NVAR == 50).
-
-Reproduces the fixed index constants of :mod:`discoeb.perturbations`.
-"""
-
-
 class _ParamCosmology(NamedTuple):
     """Hashable view of the historical DISCO-EB parameter dictionary."""
 
@@ -280,30 +205,6 @@ class _ParamCosmology(NamedTuple):
     mnu: float
     k_pivot: float
     tau_reio: float = 0.0  # reionization optical depth (0: no reionization)
-
-    @property
-    def h(self):
-        return self.H0 / 100.0
-
-    @property
-    def Omegac(self):
-        return self.Omegam - self.Omegab
-
-    @property
-    def omega_b_h2(self):
-        return self.Omegab * self.h**2
-
-    @property
-    def omega_c_h2(self):
-        return self.Omegac * self.h**2
-
-    @property
-    def tau_reion(self):
-        return self.tau_reio
-
-    @property
-    def N_eff(self):
-        return self.Neff_massless + self.num_massive_neutrinos
 
     def to_background_params(self):
         return {
@@ -403,7 +304,6 @@ IX_YHE = N_PARAM_HIERARCHY
 IX_TCMB = N_PARAM_HIERARCHY + 1
 IX_H0 = N_PARAM_HIERARCHY + 2
 IX_OMEGAB = N_PARAM_HIERARCHY + 3
-IX_ZRE = N_PARAM_HIERARCHY + 4
 IX_EPS = N_PARAM_HIERARCHY + len(THERMAL_PARAMETERS)
 IX_DIR = IX_EPS + 1
 DIRECTED_NAMES = (
@@ -454,17 +354,11 @@ PHYSICAL_DENSITY_COLUMNS = (0, 1, 2, 3, 4)
 THERMAL_COLUMNS = (IX_YHE, IX_TCMB, IX_H0, IX_OMEGAB)
 """Packed-parameter columns the recombination rates read: ``(YHe, Tcmb, H0, Omegab)``."""
 
-PHYSICAL_COLUMNS = PHYSICAL_DENSITY_COLUMNS + THERMAL_COLUMNS
-"""Every column a derivative with respect to the cosmology wants."""
-
 TRAJECTORIES_PER_BLOCK = 32
 """Wave modes packed into one CUDA block by modax's thread-local Rodas5P kernel."""
 
 CUDA_MAX_REGISTERS = int(os.environ.get("DISCO_CUDA_MAX_REGISTERS", "168"))
 """Per-thread register cap for that kernel: fewer registers, more resident warps."""
-
-NQMAX = MassiveNeutrinos.NQMAX
-"""Massive-neutrino momentum bins used by both the background and the hierarchy."""
 
 THERMO_RTOL = 1e-5
 THERMO_ATOL = 1e-7
@@ -516,7 +410,7 @@ def joint_model(layout, extra=()):
     """The hierarchy of ``layout`` with :class:`~discoeb.recombination.Recombination` appended.
 
     The recombination states come *after* the hierarchy's, so the layout's
-    indices (:data:`IX_ETAK` ...) hold and the thermal states are the last
+    indices (:class:`PerturbationLayout`) hold and the thermal states are the last
     five columns of every history: ``ln a``, ``x_H``, ``x_He``, ``T_m`` and
     the optical depth, at ``model.index["lna"]`` and so on. ``extra`` are
     component classes appended after it (the line-of-sight sources).
@@ -935,43 +829,6 @@ def _launch(
     )
 
 
-def solve_perturbation_history(
-    k_values,
-    cosmology,
-    *,
-    tau_save=None,
-    as_jax: bool = False,
-    rtol: float = PERTURB_RTOL,
-    atol: float = PERTURB_ATOL,
-    first_step: float = PERTURB_FIRST_STEP,
-    max_steps: int = PERTURB_MAX_STEPS,
-):
-    """Solve the joint system of one cosmology and return the saved history.
-
-    Returns ``(history, layout, model)``: ``history`` has shape
-    ``(n_k, len(tau_save), nvar)`` in the caller's ``k`` order, with the
-    hierarchy at the layout's indices and the five recombination states last
-    (:func:`thermal_indices`).
-    """
-
-    hist, k_sorted, prepared = solve_perturbation_history_batch(
-        k_values,
-        (cosmology,),
-        tau_save=tau_save,
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
-    )
-    inv_order = np.argsort(
-        np.argsort(np.asarray(k_values, dtype=np.float64), kind="stable")
-    )
-    history = hist[:, 0][jnp.asarray(inv_order)]
-    if not as_jax:
-        history = np.asarray(history)
-    return history, prepared.layout, prepared.model
-
-
 def solve_perturbation_history_batch(
     k_values,
     cosmologies,
@@ -1008,20 +865,6 @@ def solve_perturbation_history_batch(
         len(k_sorted), len(prepared.cosmologies), len(t_span), prepared.model.nvar
     )
     return hist, k_sorted, prepared
-
-
-def solve_perturbations(k_values, cosmology, **solve_kwargs):
-    """Final states ``(n_k, nvar)`` of one cosmology at ``tau0``."""
-
-    solve_kwargs.pop("tau_save", None)
-    hist, _, _ = solve_perturbation_history(k_values, cosmology, **solve_kwargs)
-    return hist[:, -1, :]
-
-
-def solve_matter_power_spectrum(k_values, cosmology, **solve_kwargs) -> np.ndarray:
-    """Return the linear matter power spectrum ``P(k)`` in Mpc^3 for one cosmology."""
-
-    return solve_matter_power_spectrum_batch(k_values, (cosmology,), **solve_kwargs)[0]
 
 
 def _power_spectrum_from_final(y_final, k_sorted, cosmologies, k_values):
@@ -1578,9 +1421,6 @@ and the initial state. The remaining keys enter as parameter columns the
 sensitivities do not carry (``Omegak``, ``Nmnu``, ``mnu``, ``w_DE_0``,
 ``w_DE_a``, ``cs2_DE``, ``YHe``, ``tau_reio``) or not at all (``A_s``,
 ``n_s``, ``k_p``), and must be given as plain numbers."""
-
-_COSMOLOGY_ATTRIBUTES = {"Tcmb": "T_cmb", "Neff": "Neff_massless", "k_p": "k_pivot"}
-"""Dictionary keys whose :class:`_ParamCosmology` field is named differently."""
 
 
 def _cosmology_dictionary(cosmology) -> dict:
