@@ -37,6 +37,8 @@ def test_the_recombination_block_publishes_the_thermal_quantities():
 def test_the_recombination_block_steps_on_its_own():
     """The recombination block takes the same, fewer steps for every wave mode of a cosmology."""
     import numpy as np
+    from test_perturbations import _perturbed_cosmologies
+    from test_reionization import _cuda_available
 
     from discoeb.perturbations import (
         PERTURB_ATOL,
@@ -47,9 +49,6 @@ def test_the_recombination_block_steps_on_its_own():
         _pack_batch,
         _prepare_solve,
     )
-    from test_perturbations import _perturbed_cosmologies
-
-    from test_reionization import _cuda_available
 
     if not _cuda_available():
         pytest.skip("numba-CUDA requires a CUDA GPU")

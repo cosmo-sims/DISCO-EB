@@ -23,7 +23,6 @@ Three checks of :mod:`discoeb.lensing`:
 
 import numpy as np
 import pytest
-
 from test_perturbations import _perturbed_cosmologies
 
 LMAX_CLASS = 3500
@@ -177,10 +176,10 @@ def test_lensed_spectra_end_to_end_match_class():
     """Unlensed TT, TE, EE and C_l^{psi psi} from one solve, lensed, against CLASS's lensed spectra."""
 
     import jax
+    from test_cmb import DL_GATE, POL_GATE
 
     from discoeb.cmb import cmb_grids, cmb_k_grid, compute_cl_power_spectrum_batch
     from discoeb.lensing import cl_on_every_ell, lensed_spectra, lensing_tables
-    from test_cmb import DL_GATE, POL_GATE
 
     jax.config.update("jax_enable_x64", True)
     cosmology = _perturbed_cosmologies(1)[0]

@@ -173,7 +173,8 @@ float32 = _Ambient("float32")
 
 
 def _device_names():
-    from numba_cuda_mlir import cuda as cuda_module, types as cuda_types
+    from numba_cuda_mlir import cuda as cuda_module
+    from numba_cuda_mlir import types as cuda_types
 
     return {
         "cuda": cuda_module,

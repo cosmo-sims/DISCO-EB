@@ -42,7 +42,6 @@ does for ``P(k)``.
 
 import numpy as np
 import pytest
-
 from test_perturbations import (
     BATCH_SIZE_CASES,
     DENSITY_NAMES,
@@ -644,6 +643,7 @@ def test_sources_come_from_the_component_model():
     from types import SimpleNamespace
 
     import jax.numpy as jnp
+    from test_perturbations import REFERENCE_COSMOLOGY
 
     from discoeb.cmb import source_model
     from discoeb.perturbations import (
@@ -652,7 +652,6 @@ def test_sources_come_from_the_component_model():
         _as_cosmology,
         make_params,
     )
-    from test_perturbations import REFERENCE_COSMOLOGY
 
     layout = PerturbationLayout()
     model = source_model(layout)

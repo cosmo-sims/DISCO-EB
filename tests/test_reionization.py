@@ -15,7 +15,6 @@ suppression of the acoustic peaks.
 
 import numpy as np
 import pytest
-
 from test_cmb import _assert_matches_class
 from test_perturbations import REFERENCE_COSMOLOGY, _perturbed_cosmologies
 

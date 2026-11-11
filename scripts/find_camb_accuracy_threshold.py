@@ -35,10 +35,10 @@ def _get_threads_from_args():
 os.environ["OMP_NUM_THREADS"] = str(_get_threads_from_args())
 
 import time
+
+import camb
 import numpy as np
 import pandas as pd
-import camb
-
 
 # Cosmology parameters (matching DISCO-Notebook)
 COSMOLOGY = {

@@ -5,7 +5,6 @@ import time
 import numpy as np
 import pytest
 
-
 REFERENCE_COSMOLOGY = {
     "Omegam": (0.02238280 + 0.1201075) / 0.6732117**2,
     "Omegab": 0.02238280 / 0.6732117**2,
@@ -228,9 +227,9 @@ def test_solve_eb_keeps_what_the_history_holds():
     from discoeb.perturbations import (
         PARAM_COLUMNS,
         TAU_START,
+        THERMO_ERROR_WEIGHT,
         density_coefficients,
         make_params,
-        THERMO_ERROR_WEIGHT,
         solve_eb,
         solve_matter_power_spectrum_batch,
         solve_perturbation_history_batch,

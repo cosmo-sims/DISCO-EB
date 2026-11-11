@@ -20,8 +20,8 @@ from discoeb.eb_model import (
     perturbation_model,
 )
 from discoeb.perturbations import (
-    PARAM_COLUMNS,
     N_PARAM,
+    PARAM_COLUMNS,
     PerturbationLayout,
     make_initial_states,
 )

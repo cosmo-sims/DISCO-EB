@@ -93,7 +93,7 @@ import numpy as np
 from scipy import integrate, special
 
 from . import eb
-from .eb import Component, TAU_START
+from .eb import TAU_START, Component
 from .spline_interpolation import spline_interpolation
 
 CACHE_SIZE = 8

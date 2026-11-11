@@ -1,7 +1,7 @@
+import functools
 import math
 import os
 from dataclasses import dataclass
-import functools
 from functools import partial
 from typing import NamedTuple
 
@@ -9,27 +9,26 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .component import _compile
 from .eb_model import (
-    layout_state_names,
     MassiveNeutrinos,
     MasslessNeutrinos,
     Photons,
     density_parameters,
     dtauda,
+    layout_state_names,
     neutrino_density_ratio,
     perturbation_model,
     perturbation_sparsity,
     setup_background_evolution,
 )
-from .component import _compile
 from .recombination import (
-    recombination_model,
     THERMAL_PARAMETERS,
     THERMO_ERROR_WEIGHT,
     Recombination,
+    recombination_model,
 )
 from .thermodynamics_recfast import evaluate_thermo
-
 
 # Hierarchy truncations. These are the settings of the components in
 # :mod:`discoeb.eb_model` -- ``DISCO_LMAX_G`` etc. in the environment override

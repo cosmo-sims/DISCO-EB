@@ -40,9 +40,9 @@ Usage:
 import argparse
 import os
 import time
-import numpy as np
-import camb
 
+import camb
+import numpy as np
 
 # DISCO-EB standard cosmology (from test_cmb.py)
 DISCO_COSMOLOGY = {

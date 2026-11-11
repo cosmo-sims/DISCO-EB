@@ -34,7 +34,6 @@ RECFAST solve.
 
 import numpy as np
 import pytest
-
 from test_perturbations import (
     BATCH_SIZE_CASES,
     _perturbed_cosmologies,
