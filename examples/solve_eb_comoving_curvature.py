@@ -30,7 +30,7 @@ jax.config.update("jax_enable_x64", True)
 
 import numpy as np
 
-from discoeb.perturbations import solve_eb
+from discoeb import solve_eb
 
 # Planck 2018 flat LCDM with massless neutrinos.
 h = 0.6732117

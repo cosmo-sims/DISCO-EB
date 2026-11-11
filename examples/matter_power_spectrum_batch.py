@@ -12,25 +12,12 @@ the second call then uses a batch of cosmologies not seen before.
 Run from the repository root with the project's environment::
 
     .venv/bin/python examples/matter_power_spectrum_batch.py
-
-Until modax 0.0.8, which has the Block and Hierarchy API, is released, the
-script imports modax from a local checkout at ~/git/modax (hard-coded below)
-and DISCO-EB from this repository's src/.
 """
 
 import atexit
 import os
 import shutil
-import sys
 import tempfile
-
-# Import modax from the local checkout (the released 0.0.7 lacks the
-# hierarchy API) and DISCO-EB from this repository, ahead of any installed
-# copies.
-sys.path[:0] = [
-    os.path.expanduser("~/git/modax"),
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "src"),
-]
 
 # Compile from fresh every run: an empty kernel cache, removed at exit. This
 # must be set before numba or modax is imported.
