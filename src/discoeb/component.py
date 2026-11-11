@@ -451,6 +451,17 @@ def _positional_names(fn: Callable, label: str) -> tuple[bool, list[str]]:
     return takes_self, [p.name for p in params[takes_self:]]
 
 
+def _check_output(label: str, what: str, shape: tuple, names) -> None:
+    """A vector's function fills ``output``; a scalar's returns its value."""
+
+    if shape and OUTPUT not in names:
+        raise TypeError(f"{label}: {what} of a vector takes {OUTPUT!r} and fills it")
+    if not shape and OUTPUT in names:
+        raise TypeError(
+            f"{label}: {what} of a scalar returns the value instead of taking {OUTPUT!r}"
+        )
+
+
 class _Provider:
     """One function of a component: what it reads, what it provides."""
 
@@ -462,10 +473,9 @@ class _Provider:
         states: Mapping[str, _State],
     ):
         self.component, self.attr, self.fn = component, attr, fn
-        self.owner = component.label
-        self.label = f"{self.owner}.{attr}"
-        self.symbol = f"{self.owner}__{attr}"
-        self.self_symbol = f"{self.owner}_self"
+        self.label = f"{component.label}.{attr}"
+        self.symbol = f"{component.label}__{attr}"
+        self.self_symbol = f"{component.label}_self"
         self.takes_self, names = _positional_names(fn, self.label)
         self.written = None
         if attr.startswith("d_"):
@@ -475,15 +485,7 @@ class _Provider:
                     f"{self.label} writes {attr[2:]!r}, which no component owns"
                 )
             self.written = state
-            if state.shape and OUTPUT not in names:
-                raise TypeError(
-                    f"{self.label} writes the vector {state.name!r}: take {OUTPUT!r} and fill it"
-                )
-            if not state.shape and OUTPUT in names:
-                raise TypeError(
-                    f"{self.label} writes the scalar {state.name!r}: return the contribution "
-                    f"instead of taking {OUTPUT!r}"
-                )
+            _check_output(self.label, "the derivative", state.shape, names)
         elif OUTPUT in names:
             raise TypeError(
                 f"{self.label}: only a vector state's derivative fills an {OUTPUT!r}"
@@ -601,14 +603,9 @@ class _HostValues:
             fn = s.declared.initial_fn
             if fn is not None:
                 takes_self, params = _positional_names(fn, f"{name}.initial")
-                if s.shape and OUTPUT not in params:
-                    raise TypeError(
-                        f"{name}.initial: a vector's initial condition takes {OUTPUT!r} and fills it"
-                    )
-                if not s.shape and OUTPUT in params:
-                    raise TypeError(
-                        f"{name}.initial: a scalar's initial condition returns the value"
-                    )
+                _check_output(
+                    f"{name}.initial", "the initial condition", s.shape, params
+                )
                 args = [result if p == OUTPUT else self[p] for p in params]
                 filled = self._call(fn, s.component, takes_self, args)
                 if not s.shape:
@@ -731,10 +728,6 @@ def _depends(value) -> frozenset[int]:
     return frozenset()
 
 
-def _reads_state(value) -> bool:
-    return bool(_depends(value))
-
-
 _TRACING_NAMES = {
     "cuda": types.SimpleNamespace(
         local=types.SimpleNamespace(array=lambda shape, dtype: _traced_array(shape))
@@ -781,7 +774,7 @@ class _TracedValues(_HostValues):
         return super().__getitem__(name)
 
     def _call(self, fn, component, takes_self, args):
-        if not any(_reads_state(a) for a in args):
+        if not any(_depends(a) for a in args):
             return _Traced()
         try:
             return super()._call(fn, component, takes_self, args)
@@ -792,11 +785,7 @@ class _TracedValues(_HostValues):
             # it reads. A superset of the pattern, never a miss.
             on = frozenset().union(*(_depends(a) for a in args))
             for a in args:
-                if (
-                    isinstance(a, np.ndarray)
-                    and a.dtype == object
-                    and not _reads_state(a)
-                ):
+                if isinstance(a, np.ndarray) and a.dtype == object and not _depends(a):
                     a[...] = _Traced(on)  # the output buffer it fills
             return _Traced(on)
 
@@ -812,17 +801,16 @@ class Model:
         if duplicates:
             raise ValueError(f"two components of one class: {duplicates}")
         self.states: dict[str, _State] = {}
-        self.owner: dict[str, Component] = {}
         offset = 0
         for c in self.components:
             for name, declared in type(c).declared_states():
-                if name in self.owner:
+                if name in self.states:
                     raise ValueError(
-                        f"{c.label} declares {name!r}, already owned by {self.owner[name].label}"
+                        f"{c.label} declares {name!r}, already owned by "
+                        f"{self.states[name].component.label}"
                     )
                 if not name.isidentifier() or name.startswith("d_") or name == OUTPUT:
                     raise ValueError(f"{c.label}: {name!r} is not a valid state name")
-                self.owner[name] = c
                 self.states[name] = _State(name, declared, c, offset)
                 offset += self.states[name].size
         self.state: list[str] = [e for s in self.states.values() for e in s.elements]
@@ -841,20 +829,20 @@ class Model:
     def nvar(self) -> int:
         return len(self.state)
 
+    def _all_providers(self) -> list[_Provider]:
+        """Every component's providers, read off their signatures once per model."""
+
+        if not hasattr(self, "_provider_list"):
+            self._provider_list = [
+                p for c in self.components for p in _providers(c, self.states)
+            ]
+        return self._provider_list
+
     def _host_providers(self):
-        """``(providers by quantity, contributions by sum)``, read once per model."""
+        """``(providers by quantity, contributions by sum)`` of a host evaluation, once per model."""
 
         if not hasattr(self, "_host_provider_table"):
-            providers, contributions = {}, {s: [] for s in self.sums}
-            for c in self.components:
-                for p in _providers(c, self.states):
-                    if p.written is not None:
-                        continue
-                    if p.attr in self.sums:
-                        contributions[p.attr].append(p)
-                    else:
-                        providers.setdefault(p.attr, p)
-            self._host_provider_table = (providers, contributions)
+            self._host_provider_table = self._collect({}, set(), shadow=True)[:2]
         return self._host_provider_table
 
     # -- the Jacobian's sparsity pattern ----------------------------------------------
@@ -874,11 +862,9 @@ class Model:
 
         values = _TracedValues(self)
         entries: set[tuple[int, int]] = set()
-        for c in self.components:
-            for p in _providers(c, self.states):
+        for written in self._collect({}, set(), shadow=True)[2].values():
+            for p in written:
                 s = p.written
-                if s is None:
-                    continue
                 if s.shape:
                     buffer = _traced_array(s.shape)
                     args = [buffer if n == OUTPUT else values[n] for n in p.signature]
@@ -963,29 +949,28 @@ class Model:
         producers: dict[str, _Provider] = {}
         contributions: dict[str, list[_Provider]] = {s: [] for s in self.sums}
         derivatives: dict[str, list[_Provider]] = {s: [] for s in self.states}
-        for c in self.components:
-            for provider in _providers(c, self.states):
-                q = provider.attr
-                if provider.written is not None:
-                    derivatives[provider.written.name].append(provider)
-                elif q in self.sums:
-                    contributions[q].append(provider)
-                elif q in producers:
-                    raise ValueError(
-                        f"{provider.label} and {producers[q].label} both provide {q!r}"
-                    )
-                elif q in self.states or q in self.index:
-                    raise ValueError(
-                        f"{provider.label} provides {q!r}, which is a state variable"
-                    )
-                elif q in params:
-                    raise ValueError(
-                        f"{provider.label} provides {q!r}, which is a parameter"
-                    )
-                elif q in base and not shadow:
-                    raise ValueError(f"{provider.label} provides {q!r}, which is given")
-                elif q not in base:
-                    producers[q] = provider
+        for provider in self._all_providers():
+            q = provider.attr
+            if provider.written is not None:
+                derivatives[provider.written.name].append(provider)
+            elif q in self.sums:
+                contributions[q].append(provider)
+            elif q in producers:
+                raise ValueError(
+                    f"{provider.label} and {producers[q].label} both provide {q!r}"
+                )
+            elif q in self.states or q in self.index:
+                raise ValueError(
+                    f"{provider.label} provides {q!r}, which is a state variable"
+                )
+            elif q in params:
+                raise ValueError(
+                    f"{provider.label} provides {q!r}, which is a parameter"
+                )
+            elif q in base and not shadow:
+                raise ValueError(f"{provider.label} provides {q!r}, which is given")
+            elif q not in base:
+                producers[q] = provider
         return producers, contributions, derivatives
 
     @staticmethod
@@ -1052,17 +1037,47 @@ class Model:
         for s in self._subset(states):
             if not s.shape:
                 yield f"    {s.name} = y[{offset}]"
-            elif len(s.shape) == 1:
-                yield f"    {s.name} = cuda.local.array({s.shape[0]}, float64)"
-                yield f"    for i in range({s.shape[0]}):"
-                yield f"        {s.name}[i] = y[{offset} + i]"
             else:
-                n, m = s.shape
-                yield f"    {s.name} = cuda.local.array(({n}, {m}), float64)"
-                yield f"    for i in range({n}):"
-                yield f"        for j in range({m}):"
-                yield f"            {s.name}[i, j] = y[{offset} + i * {m} + j]"
+                yield _local_array(s.name, s.shape)
+                yield from _each(
+                    s.shape,
+                    lambda ix, flat, s=s, o=offset: f"{s.name}[{ix}] = y[{o} + {flat}]",
+                )
             offset += s.size
+
+    @staticmethod
+    def _codegen(jit, names):
+        """A namespace for generated source and ``call(provider, buffer)`` emitting a call into it."""
+
+        memo: dict = {}
+        namespace: dict[str, object] = {
+            "cuda": names["cuda"],
+            "float64": names["float64"],
+        }
+
+        def call(provider, buffer=None):
+            namespace[provider.symbol] = _bound_function(provider.fn, jit, names, memo)
+            args = [buffer if n == OUTPUT else n for n in provider.signature]
+            if provider.takes_self:
+                namespace[provider.self_symbol] = provider.component.device_self()
+                args.insert(0, provider.self_symbol)
+            return f"{provider.symbol}({', '.join(args)})"
+
+        return namespace, call
+
+    @staticmethod
+    def _quantity_lines(order, producers, contributions, params, call):
+        """The parameter reads and the quantities of ``order``, each its provider or its sum."""
+
+        for pname, column in params.items():
+            yield f"    {pname} = p[{int(column)}]"
+        for quantity in order:
+            if quantity in producers:
+                yield f"    {quantity} = {call(producers[quantity])}"
+            else:
+                yield f"    {quantity} = " + " + ".join(
+                    call(p) for p in contributions[quantity]
+                )
 
     def state_indices(self, states) -> list[int]:
         """The flat indices of the elements of ``states``, in model order."""
@@ -1139,42 +1154,7 @@ class Model:
         ]
         order = self._order(wanted, producers, contributions, given)
 
-        memo: dict = {}
-        namespace: dict[str, object] = {
-            "cuda": names["cuda"],
-            "float64": names["float64"],
-        }
-
-        def call(provider, buffer=None):
-            namespace[provider.symbol] = _bound_function(provider.fn, jit, names, memo)
-            args = [buffer if n == OUTPUT else n for n in provider.signature]
-            if provider.takes_self:
-                namespace[provider.self_symbol] = provider.component.device_self()
-                args.insert(0, provider.self_symbol)
-            return f"{provider.symbol}({', '.join(args)})"
-
-        def zeros(target, shape):
-            # -0.0 is the additive identity, so the first += folds away.
-            if len(shape) == 1:
-                yield f"    {target} = cuda.local.array({shape[0]}, float64)"
-                yield f"    for i in range({shape[0]}):"
-                yield f"        {target}[i] = -0.0"
-            else:
-                n, m = shape
-                yield f"    {target} = cuda.local.array(({n}, {m}), float64)"
-                yield f"    for i in range({n}):"
-                yield f"        for j in range({m}):"
-                yield f"            {target}[i, j] = -0.0"
-
-        def accumulate(target, source, shape):
-            if len(shape) == 1:
-                yield f"    for i in range({shape[0]}):"
-                yield f"        {target}[i] += {source}[i]"
-            else:
-                n, m = shape
-                yield f"    for i in range({n}):"
-                yield f"        for j in range({m}):"
-                yield f"            {target}[i, j] += {source}[i, j]"
+        namespace, call = self._codegen(jit, names)
 
         signature = f"y, {time}, p" + (", q" if quantities else "")
         lines = [
@@ -1182,21 +1162,12 @@ class Model:
             "    # states",
             *self._state_reads(states),
             "    # parameters",
+            *self._quantity_lines((), {}, {}, params, call),
+            *(f"    {quantity} = q[{k}]" for k, quantity in enumerate(quantities)),
+            "    # quantities",
+            *self._quantity_lines(order, producers, contributions, {}, call),
+            "    # derivatives",
         ]
-        for pname, column in params.items():
-            lines.append(f"    {pname} = p[{int(column)}]")
-        for k, quantity in enumerate(quantities):
-            lines.append(f"    {quantity} = q[{k}]")
-        lines.append("    # quantities")
-        for quantity in order:
-            if quantity in producers:
-                lines.append(f"    {quantity} = {call(producers[quantity])}")
-            else:
-                lines.append(
-                    f"    {quantity} = "
-                    + " + ".join(call(p) for p in contributions[quantity])
-                )
-        lines.append("    # derivatives")
         for s in block:
             d = f"d_{s.name}"
             if not s.shape:
@@ -1204,12 +1175,16 @@ class Model:
                     f"    {d} = " + " + ".join(call(p) for p in derivatives[s.name])
                 )
                 continue
-            lines.extend(zeros(d, s.shape))
+            lines.extend(_zeros(d, s.shape))
             for p in derivatives[s.name]:
                 buffer = f"c_{p.symbol}"
-                lines.extend(zeros(buffer, s.shape))
+                lines.extend(_zeros(buffer, s.shape))
                 lines.append(f"    {call(p, buffer)}")
-                lines.extend(accumulate(d, buffer, s.shape))
+                lines.extend(
+                    _each(
+                        s.shape, lambda ix, _, d=d, b=buffer: f"{d}[{ix}] += {b}[{ix}]"
+                    )
+                )
         lines.append("    return (")
         for s in block:
             if not s.shape:
@@ -1263,37 +1238,15 @@ class Model:
             [(name, o) for o in outputs], producers, contributions, given
         )
 
-        memo: dict = {}
-        namespace: dict[str, object] = {
-            "cuda": names["cuda"],
-            "float64": names["float64"],
-        }
-
-        def call(provider):
-            namespace[provider.symbol] = _bound_function(provider.fn, jit, names, memo)
-            args = list(provider.signature)
-            if provider.takes_self:
-                namespace[provider.self_symbol] = provider.component.device_self()
-                args.insert(0, provider.self_symbol)
-            return f"{provider.symbol}({', '.join(args)})"
+        namespace, call = self._codegen(jit, names)
 
         signature = list(inputs) + (["p"] if params else [])
         lines = [f"def {name}({', '.join(signature)}):"]
         if with_state:
             lines.extend(self._state_reads(states))
-        for pname, column in params.items():
-            lines.append(f"    {pname} = p[{int(column)}]")
-        for quantity in order:
-            if quantity in producers:
-                lines.append(f"    {quantity} = {call(producers[quantity])}")
-            else:
-                lines.append(
-                    f"    {quantity} = "
-                    + " + ".join(call(p) for p in contributions[quantity])
-                )
-        for o in outputs:
-            if o not in given and o not in producers and o not in contributions:
-                raise NameError(f"{name}: {o!r} is neither an input nor provided")
+        lines.extend(
+            self._quantity_lines(order, producers, contributions, params, call)
+        )
         lines.append(
             "    return "
             + (outputs[0] if len(outputs) == 1 else "(" + ", ".join(outputs) + ")")
@@ -1301,6 +1254,39 @@ class Model:
         source = "\n".join(lines) + "\n"
         fn = _compile(name, source, namespace)
         return jit(fn)
+
+
+def _local_array(name: str, shape: tuple) -> str:
+    """A ``cuda.local.array`` of ``shape``, its size a literal as numba needs."""
+
+    size = shape[0] if len(shape) == 1 else tuple(shape)
+    return f"    {name} = cuda.local.array({size}, float64)"
+
+
+def _each(shape: tuple, body: Callable[[str, str], str]) -> list[str]:
+    """Loop lines over the elements of a vector or matrix ``shape``.
+
+    ``body(index, flat)`` gives the statement at element ``index`` (``i`` or
+    ``i, j``), whose offset in the row-major element order is ``flat``.
+    """
+
+    if len(shape) == 1:
+        return [f"    for i in range({shape[0]}):", f"        {body('i', 'i')}"]
+    n, m = shape
+    return [
+        f"    for i in range({n}):",
+        f"        for j in range({m}):",
+        f"            {body('i, j', f'i * {m} + j')}",
+    ]
+
+
+def _zeros(target: str, shape: tuple) -> list[str]:
+    """A local array of ``shape`` at -0.0, the additive identity, so the first += folds away."""
+
+    return [
+        _local_array(target, shape),
+        *_each(shape, lambda ix, _: f"{target}[{ix}] = -0.0"),
+    ]
 
 
 def _compile(name: str, source: str, namespace: dict[str, object]) -> Callable:

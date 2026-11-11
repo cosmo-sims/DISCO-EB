@@ -576,14 +576,14 @@ def test_output_is_only_for_vector_derivatives_and_initial_conditions():
         def d_x(k, x):
             return k
 
-    with pytest.raises(TypeError, match="take 'output' and fill it"):
+    with pytest.raises(TypeError, match="of a vector takes 'output' and fills it"):
         Model([Hierarchy(), Returns()]).build({"k": 0}, **HOST)
 
     class TakesOutput(Interaction):
         def d_vb(k, output):
             return k
 
-    with pytest.raises(TypeError, match="return the contribution"):
+    with pytest.raises(TypeError, match="of a scalar returns the value"):
         toy_model(TakesOutput()).build(PARAMS, **HOST)
 
     class Quantity(Interaction):
