@@ -99,8 +99,8 @@ so edit those there. Keep the prose short, active and plain.
 **The interface.** The package itself (`discoeb/__init__.py`) is the API the
 CMB code uses. That code lives in
 DISCO-CMB (`~/git/DISCO-CMB`, package `discocmb`, split out 2026-11-11 with
-the history of `cmb.py` and `lensing.py`), which imports from `discoeb` and the
-generic `spline_interpolation` and nothing else; this package never imports
+the history of `cmb.py` and `lensing.py`), which imports from `discoeb` and nothing
+else (it took `spline_interpolation` with it on 2026-11-12); this package never imports
 it (`tests/test_boundary.py`). The contract is `solve_eb(cosmologies, k, tau,
 keep=names, extra=components)`: named quantities evaluated in the kernel at the
 save times, the CMB's sources being a `LineOfSightSources` component passed as
@@ -119,7 +119,9 @@ The codebase is organized into modular components in `src/discoeb/`:
    budget closed at `a = 1` with the model's `grho`), `expansion_rate` /
    `dtauda` (the model's `adotoa` via `Model.evaluate(..., math=jnp)`), the
    massive-neutrino momentum bins (`neutrino_momentum_bins`, cached) and the
-   shared `rho_nu(y)` table (`neutrino_density_ratio`). The conformal-time
+   massive-neutrino density `neutrino_density_ratio`, summed directly over
+   the `NQ_NEUTRINO_TABLE` = 100 momentum nodes (the spline table of
+   `rho_nu(y)` it replaced on 2026-11-12 agreed to 5e-10). The conformal-time
    quadrature is `perturbations._background_tau`; `background_endpoints`
    vmaps it over a batch for `tau0`, `ln a` at `TAU_START` and `z_re`
 
@@ -331,17 +333,7 @@ The codebase is organized into modular components in `src/discoeb/`:
      against the dense core's 238, which had none). The fill and the
      diagonals have slots of their own in modax, written by no column of `J`
 
-10. **spline_interpolation.py** - Cubic splines, construct and `evaluate` only
-   - `spline_interpolation(x, y)`: natural cubic spline on any grid, batched
-     over `y`'s columns; DISCO-CMB's transfer and lensing interpolation
-   - `FastUniformCubicSpline1D`: natural cubic spline on a uniform grid stored
-     as Horner coefficients in the local coordinate; `evaluate` takes a
-     scalar (`jax.vmap` over arrays). The `rho_nu(y)` table
-   - The integral and derivative methods went with the stand-alone RECFAST
-     path on 2026-11-11 (the non-uniform `integral` had a bug: `y` in place of
-     the second derivative in its linear coefficient)
-
-11. **util.py** - the generalised Gauss-Laguerre rule the neutrino momentum
+10. **util.py** - the generalised Gauss-Laguerre rule the neutrino momentum
     bins use for `nqmax > 5`
 
 ### Computation Pipeline

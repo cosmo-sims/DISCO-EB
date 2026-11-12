@@ -51,7 +51,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from .component import Component, Interaction, Model, Setting, Species, State
-from .spline_interpolation import FastUniformCubicSpline1D
 from .util import generalized_gauss_laguerre_weights
 
 SUMS = ("grho", "gpres", "dgrho", "dgq", "dgpi")
@@ -754,8 +753,8 @@ GRHOR_PER_TCMB4 = 3.39739477e-14  # one massless neutrino flavour, per K^4
 C2OK = 1.62581581e4  # K / eV: amnu = m_nu c^2 / (k_B T_nu0) = mnu * C2OK / Tcmb
 
 NQ_NEUTRINO_TABLE = 100
-"""Momentum nodes for the massive-neutrino background density. The ``rho_nu``
-table and the budget closing both integrate the Fermi-Dirac distribution on
+"""Momentum nodes for the massive-neutrino background density. ``rho_nu(a)``
+and the budget closing both integrate the Fermi-Dirac distribution on
 these."""
 
 
@@ -810,57 +809,23 @@ def _momentum_bins(nqmax: int, x64: bool):
     return q, w, dlfdlq
 
 
-# The massive-neutrino density relative to the massless flavour depends only on
-# ``y = amnu * a``, so one table over ``ln y`` serves every cosmology. Below the
-# table the neutrinos are relativistic and the ratio is 1, which also covers
-# ``amnu = 0``.
-_LN_Y_MIN, _LN_Y_MAX = math.log(1.0e-6), math.log(1.0e4)
-_NEUTRINO_TABLE: dict = {}
-
-
-def _neutrino_table(n_y_grid: int = 1000):
-    """The spline of ``ln(rho_nu / rho_nu,massless)`` over ``ln y``.
-
-    Built on first use rather than at import, so it picks up the
-    ``jax_enable_x64`` setting in force then. It stays concrete even when
-    first used inside a ``jit``.
-    """
-
-    key = (n_y_grid, bool(jax.config.read("jax_enable_x64")))
-    table = _NEUTRINO_TABLE.get(key)
-    if table is None:
-        with jax.ensure_compile_time_eval():
-            log_y = jnp.linspace(_LN_Y_MIN, _LN_Y_MAX, n_y_grid)
-            q, w, _ = (
-                jnp.asarray(v) for v in neutrino_momentum_bins(NQ_NEUTRINO_TABLE)
-            )
-            ratio = jnp.sum(
-                w[None, :]
-                * jnp.sqrt(1.0 + (jnp.exp(log_y)[:, None] / q[None, :]) ** 2),
-                axis=1,
-            )
-            table = FastUniformCubicSpline1D(log_y, jnp.log(ratio))
-        _NEUTRINO_TABLE[key] = table
-    return table
-
-
 def neutrino_density_ratio(a, amnu, xp=jnp):
     """``rho_nu(a) / rho_nu,massless`` of one flavour of mass ``amnu`` (1 when massless).
 
-    With ``xp=jnp`` (the default) it reads the shared table, so it traces
-    under ``jit``. With ``xp=np`` it sums the same quadrature directly, for
-    closing the budget on the host for a cosmology given as floats.
+    Sums the Fermi-Dirac quadrature on ``NQ_NEUTRINO_TABLE`` momentum nodes,
+    which depends only on ``y = amnu * a``. With ``xp=jnp`` (the default) it
+    traces under ``jit``; with ``xp=np`` it runs on the host, for closing the
+    budget of a cosmology given as floats.
     """
 
+    q, w, _ = neutrino_momentum_bins(NQ_NEUTRINO_TABLE)
     if xp is np:
-        q, w, _ = neutrino_momentum_bins(NQ_NEUTRINO_TABLE)
         y = np.asarray(a, dtype=np.float64) * float(amnu)
         return np.sum(w * np.sqrt(1.0 + (y[..., None] / q) ** 2), axis=-1)
-    massive = amnu > 0.0
-    ln_y = jnp.log(jnp.where(massive, amnu, 1.0) * a)
-    ln_y = jnp.clip(ln_y, _LN_Y_MIN, _LN_Y_MAX)
-    ratio = jnp.exp(jnp.vectorize(_neutrino_table().evaluate)(ln_y))
-    return jnp.where(massive, ratio, 1.0)
+    y = jnp.asarray(a) * amnu
+    q, w = jnp.asarray(q, dtype=y.dtype), jnp.asarray(w, dtype=y.dtype)
+    ratio = jnp.sum(w * jnp.sqrt(1.0 + (y[..., None] / q) ** 2), axis=-1)
+    return jnp.where(amnu > 0.0, ratio, 1.0)
 
 
 _BACKGROUND_MODEL: list = []

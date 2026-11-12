@@ -9,8 +9,7 @@ GPU. :mod:`discoeb.component` holds the component model,
 CMB code lives in the separate package ``discocmb`` (DISCO-CMB) and turns
 this output into angular power spectra: line-of-sight sources, grids,
 transfer functions, projection and lensing. It imports only from this
-package itself and from the generic numerics of
-:mod:`discoeb.spline_interpolation`. DISCO-EB does not depend on it.
+package itself. DISCO-EB does not depend on it.
 
 **The contract.** A caller asks for *named quantities at chosen conformal
 times* of a batch of cosmologies and wave modes. The kernel launch evaluates
