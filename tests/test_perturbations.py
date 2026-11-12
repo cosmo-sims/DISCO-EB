@@ -98,7 +98,7 @@ def _class_linear_pk(param, k_values):
 def test_matter_power_spectrum_matches_class(n_cosmologies, benchmark):
     """Check and time one GPU launch over nearby flat LCDM cosmologies."""
 
-    from discoeb.perturbations import solve_matter_power_spectrum_batch
+    from discoeb.power_spectrum import solve_matter_power_spectrum_batch
 
     cosmologies = _perturbed_cosmologies(n_cosmologies)
     pk_ours = benchmark.pedantic(
@@ -144,11 +144,9 @@ def test_matter_power_spectrum_derivatives(benchmark):
     import jax
     import jax.numpy as jnp
 
-    from discoeb.perturbations import (
-        _as_cosmology,
-        density_coefficients,
-        matter_power_spectrum_jax,
-    )
+    from discoeb.background import density_coefficients
+    from discoeb.cosmology import _as_cosmology
+    from discoeb.power_spectrum import matter_power_spectrum_jax
 
     cosmology = _perturbed_cosmologies(1)[0]
     densities = jnp.asarray(
@@ -196,16 +194,11 @@ def test_solve_eb_keeps_what_the_history_holds():
     ``P(k)``.
     """
 
-    from discoeb.perturbations import (
-        PARAM_COLUMNS,
-        TAU_START,
-        THERMO_ERROR_WEIGHT,
-        density_coefficients,
-        make_params,
-        solve_eb,
-        solve_matter_power_spectrum_batch,
-        solve_perturbation_history_batch,
-    )
+    from discoeb.background import TAU_START, density_coefficients
+    from discoeb.kernel import PARAM_COLUMNS, make_params
+    from discoeb.power_spectrum import solve_matter_power_spectrum_batch
+    from discoeb.recombination import THERMO_ERROR_WEIGHT
+    from discoeb.solver import solve_eb, solve_perturbation_history_batch
 
     cosmologies = _perturbed_cosmologies(2)
     names = ("R", "clxc", "clxb", "theta_2", "n_15", "sigma", "adotoa")
@@ -273,7 +266,7 @@ def test_solve_eb_comoving_curvature_is_conserved_outside_the_horizon():
     the potentials. A one-quantity solve stores ``n_k * n_tau`` numbers.
     """
 
-    from discoeb.perturbations import solve_eb
+    from discoeb.solver import solve_eb
 
     k = np.array([1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1])
     tau = np.geomspace(1.0, 2.0e4, 64)
@@ -313,17 +306,11 @@ def test_solve_eb_derivatives():
     import jax
     import jax.numpy as jnp
 
-    from discoeb.perturbations import (
-        DIFFERENTIABLE_PARAMETERS,
-        DIRECTED_COLUMNS,
-        DIRECTED_NAMES,
-        TAU_START,
-        _as_cosmology,
-        _input_vector,
-        _kept_values,
-        _prepare_solve,
-        solve_eb,
-    )
+    from discoeb.background import TAU_START
+    from discoeb.cosmology import DIFFERENTIABLE_PARAMETERS, _as_cosmology
+    from discoeb.kernel import DIRECTED_COLUMNS, DIRECTED_NAMES, _prepare_solve
+    from discoeb.sensitivities import _input_vector, _kept_values
+    from discoeb.solver import solve_eb
 
     cosmology = _perturbed_cosmologies(1)[0]
     # the inputs exactly as solve_eb forms them: a last-bit difference moves a

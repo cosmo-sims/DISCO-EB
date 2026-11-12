@@ -3,7 +3,7 @@
 A cosmology's ``tau_reio`` adds CAMB's tanh reionization step to the RECFAST
 ionization fraction of the kernel's recombination block, with the
 reionization redshift set by bisection on the optical depth
-(:func:`discoeb.perturbations.background_endpoints`). Checked here, on the
+(:func:`discoeb.background.background_endpoints`). Checked here, on the
 kernel's own opacity and optical depth (:func:`test_thermo.kernel_thermal_history`):
 the optical depth of the low-redshift step reproduces the requested
 ``tau_reio``, the visibility's reionization bump sits at CLASS's reionization

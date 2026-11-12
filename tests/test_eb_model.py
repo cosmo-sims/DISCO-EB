@@ -12,7 +12,7 @@ import pytest
 from conftest import HOST, LAYOUTS, ConstantThermalHistory
 
 from discoeb.eb_model import perturbation_model
-from discoeb.perturbations import (
+from discoeb.kernel import (
     N_PARAM,
     PARAM_COLUMNS,
     PerturbationLayout,
@@ -175,7 +175,7 @@ def test_the_initial_state_and_sparsity_come_from_the_components():
 
 
 def test_make_initial_states_uses_the_model():
-    from discoeb.perturbations import _as_cosmology
+    from discoeb.cosmology import _as_cosmology
 
     cosmology = _as_cosmology(
         dict(
@@ -196,7 +196,7 @@ def test_make_initial_states_uses_the_model():
             k_p=0.05,
         )
     )
-    from discoeb.perturbations import joint_model
+    from discoeb.kernel import joint_model
 
     model = joint_model(PerturbationLayout())
     y0 = make_initial_states(cosmology, np.array([1e-2, 1e-1]), model, lna_start=-15.0)

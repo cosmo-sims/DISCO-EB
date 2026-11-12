@@ -42,27 +42,26 @@ state history:
 is a parameter dictionary or an object :func:`as_cosmology` returns.
 """
 
+from .background import TAU_START, background_history, density_coefficients
 from .component import Component
-from .perturbations import (
-    DIFFERENTIABLE_PARAMETERS,
+from .cosmology import DIFFERENTIABLE_PARAMETERS, as_cosmology
+from .kernel import (
     DIRECTED_NAMES,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
     PERTURB_RTOL,
-    TAU_START,
-    EBSolution,
     PerturbationLayout,
-    as_cosmology,
-    background_history,
-    conformal_ages,
-    density_coefficients,
-    directed_inputs,
     joint_model,
+)
+from .recombination import THERMO_ERROR_WEIGHT
+from .solver import (
+    EBSolution,
+    conformal_ages,
+    directed_inputs,
     solve_eb,
     state_names,
 )
-from .recombination import THERMO_ERROR_WEIGHT
 
 __all__ = [
     "Component",

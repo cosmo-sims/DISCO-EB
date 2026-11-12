@@ -11,7 +11,7 @@ import pytest
 from conftest import HOST, LAYOUTS, ConstantThermalHistory
 
 from discoeb.eb_model import perturbation_model, perturbation_sparsity
-from discoeb.perturbations import N_PARAM, PARAM_COLUMNS
+from discoeb.kernel import N_PARAM, PARAM_COLUMNS
 
 sparse_direct = pytest.importorskip("modax._sparse_direct")
 colour_sparsity = pytest.importorskip("modax._sparsity").colour_sparsity

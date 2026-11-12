@@ -80,7 +80,7 @@ print("a mode's R falls away once k tau ~ 1 and the potentials decay inside it."
 # thermal history is held fixed (see solve_eb).
 import jax.numpy as jnp  # noqa: E402
 
-from discoeb.perturbations import DIFFERENTIABLE_PARAMETERS  # noqa: E402
+from discoeb.cosmology import DIFFERENTIABLE_PARAMETERS  # noqa: E402
 
 fixed = {
     key: value

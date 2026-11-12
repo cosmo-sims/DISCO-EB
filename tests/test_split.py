@@ -2,7 +2,7 @@
 
 import pytest
 
-from discoeb.perturbations import (
+from discoeb.kernel import (
     THERMAL_QUANTITIES,
     THERMAL_STATES,
     PerturbationLayout,
@@ -40,7 +40,7 @@ def test_the_recombination_block_steps_on_its_own():
     from conftest import _cuda_available
     from test_perturbations import _perturbed_cosmologies
 
-    from discoeb.perturbations import (
+    from discoeb.kernel import (
         PERTURB_ATOL,
         PERTURB_FIRST_STEP,
         PERTURB_MAX_STEPS,
