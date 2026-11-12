@@ -1140,7 +1140,7 @@ requires-dist = [
     { name = "jax", specifier = ">=0.6.2" },
     { name = "jax", extras = ["cuda12"], marker = "extra == 'cuda12'", specifier = ">=0.6.2" },
     { name = "jax", extras = ["cuda13"], marker = "python_full_version >= '3.11' and extra == 'cuda13'", specifier = ">=0.9.1" },
-    { name = "modax-solvers", specifier = ">=0.2.2" },
+    { name = "modax-solvers", specifier = ">=0.3.0" },
     { name = "numba-enzyme-cuda", specifier = ">=0.3.0" },
     { name = "numpy", specifier = ">=2.2.6" },
 ]
@@ -2377,7 +2377,7 @@ wheels = [
 
 [[package]]
 name = "modax-solvers"
-version = "0.2.2"
+version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cvxopt" },
@@ -2397,9 +2397,9 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9c/50/37af044920a74fc058f817cf0024efc8c8251c952fd2eef86a484bc6ce43/modax_solvers-0.2.2.tar.gz", hash = "sha256:713e16bf3e29b26776590e599ae8024f664754a1d3bf87bef990123df89cf224", size = 136896, upload-time = "2026-11-11T17:07:27.407Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/df/7e/4d7fc89e66e6f451db5d8e71ac1382128bd86dbeabf08bf070cc81bf3198/modax_solvers-0.3.0.tar.gz", hash = "sha256:2e6a114f239375009355a41ee027223bc6a68049508ac8ed8b2db503515e38d7", size = 136957, upload-time = "2026-11-12T09:00:06.855Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/66/c4/bc52ef5cdddc014902ed7cc996f13a51d6ea273b520acab54283fe444a04/modax_solvers-0.2.2-py3-none-any.whl", hash = "sha256:5ec498901ba421516633749c04df7fce9680aa6a4c7e260c167e750abbae316c", size = 106710, upload-time = "2026-11-11T17:07:26.04Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/59/ebee69c4d2494b4a233f18e7d42a31df78bdafc98be987605ed747a4b240/modax_solvers-0.3.0-py3-none-any.whl", hash = "sha256:bd99656e48777c450c788f577d1e8de645b77b5c683f66336315a63fb52d652c", size = 106649, upload-time = "2026-11-12T09:00:05.372Z" },
 ]
 
 [[package]]

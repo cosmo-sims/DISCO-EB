@@ -735,8 +735,8 @@ def _pack_batch(prepared, k_values, tau_save=None):
 
     Rows go as ``row = k_idx * n_cosmo + cosmology_idx``, so consecutive rows
     share a wave mode. ``tau_save`` is the shared grid of save times (default:
-    the two endpoints). Each trajectory stops at its own ``tau0`` through
-    ``IX_TAU_END``.
+    the two endpoints). :func:`_launch` clips it to each trajectory's own
+    ``tau0``.
     """
 
     k_bytes = np.ascontiguousarray(np.asarray(k_values, dtype=np.float64)).tobytes()
@@ -799,18 +799,24 @@ def _launch(
 
     The method object carries the numerics: the hierarchy's LU precision and the
     PI controller's gains. The recombination block, which the hierarchy reads,
-    always factorises in double. Each trajectory stops at its own ``tau0``
-    (``tf_index=IX_TAU_END``).
+    always factorises in double. Each trajectory gets its own row of save
+    times, the shared ``t_span`` clipped to its ``tau0`` in ``IX_TAU_END``, so
+    it stops there and its later saves hold its final state.
     """
 
     from modax import PIDGains, Rodas5P
     from modax import solve as modax_solve
 
     method = Rodas5P(lu_precision=lu_precision, gains=PIDGains(pcoeff=0.3, icoeff=0.4))
+    if isinstance(params, np.ndarray):
+        t_rows = np.minimum(np.asarray(t_span)[None, :], params[:, IX_TAU_END, None])
+    else:
+        tau_end = jax.lax.stop_gradient(params[:, IX_TAU_END, None])
+        t_rows = jnp.minimum(jnp.asarray(t_span)[None, :], tau_end)
     return modax_solve(
         prepared.ode_fn,
         y0,
-        t_span,
+        t_rows,
         params,
         method=method,
         rtol=rtol,
@@ -818,7 +824,6 @@ def _launch(
         first_step=first_step,
         max_steps=max_steps,
         trajectories_per_block=TRAJECTORIES_PER_BLOCK,
-        tf_index=IX_TAU_END,
         max_registers=max_registers,
         error_weights=error_weights_for(
             prepared, np.shape(params)[0], error_weights, thermo_weight

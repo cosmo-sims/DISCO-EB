@@ -36,7 +36,7 @@ dependencies = [
     # its forward sensitivities and quantity_hook, whose Enzyme tangents
     # solve_eb's derivatives use. 0.2.0 for the Rodas5P method object that
     # carries the LU precision and the PI gains. modax brings numba-cuda-mlir.
-    "modax-solvers>=0.2.2",
+    "modax-solvers>=0.3.0",
     # 0.3.0 for the O3 prepasses the kernels need and Blackwell support.
     "numba-enzyme-cuda>=0.3.0",
 ]
