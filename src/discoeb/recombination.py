@@ -57,7 +57,7 @@ import math
 import os
 
 from .component import Component, State, float32, float64
-from .eb_model import neutrino_momentum_bins
+from .util import neutrino_momentum_bins
 
 # RECFAST's physical and atomic constants (PDG 2023 where noted).
 const_mH = 1.67353284e-27  # H atom mass [kg], PDG 2023

@@ -11,17 +11,14 @@ import numpy as np
 import pytest
 from conftest import HOST, LAYOUTS, ConstantThermalHistory
 
-from discoeb.eb_model import (
-    MassiveNeutrinos,
-    Photons,
-    perturbation_model,
-)
+from discoeb.eb_model import perturbation_model
 from discoeb.perturbations import (
     N_PARAM,
     PARAM_COLUMNS,
     PerturbationLayout,
     make_initial_states,
 )
+from discoeb.species import MassiveNeutrinos, Photons
 
 
 def build(layout):

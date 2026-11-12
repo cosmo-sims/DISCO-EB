@@ -7,23 +7,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .background import density_parameters, dtauda, neutrino_density_ratio
 from .component import Model, _compile
-from .eb_model import (
-    MassiveNeutrinos,
-    MasslessNeutrinos,
-    Photons,
-    density_parameters,
-    dtauda,
-    layout_state_names,
-    neutrino_density_ratio,
-    perturbation_model,
-)
+from .eb_model import layout_state_names, perturbation_model
 from .recombination import (
     THERMAL_PARAMETERS,
     THERMO_ERROR_WEIGHT,
     Recombination,
     recombination_model,
 )
+from .species import MassiveNeutrinos, MasslessNeutrinos, Photons
 
 IX_CLXC = 1
 """State-vector index of the CDM density contrast ``clxc`` (every layout)."""
