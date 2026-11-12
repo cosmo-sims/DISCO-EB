@@ -30,7 +30,7 @@ jax.config.update("jax_enable_x64", True)
 
 import numpy as np
 
-from discoeb import solve_eb
+from discoeb import LCDM, solve_eb
 
 # Planck 2018 flat LCDM with massless neutrinos.
 h = 0.6732117
@@ -55,7 +55,7 @@ cosmology = {
 k = np.geomspace(1.0e-4, 1.0, 13)  # 1/Mpc
 tau = np.geomspace(1.0, 2.0e4, 200)  # Mpc; the last values lie past tau0
 
-solution = solve_eb(cosmology, k, tau, keep=("R",))
+solution = solve_eb(cosmology, k, tau, model=LCDM, keep=("R",))
 R = np.asarray(solution["R"][0])  # (n_k, n_tau); one cosmology was passed
 tau0 = float(solution.tau0[0])
 
@@ -63,7 +63,7 @@ print(f"conformal age tau0 = {tau0:.1f} Mpc")
 print(f"kept {solution.values.nbytes / 1e3:.0f} kB on the device for {solution.names};")
 print(
     f"the full history at these times would hold "
-    f"{len(k) * len(tau) * solution.layout.nvar * 8 / 1e6:.1f} MB"
+    f"{len(k) * len(tau) * len(solution.model.state_names()) * 8 / 1e6:.1f} MB"
 )
 print()
 columns = [10.0, 100.0, 1000.0, tau0]
@@ -91,7 +91,7 @@ fixed = {
 
 def r_today(log_theta):
     param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, jnp.exp(log_theta)))}
-    return jnp.log(solve_eb(param, k, tau, keep=("R",))["R"][0, :, -1])
+    return jnp.log(solve_eb(param, k, tau, model=LCDM, keep=("R",))["R"][0, :, -1])
 
 
 log_theta = jnp.log(jnp.asarray([cosmology[key] for key in DIFFERENTIABLE_PARAMETERS]))

@@ -46,11 +46,11 @@ def kernel_thermal_history(cosmologies, n_tau: int = N_TAU):
     of :data:`THERMAL_KEEP`, a cosmology's values holding past its own ``tau0``.
     """
 
-    from discoeb import TAU_START, conformal_ages, solve_eb
+    from discoeb import LCDM, TAU_START, conformal_ages, solve_eb
 
     tau0 = np.asarray(conformal_ages(cosmologies))
     tau = np.geomspace(TAU_START, float(tau0.max()), n_tau)
-    solution = solve_eb(cosmologies, THERMAL_K, tau, keep=THERMAL_KEEP)
+    solution = solve_eb(cosmologies, THERMAL_K, tau, model=LCDM, keep=THERMAL_KEEP)
     return (
         tau,
         tau0,

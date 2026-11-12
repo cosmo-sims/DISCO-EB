@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -97,3 +98,162 @@ def layout_state_names(layout) -> tuple[str, ...]:
     """The state names of :func:`perturbation_model` in the layout's index order."""
 
     return tuple(perturbation_model(layout).state)
+
+
+IX_CLXC = 1
+"""State-vector index of the CDM density contrast ``clxc`` (every layout)."""
+
+
+IX_CLXB = 2
+"""State-vector index of the baryon density contrast ``clxb`` (every layout)."""
+
+
+@dataclass(frozen=True)
+class PerturbationLayout:
+    """Enabled components and state-vector indices of the perturbation hierarchy.
+
+    Attributes
+    ----------
+    lmaxg, lmaxpol, lmaxr : int
+        Truncations of the photon temperature, E-mode polarization and
+        massless-neutrino hierarchies.
+    nqmax : int
+        Number of massive-neutrino momentum bins. ``0`` disables massive
+        neutrinos and allocates no states for them.
+    lmaxnu : int
+        Truncation of the massive-neutrino hierarchy (used only when
+        ``nqmax > 0``).
+    enable_dark_energy : bool
+        Evolve the dynamical dark-energy fluid perturbations.
+    """
+
+    lmaxg: int = 15
+    lmaxpol: int = 15
+    lmaxr: int = 15
+    nqmax: int = 0
+    lmaxnu: int = 15
+    enable_dark_energy: bool = False
+
+    def __post_init__(self):
+        if self.lmaxg < 2 or self.lmaxpol < 2 or self.lmaxr < 2:
+            raise ValueError("lmaxg, lmaxpol, lmaxr must each be >= 2")
+        if self.nqmax < 0:
+            raise ValueError("nqmax must be non-negative")
+        if self.nqmax > 0 and self.lmaxnu < 2:
+            raise ValueError("lmaxnu must be >= 2 when massive neutrinos are enabled")
+
+    # --- Core (always present) -------------------------------------------------
+
+    @property
+    def ix_etak(self) -> int:
+        """Index of the synchronous-gauge metric perturbation ``etak = k eta``."""
+        return 0
+
+    @property
+    def ix_clxc(self) -> int:
+        """Index of the CDM density contrast."""
+        return 1
+
+    @property
+    def ix_clxb(self) -> int:
+        """Index of the baryon density contrast."""
+        return 2
+
+    @property
+    def ix_vb(self) -> int:
+        """Index of the baryon velocity."""
+        return 3
+
+    @property
+    def ix_g(self) -> int:
+        """Base index of the photon temperature hierarchy (``Theta_l`` at ix_g + l)."""
+        return 4
+
+    @property
+    def ix_pol(self) -> int:
+        """Base index of the polarization hierarchy (``E_l`` at ix_pol + (l - 2))."""
+        return self.ix_g + self.lmaxg + 1
+
+    @property
+    def ix_r(self) -> int:
+        """Base index of the massless-neutrino hierarchy (``N_l`` at ix_r + l)."""
+        return self.ix_pol + self.lmaxpol - 1
+
+    @property
+    def _ix_after_massless(self) -> int:
+        """First index after the always-present core hierarchies."""
+        return self.ix_r + self.lmaxr + 1
+
+    # --- Optional: dynamical dark energy --------------------------------------
+
+    @property
+    def ix_clxq(self) -> int:
+        """Index of the dark-energy density contrast (dark-energy layouts only)."""
+        if not self.enable_dark_energy:
+            raise AttributeError("dark energy is not enabled in this layout")
+        return self._ix_after_massless
+
+    @property
+    def _ix_after_dark_energy(self) -> int:
+        return self._ix_after_massless + (2 if self.enable_dark_energy else 0)
+
+    # --- Optional: massive neutrinos ------------------------------------------
+
+    @property
+    def has_massive_neutrinos(self) -> bool:
+        return self.nqmax > 0
+
+    def ix_psi(self, ell: int, q: int) -> int:
+        """Return the state index of massive-neutrino multipole ``psi_l`` of bin ``q``.
+
+        The bins follow the dark-energy block, bin-major and multipole-minor. That
+        keeps each bin's free-streaming tail ``psi_3 ... psi_lmaxnu`` contiguous, one
+        tridiagonal block of the sparsity pattern
+        (:func:`discoeb.eb_model.perturbation_sparsity`).
+        """
+        if self.nqmax == 0:
+            raise AttributeError("massive neutrinos are not enabled in this layout")
+        if not (0 <= q < self.nqmax):
+            raise IndexError(f"momentum bin q={q} out of range [0, {self.nqmax})")
+        if not (0 <= ell <= self.lmaxnu):
+            raise IndexError(f"multipole ell={ell} out of range [0, {self.lmaxnu}]")
+        return self._ix_after_dark_energy + q * (self.lmaxnu + 1) + ell
+
+    # --- Total size -----------------------------------------------------------
+
+    @property
+    def nvar(self) -> int:
+        """Total length of the trimmed perturbation state vector."""
+        n = self._ix_after_dark_energy
+        if self.nqmax > 0:
+            n += self.nqmax * (self.lmaxnu + 1)
+        return n
+
+    @classmethod
+    def from_cosmology(
+        cls,
+        cosmology,
+        *,
+        lmaxg: int = 15,
+        lmaxpol: int = 15,
+        lmaxr: int = 15,
+        lmaxnu: int = 15,
+        nqmax: int = 5,
+    ) -> "PerturbationLayout":
+        """Return the trimmed layout a cosmology's enabled components imply.
+
+        ``w_DE_0 != -1`` or ``w_DE_a != 0`` turns on dynamical dark energy.
+        ``num_massive_neutrinos > 0`` turns on massive neutrinos with ``nqmax``
+        momentum bins. Curvature does not change the layout.
+        """
+
+        enable_de = (cosmology.w_DE_0 != -1.0) or (cosmology.w_DE_a != 0.0)
+        nqmax_massive = nqmax if cosmology.num_massive_neutrinos > 0 else 0
+        return cls(
+            lmaxg=lmaxg,
+            lmaxpol=lmaxpol,
+            lmaxr=lmaxr,
+            nqmax=nqmax_massive,
+            lmaxnu=lmaxnu,
+            enable_dark_energy=enable_de,
+        )

@@ -5,25 +5,25 @@ import pytest
 from discoeb.kernel import (
     THERMAL_QUANTITIES,
     THERMAL_STATES,
-    PerturbationLayout,
     joint_kernel,
     thermal_indices,
 )
+from discoeb.models import LCDM
 
 
 def test_the_recombination_block_publishes_the_thermal_quantities():
     colour_sparsity = pytest.importorskip("modax._sparsity").colour_sparsity
 
-    layout = PerturbationLayout()
-    model, hierarchy = joint_kernel(layout)
-    assert model.nvar == layout.nvar + 5
+    nvar = len(LCDM.state_names())
+    model, hierarchy = joint_kernel(LCDM)
+    assert model.nvar == nvar + 5
     perturbations, recombination = hierarchy.blocks[-1], hierarchy.blocks[0]
     assert hierarchy.layout == (
         perturbations,
         recombination,
     )  # the thermal states stay last
     assert recombination.n == 5 and recombination.n_outputs == len(THERMAL_QUANTITIES)
-    assert perturbations.n == layout.nvar and perturbations.reads == (recombination,)
+    assert perturbations.n == nvar and perturbations.reads == (recombination,)
     assert model.state_indices(THERMAL_STATES) == list(thermal_indices(model))
     # the hierarchy alone, as perturbation_sparsity traces it: 173 entries
     # (165 and the slip's reading of z under the radiation streaming approximation), 11 colours
@@ -52,7 +52,7 @@ def test_the_recombination_block_steps_on_its_own():
 
     if not _cuda_available():
         pytest.skip("numba-CUDA requires a CUDA GPU")
-    prepared = _prepare_solve(tuple(_perturbed_cosmologies(1)))
+    prepared = _prepare_solve(LCDM, tuple(_perturbed_cosmologies(1)))
     k_values = np.array([1.0e-3, 1.0e-2, 1.0e-1, 1.0])
     params, y0, t_span, _, _ = _pack_batch(prepared, k_values)
     _, stats = _launch(

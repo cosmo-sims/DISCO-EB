@@ -270,3 +270,17 @@ def background_history(cosmology):
 def _background_history(cosmology: _ParamCosmology):
     d = {k: jnp.asarray(v) for k, v in _densities(cosmology).items()}
     return tuple(np.asarray(x) for x in _background_tau(d))
+
+
+@functools.lru_cache(maxsize=8)
+def endpoints(cosmologies: tuple) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return host arrays ``(tau0, lna_start, z_re)`` of a tuple of cosmology objects, cached per batch.
+
+    One vmapped :func:`background_endpoints` launch for the batch. The
+    endpoints depend on the background alone, not on the model.
+    """
+
+    return tuple(
+        np.asarray(x)
+        for x in background_endpoints(_stack_background_params(cosmologies))
+    )

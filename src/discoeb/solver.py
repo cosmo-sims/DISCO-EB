@@ -12,26 +12,24 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .background import TAU_START
+from .background import TAU_START, endpoints
 from .cosmology import (
     DIFFERENTIABLE_PARAMETERS,
     _as_batch,
     _as_cosmology,
     _split_cosmologies,
 )
-from .eb_model import layout_state_names
 from .kernel import (
     DIRECTED_NAMES,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
     PERTURB_RTOL,
-    PerturbationLayout,
     _launch,
-    _layout_for,
     _pack_batch,
     _prepare_solve,
 )
+from .models import CosmologyModel
 from .recombination import THERMO_ERROR_WEIGHT
 from .sensitivities import _input_vector, _kept_values
 
@@ -40,6 +38,7 @@ def solve_perturbation_history_batch(
     k_values,
     cosmologies,
     *,
+    model: CosmologyModel,
     tau_save=None,
     rtol: float = PERTURB_RTOL,
     atol: float = PERTURB_ATOL,
@@ -56,7 +55,7 @@ def solve_perturbation_history_batch(
     nvar)`` in ascending ``k``.
     """
 
-    prepared = _prepare_solve(tuple(cosmologies))
+    prepared = _prepare_solve(model, tuple(cosmologies))
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_save)
     sol = _launch(
         prepared,
@@ -91,7 +90,7 @@ class EBSolution:
     tau: np.ndarray
     tau0: np.ndarray
     values: jax.Array
-    layout: PerturbationLayout
+    model: CosmologyModel
 
     def __getitem__(self, name: str) -> jax.Array:
         if name not in self.names:
@@ -104,6 +103,7 @@ def solve_eb(
     k_values,
     tau,
     *,
+    model: CosmologyModel,
     keep=None,
     extra=(),
     inputs=None,
@@ -129,9 +129,14 @@ def solve_eb(
     ----------
     cosmologies
         One cosmology (a parameter dictionary or a cosmology object) or a
-        sequence of them, all with one perturbation layout. The values of
+        sequence of them, all suited to ``model``. The values of
         :data:`DIFFERENTIABLE_PARAMETERS` may be JAX arrays, traced or not. The
         others must be plain numbers.
+    model
+        The cosmological model (:mod:`discoeb.models`): which species and
+        interactions the solve evolves, ``LCDM`` for instance. Its
+        :meth:`~discoeb.models.CosmologyModel.check` rejects a cosmology it
+        cannot represent.
     k_values
         Wave numbers in 1/Mpc, in any order.
     tau
@@ -143,7 +148,7 @@ def solve_eb(
         present-day values of the whole batch.
     keep
         Names of the quantities to record: state elements
-        (:func:`~discoeb.eb_model.layout_state_names`, or the recombination
+        (:meth:`~discoeb.models.CosmologyModel.state_names`, or the recombination
         block's ``lna``, ``thermo_0``, ``thermo_1``, ``thermo_2``, ``kappa``) or
         quantities the joint model provides, such as the comoving curvature
         perturbation ``R``, the shear ``sigma``, the expansion rate ``adotoa`` or
@@ -217,9 +222,8 @@ def solve_eb(
             )
             for i in range(n_cosmo)
         )
-        prepared = held["prepared"] = _prepare_solve(cosmos)
-        layout = prepared.layout
-        names = tuple(layout_state_names(layout) if keep is None else keep)
+        prepared = held["prepared"] = _prepare_solve(model, cosmos)
+        names = tuple(model.state_names() if keep is None else keep)
         if len(set(names)) != len(names):
             raise ValueError(f"keep names a quantity twice: {names}")
         held["names"] = names
@@ -261,7 +265,7 @@ def solve_eb(
             tau=tau,
             tau0=np.asarray(held["prepared"].tau0, dtype=np.float64),
             values=values,
-            layout=held["prepared"].layout,
+            model=model,
         )
 
     if inputs is not None:
@@ -312,13 +316,15 @@ def conformal_ages(cosmologies) -> np.ndarray:
     """Return each cosmology's conformal age ``tau0`` (Mpc), where its trajectories stop.
 
     Reads the same cached background endpoints as :func:`solve_eb`, so a solve
-    of the same cosmologies right after reuses them.
+    of the same cosmologies right after reuses them. The conformal age depends
+    on the background alone, so no model is needed.
     """
 
-    return np.asarray(_prepare_solve(_as_batch(cosmologies)).tau0, dtype=np.float64)
+    batch = tuple(_as_cosmology(c) for c in _as_batch(cosmologies))
+    return np.asarray(endpoints(batch)[0], dtype=np.float64)
 
 
-def state_names(cosmology) -> tuple[str, ...]:
-    """Return the perturbation state names of a cosmology's layout, for ``keep`` and ``error_weights``."""
+def state_names(model: CosmologyModel) -> tuple[str, ...]:
+    """Return the perturbation state names of ``model``, for ``keep`` and ``error_weights``."""
 
-    return layout_state_names(_layout_for(_as_cosmology(cosmology)))
+    return model.state_names()

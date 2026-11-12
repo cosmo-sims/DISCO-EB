@@ -98,12 +98,14 @@ def _class_linear_pk(param, k_values):
 def test_matter_power_spectrum_matches_class(n_cosmologies, benchmark):
     """Check and time one GPU launch over nearby flat LCDM cosmologies."""
 
+    from discoeb.models import LCDM
     from discoeb.power_spectrum import solve_matter_power_spectrum_batch
 
     cosmologies = _perturbed_cosmologies(n_cosmologies)
     pk_ours = benchmark.pedantic(
         solve_matter_power_spectrum_batch,
         args=(MATTER_POWER_K, cosmologies),
+        kwargs={"model": LCDM},
         rounds=1,
         warmup_rounds=1,
         iterations=1,
@@ -146,6 +148,7 @@ def test_matter_power_spectrum_derivatives(benchmark):
 
     from discoeb.background import density_coefficients
     from discoeb.cosmology import _as_cosmology
+    from discoeb.models import LCDM
     from discoeb.power_spectrum import matter_power_spectrum_jax
 
     cosmology = _perturbed_cosmologies(1)[0]
@@ -155,7 +158,9 @@ def test_matter_power_spectrum_derivatives(benchmark):
     assert densities.shape == (len(DENSITY_NAMES),)
 
     def total_power(d):
-        return jnp.sum(matter_power_spectrum_jax(MATTER_POWER_K, cosmology, d))
+        return jnp.sum(
+            matter_power_spectrum_jax(MATTER_POWER_K, cosmology, d, model=LCDM)
+        )
 
     value_and_grad = jax.value_and_grad(total_power)
 
@@ -196,13 +201,14 @@ def test_solve_eb_keeps_what_the_history_holds():
 
     from discoeb.background import TAU_START, density_coefficients
     from discoeb.kernel import PARAM_COLUMNS, make_params
+    from discoeb.models import LCDM
     from discoeb.power_spectrum import solve_matter_power_spectrum_batch
     from discoeb.recombination import THERMO_ERROR_WEIGHT
     from discoeb.solver import solve_eb, solve_perturbation_history_batch
 
     cosmologies = _perturbed_cosmologies(2)
     names = ("R", "clxc", "clxb", "theta_2", "n_15", "sigma", "adotoa")
-    solution = solve_eb(cosmologies, SOLVE_EB_K, SOLVE_EB_TAU, keep=names)
+    solution = solve_eb(cosmologies, SOLVE_EB_K, SOLVE_EB_TAU, model=LCDM, keep=names)
     n_k, n_tau = len(SOLVE_EB_K), len(SOLVE_EB_TAU)
     assert solution.names == names
     assert solution.values.shape == (2, len(names), n_k, n_tau)
@@ -210,7 +216,10 @@ def test_solve_eb_keeps_what_the_history_holds():
     assert np.all(solution.tau0 < SOLVE_EB_TAU[-1])
 
     hist, k_sorted, prepared = solve_perturbation_history_batch(
-        SOLVE_EB_K, cosmologies, tau_save=np.concatenate(([TAU_START], SOLVE_EB_TAU))
+        SOLVE_EB_K,
+        cosmologies,
+        model=LCDM,
+        tau_save=np.concatenate(([TAU_START], SOLVE_EB_TAU)),
     )
     hist = np.asarray(hist)[:, :, 1:, :]  # (n_k, n_c, n_tau, nvar), ascending k
     order = np.argsort(SOLVE_EB_K)
@@ -238,7 +247,7 @@ def test_solve_eb_keeps_what_the_history_holds():
 
     # the same thermal error weight as solve_eb's launch, so the two solves agree bit for bit
     pk_batch = solve_matter_power_spectrum_batch(
-        SOLVE_EB_K, cosmologies, thermo_weight=THERMO_ERROR_WEIGHT
+        SOLVE_EB_K, cosmologies, model=LCDM, thermo_weight=THERMO_ERROR_WEIGHT
     )
     for ci, cosmology in enumerate(prepared.cosmologies):
         grhoc, grhob = density_coefficients(cosmology)[2:4]
@@ -266,11 +275,12 @@ def test_solve_eb_comoving_curvature_is_conserved_outside_the_horizon():
     the potentials. A one-quantity solve stores ``n_k * n_tau`` numbers.
     """
 
+    from discoeb.models import LCDM
     from discoeb.solver import solve_eb
 
     k = np.array([1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1])
     tau = np.geomspace(1.0, 2.0e4, 64)
-    solution = solve_eb(_perturbed_cosmologies(1)[0], k, tau, keep=("R",))
+    solution = solve_eb(_perturbed_cosmologies(1)[0], k, tau, model=LCDM, keep=("R",))
     assert solution.values.shape == (1, 1, len(k), len(tau))
     R = np.asarray(solution["R"][0])
     assert np.isfinite(R).all()
@@ -309,6 +319,7 @@ def test_solve_eb_derivatives():
     from discoeb.background import TAU_START
     from discoeb.cosmology import DIFFERENTIABLE_PARAMETERS, _as_cosmology
     from discoeb.kernel import DIRECTED_COLUMNS, DIRECTED_NAMES, _prepare_solve
+    from discoeb.models import LCDM
     from discoeb.sensitivities import _input_vector, _kept_values
     from discoeb.solver import solve_eb
 
@@ -322,8 +333,8 @@ def test_solve_eb_derivatives():
     names = ("R", "clxc", "theta_2")
     noise = {"R": 5.0e-6, "clxc": 5.0e-6, "theta_2": 1.0e-4}
 
-    plain = solve_eb(cosmology, SOLVE_EB_K, tau, keep=names)
-    prepared = _prepare_solve((_as_cosmology(cosmology),))
+    plain = solve_eb(cosmology, SOLVE_EB_K, tau, model=LCDM, keep=names)
+    prepared = _prepare_solve(LCDM, (_as_cosmology(cosmology),))
     kept = _kept_values(
         prepared, SOLVE_EB_K, np.concatenate(([TAU_START], tau)), names, ()
     )
@@ -387,7 +398,7 @@ def test_solve_eb_derivatives():
     # not carried.
     def of_parameters(theta):
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
-        return solve_eb(param, SOLVE_EB_K, tau, keep=names).values
+        return solve_eb(param, SOLVE_EB_K, tau, model=LCDM, keep=names).values
 
     jac_theta = np.asarray(jax.jacfwd(of_parameters)(theta))
     d_densities = np.asarray(jax.jacfwd(lambda t: _input_vector(fixed, t))(theta))
@@ -410,6 +421,8 @@ def test_solve_eb_derivatives():
     with pytest.raises(ValueError, match="cannot be differentiated"):
         jax.grad(
             lambda m: jnp.sum(
-                solve_eb({**cosmology, "mnu": m}, SOLVE_EB_K, tau, keep=names).values
+                solve_eb(
+                    {**cosmology, "mnu": m}, SOLVE_EB_K, tau, model=LCDM, keep=names
+                ).values
             )
         )(0.0)

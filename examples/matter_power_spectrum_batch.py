@@ -35,7 +35,7 @@ jax.config.update("jax_enable_x64", True)
 
 import numpy as np
 
-from discoeb.power_spectrum import solve_matter_power_spectrum_batch
+from discoeb import LCDM, solve_matter_power_spectrum_batch
 
 
 def cosmologies(n, offset):
@@ -70,13 +70,13 @@ def cosmologies(n, offset):
 k = np.geomspace(1.0e-4, 1.0, 128)  # 1/Mpc
 
 t0 = time.perf_counter()
-solve_matter_power_spectrum_batch(k, cosmologies(128, offset=0.0))
+solve_matter_power_spectrum_batch(k, cosmologies(128, offset=0.0), model=LCDM)
 compile_time = time.perf_counter() - t0
 print(f"compile and first call: {compile_time:.1f} s")
 
 batch = cosmologies(128, offset=0.001)
 t0 = time.perf_counter()
-pk = solve_matter_power_spectrum_batch(k, batch)
+pk = solve_matter_power_spectrum_batch(k, batch, model=LCDM)
 elapsed = time.perf_counter() - t0
 
 print(f"P(k) for {pk.shape[0]} cosmologies x {pk.shape[1]} modes: {elapsed:.3f} s")

@@ -10,184 +10,17 @@ hooks that keep named quantities.
 
 import functools
 import os
-from dataclasses import dataclass
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .background import (
-    TAU_START,
-    _densities,
-    _stack_background_params,
-    background_endpoints,
-    density_coefficients,
-)
+from .background import TAU_START, _densities, density_coefficients, endpoints
 from .component import Model, _compile
 from .cosmology import _as_batch, _as_cosmology
-from .eb_model import layout_state_names, perturbation_model
+from .models import CosmologyModel
 from .recombination import THERMAL_PARAMETERS, THERMO_ERROR_WEIGHT, Recombination
-from .species import MassiveNeutrinos, MasslessNeutrinos, Photons
-
-IX_CLXC = 1
-"""State-vector index of the CDM density contrast ``clxc`` (every layout)."""
-
-
-IX_CLXB = 2
-"""State-vector index of the baryon density contrast ``clxb`` (every layout)."""
-
-
-@dataclass(frozen=True)
-class PerturbationLayout:
-    """Enabled components and state-vector indices of the perturbation hierarchy.
-
-    Attributes
-    ----------
-    lmaxg, lmaxpol, lmaxr : int
-        Truncations of the photon temperature, E-mode polarization and
-        massless-neutrino hierarchies.
-    nqmax : int
-        Number of massive-neutrino momentum bins. ``0`` disables massive
-        neutrinos and allocates no states for them.
-    lmaxnu : int
-        Truncation of the massive-neutrino hierarchy (used only when
-        ``nqmax > 0``).
-    enable_dark_energy : bool
-        Evolve the dynamical dark-energy fluid perturbations.
-    """
-
-    lmaxg: int = 15
-    lmaxpol: int = 15
-    lmaxr: int = 15
-    nqmax: int = 0
-    lmaxnu: int = 15
-    enable_dark_energy: bool = False
-
-    def __post_init__(self):
-        if self.lmaxg < 2 or self.lmaxpol < 2 or self.lmaxr < 2:
-            raise ValueError("lmaxg, lmaxpol, lmaxr must each be >= 2")
-        if self.nqmax < 0:
-            raise ValueError("nqmax must be non-negative")
-        if self.nqmax > 0 and self.lmaxnu < 2:
-            raise ValueError("lmaxnu must be >= 2 when massive neutrinos are enabled")
-
-    # --- Core (always present) -------------------------------------------------
-
-    @property
-    def ix_etak(self) -> int:
-        """Index of the synchronous-gauge metric perturbation ``etak = k eta``."""
-        return 0
-
-    @property
-    def ix_clxc(self) -> int:
-        """Index of the CDM density contrast."""
-        return 1
-
-    @property
-    def ix_clxb(self) -> int:
-        """Index of the baryon density contrast."""
-        return 2
-
-    @property
-    def ix_vb(self) -> int:
-        """Index of the baryon velocity."""
-        return 3
-
-    @property
-    def ix_g(self) -> int:
-        """Base index of the photon temperature hierarchy (``Theta_l`` at ix_g + l)."""
-        return 4
-
-    @property
-    def ix_pol(self) -> int:
-        """Base index of the polarization hierarchy (``E_l`` at ix_pol + (l - 2))."""
-        return self.ix_g + self.lmaxg + 1
-
-    @property
-    def ix_r(self) -> int:
-        """Base index of the massless-neutrino hierarchy (``N_l`` at ix_r + l)."""
-        return self.ix_pol + self.lmaxpol - 1
-
-    @property
-    def _ix_after_massless(self) -> int:
-        """First index after the always-present core hierarchies."""
-        return self.ix_r + self.lmaxr + 1
-
-    # --- Optional: dynamical dark energy --------------------------------------
-
-    @property
-    def ix_clxq(self) -> int:
-        """Index of the dark-energy density contrast (dark-energy layouts only)."""
-        if not self.enable_dark_energy:
-            raise AttributeError("dark energy is not enabled in this layout")
-        return self._ix_after_massless
-
-    @property
-    def _ix_after_dark_energy(self) -> int:
-        return self._ix_after_massless + (2 if self.enable_dark_energy else 0)
-
-    # --- Optional: massive neutrinos ------------------------------------------
-
-    @property
-    def has_massive_neutrinos(self) -> bool:
-        return self.nqmax > 0
-
-    def ix_psi(self, ell: int, q: int) -> int:
-        """Return the state index of massive-neutrino multipole ``psi_l`` of bin ``q``.
-
-        The bins follow the dark-energy block, bin-major and multipole-minor. That
-        keeps each bin's free-streaming tail ``psi_3 ... psi_lmaxnu`` contiguous, one
-        tridiagonal block of the sparsity pattern
-        (:func:`discoeb.eb_model.perturbation_sparsity`).
-        """
-        if self.nqmax == 0:
-            raise AttributeError("massive neutrinos are not enabled in this layout")
-        if not (0 <= q < self.nqmax):
-            raise IndexError(f"momentum bin q={q} out of range [0, {self.nqmax})")
-        if not (0 <= ell <= self.lmaxnu):
-            raise IndexError(f"multipole ell={ell} out of range [0, {self.lmaxnu}]")
-        return self._ix_after_dark_energy + q * (self.lmaxnu + 1) + ell
-
-    # --- Total size -----------------------------------------------------------
-
-    @property
-    def nvar(self) -> int:
-        """Total length of the trimmed perturbation state vector."""
-        n = self._ix_after_dark_energy
-        if self.nqmax > 0:
-            n += self.nqmax * (self.lmaxnu + 1)
-        return n
-
-    @classmethod
-    def from_cosmology(
-        cls,
-        cosmology,
-        *,
-        lmaxg: int = 15,
-        lmaxpol: int = 15,
-        lmaxr: int = 15,
-        lmaxnu: int = 15,
-        nqmax: int = 5,
-    ) -> "PerturbationLayout":
-        """Return the trimmed layout a cosmology's enabled components imply.
-
-        ``w_DE_0 != -1`` or ``w_DE_a != 0`` turns on dynamical dark energy.
-        ``num_massive_neutrinos > 0`` turns on massive neutrinos with ``nqmax``
-        momentum bins. Curvature does not change the layout.
-        """
-
-        enable_de = (cosmology.w_DE_0 != -1.0) or (cosmology.w_DE_a != 0.0)
-        nqmax_massive = nqmax if cosmology.num_massive_neutrinos > 0 else 0
-        return cls(
-            lmaxg=lmaxg,
-            lmaxpol=lmaxpol,
-            lmaxr=lmaxr,
-            nqmax=nqmax_massive,
-            lmaxnu=lmaxnu,
-            enable_dark_energy=enable_de,
-        )
-
 
 PERTURB_RTOL = 1.0e-4
 PERTURB_ATOL = 1.0e-4
@@ -277,32 +110,18 @@ BATCH_CACHE_SIZE = 8
 """Batches whose prepared solve and packed initial states are kept."""
 
 
-def _layout_for(cosmology) -> PerturbationLayout:
-    """Return a cosmology's perturbation layout at the components' current truncations."""
+def joint_model(model: CosmologyModel, extra=()) -> Model:
+    """Return the components of ``model`` with :class:`~discoeb.recombination.Recombination` appended.
 
-    return PerturbationLayout.from_cosmology(
-        cosmology,
-        lmaxg=Photons.LMAX_G,
-        lmaxpol=Photons.LMAX_POL,
-        lmaxr=MasslessNeutrinos.LMAX_NR,
-        lmaxnu=MassiveNeutrinos.LMAX_NU,
-        nqmax=MassiveNeutrinos.NQMAX,
-    )
-
-
-def joint_model(layout, extra=()):
-    """Return the hierarchy of ``layout`` with :class:`~discoeb.recombination.Recombination` appended.
-
-    The recombination states come after the hierarchy's, so the
-    :class:`PerturbationLayout` indices still hold. The five thermal states
+    The recombination states come after the perturbations', so the
+    perturbation state keeps the indices of :meth:`CosmologyModel.state_names
+    <discoeb.models.CosmologyModel.state_names>`. The five thermal states
     (``ln a``, ``x_H``, ``x_He``, ``T_m`` and the optical depth) are the last
     columns of every history, at ``model.index["lna"]`` and so on. ``extra``
     lists component classes to append after them (the line-of-sight sources).
     """
 
-    return perturbation_model(
-        layout, extra=[Recombination(), *(cls() for cls in extra)]
-    )
+    return model.build(extra=[Recombination(), *(cls() for cls in extra)])
 
 
 def thermal_indices(model) -> tuple[int, ...]:
@@ -334,9 +153,8 @@ def _restrict(pattern: np.ndarray, indices) -> np.ndarray:
     return np.array(sorted(kept), dtype=np.int64).reshape(-1, 2)
 
 
-@functools.lru_cache(maxsize=None)
-def joint_kernel(layout, extra=()):
-    """Return ``(model, hierarchy)`` of the joint model, cached per layout and ``extra``.
+def joint_kernel(model: CosmologyModel, extra=()):
+    """Return ``(joint model, hierarchy)`` of ``model``, cached per resolved model and ``extra``.
 
     The hierarchy is a modax :class:`~modax.Hierarchy` of two blocks. The
     recombination block (:data:`THERMAL_STATES`) publishes
@@ -348,9 +166,14 @@ def joint_kernel(layout, extra=()):
     joint model's order, thermal states last.
     """
 
+    return _joint_kernel(model.resolved(), tuple(extra))
+
+
+@functools.lru_cache(maxsize=None)
+def _joint_kernel(cosmology_model: CosmologyModel, extra):
     from modax import Block, Hierarchy
 
-    model = joint_model(layout, extra)
+    model = joint_model(cosmology_model, extra)
     pattern = model.sparsity()
     thermal = model.state_indices(THERMAL_STATES)
     others = [name for name in model.states if name not in THERMAL_STATES]
@@ -388,7 +211,7 @@ class _PreparedSolve(NamedTuple):
     """What a batch shares: the compiled joint model and each cosmology's endpoints."""
 
     cosmologies: tuple
-    layout: PerturbationLayout
+    cosmology_model: CosmologyModel
     model: Model
     ode_fn: object  # the modax Hierarchy
     tau0: np.ndarray  # (n_cosmologies,)
@@ -396,35 +219,29 @@ class _PreparedSolve(NamedTuple):
     z_re: np.ndarray
 
 
-def _prepare_solve(cosmologies, extra=()) -> _PreparedSolve:
-    """Return the joint kernel and endpoints of a batch of cosmologies, cached per batch.
+def _prepare_solve(model: CosmologyModel, cosmologies, extra=()) -> _PreparedSolve:
+    """Return the joint kernel of ``model`` and the endpoints of a batch, cached per batch.
 
-    All cosmologies in a batch must share a perturbation layout. Nothing here
-    depends on the wave modes, save times or tolerances. The kernel compiles
-    once per layout, and the endpoints cost a vmapped quadrature of a few
-    milliseconds.
+    Every cosmology must suit the model (:meth:`CosmologyModel.check
+    <discoeb.models.CosmologyModel.check>`). Nothing here depends on the wave
+    modes, save times or tolerances. The kernel compiles once per model, and
+    the endpoints cost a vmapped quadrature of a few milliseconds.
     """
 
     return _prepared(
-        tuple(_as_cosmology(cosmology) for cosmology in cosmologies), extra
+        model.resolved(),
+        tuple(_as_cosmology(cosmology) for cosmology in cosmologies),
+        tuple(extra),
     )
 
 
 @functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
-def _prepared(cosmologies, extra) -> _PreparedSolve:
-    layouts = {_layout_for(cosmology) for cosmology in cosmologies}
-    if len(layouts) > 1:
-        raise ValueError(
-            "all cosmologies in a batch must share a perturbation layout "
-            "(same dark-energy / massive-neutrino settings)"
-        )
-    (layout,) = layouts
-    model, hierarchy = joint_kernel(layout, extra)
-    tau0, lna_start, z_re = (
-        np.asarray(x)
-        for x in background_endpoints(_stack_background_params(cosmologies))
-    )
-    return _PreparedSolve(cosmologies, layout, model, hierarchy, tau0, lna_start, z_re)
+def _prepared(model: CosmologyModel, cosmologies, extra) -> _PreparedSolve:
+    for cosmology in cosmologies:
+        model.check(cosmology)
+    joint, hierarchy = joint_kernel(model, extra)
+    tau0, lna_start, z_re = endpoints(cosmologies)
+    return _PreparedSolve(cosmologies, model, joint, hierarchy, tau0, lna_start, z_re)
 
 
 def _row(cosmology, tau_end: float, z_re: float) -> dict:
@@ -596,20 +413,20 @@ def error_weights_for(
     return weights
 
 
-def _named_error_weights(weights, layout, k_launch):
+def _named_error_weights(weights, model: CosmologyModel, k_launch):
     """Turn ``{state name: weight}`` into solver error weights ``(n_traj, nvar)`` in launch order.
 
     Each weight is a number or a function of the trajectories' wave numbers
     (``k_launch``, launch order) that returns one per trajectory. Unnamed states
-    keep weight one. The names are the layout's
-    (:func:`~discoeb.eb_model.layout_state_names`), so a caller never needs the
+    keep weight one. The names are the model's
+    (:meth:`~discoeb.models.CosmologyModel.state_names`), so a caller never needs the
     state's index order or the launch's trajectory order.
     """
 
-    names = layout_state_names(layout)
+    names = model.state_names()
     unknown = [n for n in weights if n not in names]
     if unknown:
-        raise KeyError(f"{unknown} are not states of this layout: {names[:6]} ...")
+        raise KeyError(f"{unknown} are not states of {model.name}: {names[:6]} ...")
     k_launch = np.asarray(k_launch, dtype=np.float64)
     out = np.ones((len(k_launch), len(names)))
     for name, weight in weights.items():
@@ -678,7 +495,7 @@ def build_keep_hook(model, names):
 
     A name is a state element or a quantity the joint model provides. State
     elements (``clxc``, ``theta_2``, ``psi_0_1``: the
-    :func:`~discoeb.eb_model.layout_state_names`, or ``lna``, ``thermo_0`` ...
+    :meth:`~discoeb.models.CosmologyModel.state_names`, or ``lna``, ``thermo_0`` ...
     ``kappa`` of the recombination block) come straight from the state. Provided
     quantities (``R``, ``sigma``, ``phi`` with the line-of-sight sources
     appended, ``opacity`` or ``cs2`` from the thermal states) come from
@@ -729,7 +546,7 @@ def build_keep_hook(model, names):
 
 
 @functools.lru_cache(maxsize=None)
-def _keep_hook(layout, extra, names):
-    """Return the compiled hook for a layout, extra components and names (cached)."""
+def _keep_hook(model: CosmologyModel, extra, names):
+    """Return the compiled hook for a resolved model, extra components and names (cached)."""
 
-    return build_keep_hook(joint_model(layout, extra), names)
+    return build_keep_hook(joint_model(model, extra), names)

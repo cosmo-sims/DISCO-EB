@@ -11,13 +11,9 @@ import numpy as np
 import pytest
 from conftest import HOST, LAYOUTS, ConstantThermalHistory
 
-from discoeb.eb_model import perturbation_model
-from discoeb.kernel import (
-    N_PARAM,
-    PARAM_COLUMNS,
-    PerturbationLayout,
-    make_initial_states,
-)
+from discoeb.eb_model import PerturbationLayout, perturbation_model
+from discoeb.kernel import N_PARAM, PARAM_COLUMNS, make_initial_states
+from discoeb.models import LCDM
 from discoeb.species import MassiveNeutrinos, Photons
 
 
@@ -198,7 +194,7 @@ def test_make_initial_states_uses_the_model():
     )
     from discoeb.kernel import joint_model
 
-    model = joint_model(PerturbationLayout())
+    model = joint_model(LCDM)
     y0 = make_initial_states(cosmology, np.array([1e-2, 1e-1]), model, lna_start=-15.0)
     assert y0.shape == (2, 55) and np.isfinite(y0).all()
     np.testing.assert_allclose(y0[:, 0], [-1e-2, -1e-1], rtol=1e-3)  # etak ~ -k

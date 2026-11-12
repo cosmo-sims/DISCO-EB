@@ -19,7 +19,7 @@ jax.config.update("jax_enable_x64", True)
 
 # after x64 is on, so nothing of DISCO-EB is built in single precision
 from discoeb.component import Component  # noqa: E402
-from discoeb.kernel import PerturbationLayout  # noqa: E402
+from discoeb.eb_model import PerturbationLayout  # noqa: E402
 
 
 def _cuda_available() -> bool:

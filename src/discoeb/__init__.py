@@ -2,11 +2,13 @@
 
 DISCO-EB solves the background, the thermal history (RECFAST with
 reionization) and the linear perturbation hierarchy of each wave mode on the
-GPU. :mod:`discoeb.component` holds the component model,
-:mod:`discoeb.eb_model` the species and their equations,
-:mod:`discoeb.recombination` the thermal history and
-:mod:`discoeb.perturbations` the layouts, batching and modax launches. The
-CMB code lives in the separate package ``discocmb`` (DISCO-CMB) and turns
+GPU. :mod:`discoeb.component` holds the component framework,
+:mod:`discoeb.species`, :mod:`discoeb.interactions` and
+:mod:`discoeb.gravity` the equations, :mod:`discoeb.models` the cosmological
+models built from them (``LCDM``, ``W0WACDM``, ...),
+:mod:`discoeb.recombination` the thermal history, :mod:`discoeb.background`
+the expansion history and :mod:`discoeb.kernel` the batching and modax
+launches behind :func:`solve_eb` and the matter power spectrum. The CMB code lives in the separate package ``discocmb`` (DISCO-CMB) and turns
 this output into angular power spectra: line-of-sight sources, grids,
 transfer functions, projection and lensing. It imports only from this
 package itself. DISCO-EB does not depend on it.
@@ -51,9 +53,10 @@ from .kernel import (
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
     PERTURB_RTOL,
-    PerturbationLayout,
     joint_model,
 )
+from .models import LCDM, LCDM_MNU, W0WACDM, W0WACDM_MNU, CosmologyModel
+from .power_spectrum import matter_power_spectrum_jax, solve_matter_power_spectrum_batch
 from .recombination import THERMO_ERROR_WEIGHT
 from .solver import (
     EBSolution,
@@ -65,6 +68,7 @@ from .solver import (
 
 __all__ = [
     "Component",
+    "CosmologyModel",
     "DIFFERENTIABLE_PARAMETERS",
     "DIRECTED_NAMES",
     "EBSolution",
@@ -72,7 +76,10 @@ __all__ = [
     "PERTURB_FIRST_STEP",
     "PERTURB_MAX_STEPS",
     "PERTURB_RTOL",
-    "PerturbationLayout",
+    "LCDM",
+    "LCDM_MNU",
+    "W0WACDM",
+    "W0WACDM_MNU",
     "TAU_START",
     "THERMO_ERROR_WEIGHT",
     "as_cosmology",
@@ -81,6 +88,8 @@ __all__ = [
     "density_coefficients",
     "directed_inputs",
     "joint_model",
+    "matter_power_spectrum_jax",
+    "solve_matter_power_spectrum_batch",
     "solve_eb",
     "state_names",
 ]

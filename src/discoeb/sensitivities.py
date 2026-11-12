@@ -91,7 +91,7 @@ def _kept_values(
     value only: the derivative is still the one at fixed ``tau0``.
     """
 
-    layout = prepared.layout
+    model = prepared.cosmology_model
     n_cosmo = len(prepared.cosmologies)
     names = tuple(names)
     extra = tuple(extra)
@@ -105,7 +105,7 @@ def _kept_values(
 
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_grid)
     if isinstance(error_weights, dict):
-        error_weights = _named_error_weights(error_weights, layout, params[:, IX_K])
+        error_weights = _named_error_weights(error_weights, model, params[:, IX_K])
     n_k, n_grid, n_keep = len(k_sorted), len(tau_grid), len(names)
     first = 1 if drop_first else 0
     columns = jnp.asarray(DIRECTED_COLUMNS)
@@ -141,7 +141,7 @@ def _kept_values(
             jnp.asarray(y0),
             t_span_j,
             error_weights=error_weights,
-            save_hook=_keep_hook(layout, extra, names),
+            save_hook=_keep_hook(model, extra, names),
             save_history=False,
             **settings,
         )
@@ -170,7 +170,7 @@ def _kept_values(
                 error_weights=None
                 if error_weights is None
                 else np.repeat(np.asarray(error_weights), n_dir, axis=0),
-                save_hook=_keep_hook(layout, extra, names),
+                save_hook=_keep_hook(model, extra, names),
                 save_history=False,
                 lu_precision="fp64",
                 # Thread-local memory, not registers, bounds the joint system's

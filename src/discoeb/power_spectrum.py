@@ -8,8 +8,6 @@ from .background import TAU_START, _background_tau, _densities, density_coeffici
 from .cosmology import _as_cosmology
 from .kernel import (
     DIRECTED_NAMES,
-    IX_CLXB,
-    IX_CLXC,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
@@ -18,6 +16,7 @@ from .kernel import (
     _pack_batch,
     _prepare_solve,
 )
+from .models import CosmologyModel
 from .sensitivities import _kept_values
 
 MATTER_THERMO_WEIGHT = 0.1
@@ -35,14 +34,16 @@ def _primordial_power(ks, A_s, n_s, k_pivot):
     return 2.0 * np.pi**2 / ks**3 * A_s * (ks / k_pivot) ** (n_s - 1.0)
 
 
-def _power_spectrum_from_final(y_final, k_sorted, cosmologies, k_values):
-    """Return ``P(k)`` ``(n_cosmo, n_k)`` in the caller's order from final states ``(n_k, n_cosmo, nvar)``."""
+def _power_spectrum_from_final(y_final, k_sorted, cosmologies, k_values, index):
+    """Return ``P(k)`` ``(n_cosmo, n_k)`` in the caller's order from final states ``(n_k, n_cosmo, nvar)``.
+
+    ``index`` maps state names to their columns (the joint model's ``index``).
+    """
 
     dens = np.array([density_coefficients(c) for c in cosmologies])
     grhoc, grhob = dens[:, 2][None, :], dens[:, 3][None, :]
-    delta_m = (grhoc * y_final[:, :, IX_CLXC] + grhob * y_final[:, :, IX_CLXB]) / (
-        grhoc + grhob
-    )
+    clxc, clxb = y_final[:, :, index["clxc"]], y_final[:, :, index["clxb"]]
+    delta_m = (grhoc * clxc + grhob * clxb) / (grhoc + grhob)
     pk_sorted = (
         _primordial_power(
             k_sorted[:, None],
@@ -63,15 +64,20 @@ def solve_matter_power_spectrum_batch(
     k_values,
     cosmologies,
     *,
+    model: CosmologyModel,
     rtol: float = PERTURB_RTOL,
     atol: float = PERTURB_ATOL,
     first_step: float = PERTURB_FIRST_STEP,
     max_steps: int = PERTURB_MAX_STEPS,
     thermo_weight: float = MATTER_THERMO_WEIGHT,
 ) -> np.ndarray:
-    """Return ``P(k)`` in Mpc^3, shape ``(n_cosmologies, n_k)``, for a batch in one launch."""
+    """Return ``P(k)`` in Mpc^3, shape ``(n_cosmologies, n_k)``, for a batch in one launch.
 
-    prepared = _prepare_solve(tuple(cosmologies))
+    ``model`` is the cosmological model (:mod:`discoeb.models`) every
+    cosmology of the batch belongs to.
+    """
+
+    prepared = _prepare_solve(model, tuple(cosmologies))
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values)
     sol = _launch(
         prepared,
@@ -87,7 +93,9 @@ def solve_matter_power_spectrum_batch(
     y_final = np.asarray(sol)[:, -1, :].reshape(
         len(k_sorted), len(prepared.cosmologies), prepared.model.nvar
     )
-    return _power_spectrum_from_final(y_final, k_sorted, prepared.cosmologies, k_values)
+    return _power_spectrum_from_final(
+        y_final, k_sorted, prepared.cosmologies, k_values, prepared.model.index
+    )
 
 
 def _tau0_of(densities, d):
@@ -102,6 +110,7 @@ def matter_power_spectrum_jax(
     densities=None,
     thermal=None,
     *,
+    model: CosmologyModel,
     rtol: float = PERTURB_RTOL,
     atol: float = PERTURB_ATOL,
     first_step: float = PERTURB_FIRST_STEP,
@@ -126,7 +135,7 @@ def matter_power_spectrum_jax(
     """
 
     cosmology = _as_cosmology(cosmology)
-    prepared = _prepare_solve((cosmology,))
+    prepared = _prepare_solve(model, (cosmology,))
     d = _densities(cosmology)
     if densities is None:
         densities = [d[name] for name in DIRECTED_NAMES[:5]]
