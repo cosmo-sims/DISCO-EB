@@ -77,26 +77,20 @@ print("a mode's R falls away once k tau ~ 1 and the potentials decay inside it."
 
 # The response of today's R to the cosmological parameters, by forward mode:
 # d ln R / d ln theta at tau0 for every mode, from one joint launch. The
-# thermal history is held fixed (see solve_eb).
+# derivative is complete: tau0 and the initial state move too (see solve_eb).
 import jax.numpy as jnp  # noqa: E402
 
-from discoeb.perturbations import DIFFERENTIABLE_PARAMETERS  # noqa: E402
-
-fixed = {
-    key: value
-    for key, value in cosmology.items()
-    if key not in DIFFERENTIABLE_PARAMETERS
-}
+PARAMETERS = ("Omegam", "Omegab", "H0", "Tcmb", "Neff")
 
 
 def r_today(log_theta):
-    param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, jnp.exp(log_theta)))}
+    param = {**cosmology, **dict(zip(PARAMETERS, jnp.exp(log_theta)))}
     return jnp.log(solve_eb(param, k, tau, keep=("R",))["R"][0, :, -1])
 
 
-log_theta = jnp.log(jnp.asarray([cosmology[key] for key in DIFFERENTIABLE_PARAMETERS]))
+log_theta = jnp.log(jnp.asarray([cosmology[key] for key in PARAMETERS]))
 jacobian = np.asarray(jax.jacfwd(r_today)(log_theta))
 print()
-print("d ln R(tau0) / d ln " + "".join(f"{n:>12}" for n in DIFFERENTIABLE_PARAMETERS))
+print("d ln R(tau0) / d ln " + "".join(f"{n:>12}" for n in PARAMETERS))
 for ki, kv in enumerate(k):
     print(f"k={kv:8.1e}" + "".join(f"{v:12.4f}" for v in jacobian[ki]))

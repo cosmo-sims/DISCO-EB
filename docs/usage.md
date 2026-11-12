@@ -6,7 +6,7 @@ The device holds `n_cosmologies * n_k * n_tau * len(keep)` numbers and never the
 
 ## Derivatives
 
-Give `Omegam`, `Omegab`, `H0`, `Tcmb` or `Neff` as JAX values and the kept values become differentiable. `jax.jvp`, `jax.jacfwd` and `jax.grad` each cost one joint launch, which forms the derivatives inside the kernel by forward sensitivities:
+Give any of `DIFFERENTIABLE_PARAMETERS` (`Omegam`, `Omegab`, `H0`, `Tcmb`, `Neff`, `YHe`, `tau_reio`, `Omegak`, `w_DE_0`, `w_DE_a`, `cs2_DE`, `Nmnu`, `mnu`) as JAX values and the kept values become differentiable. The dark-energy keys need a cosmology with the dark-energy fluid, and `Nmnu` and `mnu` one with massive neutrinos. `jax.jvp`, `jax.jacfwd` and `jax.grad` each cost one joint launch, which forms the derivatives inside the kernel by forward sensitivities:
 
 ```python
 import jax.numpy as jnp

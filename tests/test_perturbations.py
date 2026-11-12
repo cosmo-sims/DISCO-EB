@@ -181,6 +181,8 @@ def test_matter_power_spectrum_derivatives(benchmark):
 
 
 SOLVE_EB_K = MATTER_POWER_K[::16][::-1]  # descending, to exercise the reordering
+SOLVE_EB_PARAMETERS = ("Omegam", "Omegab", "H0", "Tcmb", "Neff")
+"""The flat LambdaCDM parameters the derivative tests differentiate."""
 SOLVE_EB_TAU = np.geomspace(1.0, 2.0e4, 48)  # the last few lie past every tau0
 
 
@@ -315,7 +317,6 @@ def test_solve_eb_derivatives():
     import jax.numpy as jnp
 
     from discoeb.perturbations import (
-        DIFFERENTIABLE_PARAMETERS,
         DIRECTED_COLUMNS,
         DIRECTED_NAMES,
         TAU_START,
@@ -329,8 +330,9 @@ def test_solve_eb_derivatives():
     cosmology = _perturbed_cosmologies(1)[0]
     # the inputs exactly as solve_eb forms them: a last-bit difference moves a
     # step-acceptance and with it a value by ~1e-6
-    theta = jnp.asarray([cosmology[key] for key in DIFFERENTIABLE_PARAMETERS])
-    fixed = {k: v for k, v in cosmology.items() if k not in DIFFERENTIABLE_PARAMETERS}
+    theta = jnp.asarray([cosmology[key] for key in SOLVE_EB_PARAMETERS])
+    # the first five DIFFERENTIABLE_PARAMETERS, which _input_vector zips theta with
+    fixed = {k: v for k, v in cosmology.items() if k not in SOLVE_EB_PARAMETERS}
     densities = _input_vector(fixed, theta)[None, :]
     tau = np.geomspace(10.0, 2.0e4, 12)
     names = ("R", "clxc", "theta_2")
@@ -401,7 +403,7 @@ def test_solve_eb_derivatives():
     # complete one, not the chain rule of this fixed-endpoint rule
     # (test_solve_eb_complete_derivatives).
     def of_parameters(theta):
-        param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
+        param = {**fixed, **dict(zip(SOLVE_EB_PARAMETERS, theta))}
         return solve_eb(param, SOLVE_EB_K, tau, keep=names).values
 
     jac_theta = np.asarray(jax.jacfwd(of_parameters)(theta))
@@ -500,7 +502,7 @@ def test_solve_eb_complete_derivatives(grid):
     1``, is ``tau0``.
     """
 
-    from discoeb.perturbations import DIFFERENTIABLE_PARAMETERS, solve_eb
+    from discoeb.perturbations import solve_eb
 
     cosmology = {**_perturbed_cosmologies(1)[0], "tau_reio": 0.054}
     if "a" in grid:
@@ -509,10 +511,69 @@ def test_solve_eb_complete_derivatives(grid):
         assert solution.tau[0, -1] == solution.tau0[0]
     _check_solve_eb_derivatives(
         cosmology,
-        DIFFERENTIABLE_PARAMETERS,
+        (*SOLVE_EB_PARAMETERS, "YHe", "tau_reio"),
         grid,
         {"R": 1.0e-6, "clxc": 2.0e-6, "theta_2": 2.0e-4},
     )
+
+
+def test_solve_eb_derivatives_with_dark_energy_and_massive_neutrinos():
+    """Complete derivatives with curvature, the CPL fluid, a massive neutrino and reionization.
+
+    The parameters that act through the row's other directed columns
+    (``Omegak``, ``w_DE_0``, ``w_DE_a``, ``cs2_DE``, ``Nmnu``, ``mnu``, and
+    ``Tcmb`` through the neutrino mass ratio) and through reionization
+    (``tau_reio``), at fixed scale factor. A layout without the fluid
+    refuses a derivative along its equation of state, which acts on what it
+    leaves out.
+    """
+
+    import jax
+    import jax.numpy as jnp
+
+    from discoeb.perturbations import PerturbationLayout, solve_eb
+
+    cosmology = {
+        **_perturbed_cosmologies(1)[0],
+        "Omegak": 0.01,
+        "w_DE_0": -0.9,
+        "w_DE_a": 0.1,
+        "cs2_DE": 0.8,
+        "Neff": 2.046,
+        "Nmnu": 1.0,
+        "mnu": 0.06,
+        "tau_reio": 0.054,
+    }
+    _check_solve_eb_derivatives(
+        cosmology,
+        (
+            "Omegam",
+            "H0",
+            "Tcmb",
+            "Omegak",
+            "w_DE_0",
+            "w_DE_a",
+            "cs2_DE",
+            "Nmnu",
+            "mnu",
+            "tau_reio",
+        ),
+        dict(a=np.geomspace(1.0e-4, 1.0, 12)),
+        {"R": 1.0e-6, "clxc": 2.0e-6, "theta_2": 2.0e-4},
+    )
+
+    with pytest.raises(ValueError, match="cannot be differentiated"):
+        jax.grad(
+            lambda w: jnp.sum(
+                solve_eb(
+                    {**_perturbed_cosmologies(1)[0], "w_DE_0": w},
+                    SOLVE_EB_K,
+                    a=np.geomspace(1.0e-4, 1.0, 12),
+                    keep=("R",),
+                    layout=PerturbationLayout(),
+                ).values
+            )
+        )(-1.0)
 
 
 def test_solve_eb_under_jit():
@@ -530,7 +591,7 @@ def test_solve_eb_under_jit():
     import jax
     import jax.numpy as jnp
 
-    from discoeb.perturbations import DIFFERENTIABLE_PARAMETERS, solve_eb
+    from discoeb.perturbations import solve_eb
 
     first, second = _perturbed_cosmologies(3)[::2]
     tau = np.geomspace(10.0, 2.0e4, 12)
@@ -569,10 +630,10 @@ def test_solve_eb_under_jit():
         solution.tau0, solve_eb(first, SOLVE_EB_K, tau, keep=names).tau0, rtol=1e-12
     )
 
-    theta = jnp.asarray([first[key] for key in DIFFERENTIABLE_PARAMETERS])
+    theta = jnp.asarray([first[key] for key in SOLVE_EB_PARAMETERS])
 
     def of_parameters(theta):
-        return solve({**traced(first), **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))})
+        return solve({**traced(first), **dict(zip(SOLVE_EB_PARAMETERS, theta))})
 
     jac = np.asarray(jax.jacfwd(of_parameters)(theta))
     jac_jit = np.asarray(jax.jit(jax.jacfwd(of_parameters))(theta))
@@ -588,7 +649,7 @@ def test_solve_eb_under_jit():
 
     # At scale factors, whose conformal times are traced as well.
     def at_a(theta):
-        param = {**traced(first), **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
+        param = {**traced(first), **dict(zip(SOLVE_EB_PARAMETERS, theta))}
         return solve_eb(
             param, SOLVE_EB_K, a=np.geomspace(1.0e-4, 1.0, 6), keep=names, layout=layout
         ).values
@@ -600,8 +661,8 @@ def test_solve_eb_under_jit():
     assert (np.abs(jac_a_jit - jac_a) / jac_a_scale).max() < jac_gate
 
     with pytest.raises(ValueError, match="cannot be differentiated"):
-        jax.jit(jax.grad(lambda y: jnp.sum(solve({**traced(first), "YHe": y}))))(
-            first["YHe"]
+        jax.jit(jax.grad(lambda n: jnp.sum(solve({**traced(first), "n_s": n}))))(
+            first["n_s"]
         )
     with pytest.raises(ValueError, match="pass layout="):
         jax.jit(lambda c: solve_eb(c, SOLVE_EB_K, tau, keep=names).values)(

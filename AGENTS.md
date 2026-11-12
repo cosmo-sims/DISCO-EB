@@ -183,7 +183,11 @@ The codebase is organized into modular components in `src/discoeb/`:
      caller's order); a time past a cosmology's `tau0` holds its state today.
      The hook is cached per layout and set of names (`_keep_hook`). `values` is differentiable
      in the dictionary's `DIFFERENTIABLE_PARAMETERS` (`Omegam`, `Omegab`,
-     `H0`, `Tcmb`, `Neff`, given as JAX values): a `custom_jvp` in those
+     `H0`, `Tcmb`, `Neff`, `YHe`, `tau_reio`, `Omegak`, `w_DE_0`, `w_DE_a`,
+     `cs2_DE`, `Nmnu`, `mnu`, given as JAX values; missing keys take
+     `PARAMETER_DEFAULTS`; the fluid's keys need its layout, the neutrinos'
+     theirs, every row column they move is a `*_nominal + eps dir_*`
+     provider in `eb_model`/`recombination`): a `custom_jvp` in those
      parameters, one leaf per key, whose rule takes the complete derivative.
      It linearizes the launch's inputs in the parameters (JAX: rows with
      their directed inputs and `z_re`, `tau0`, the initial state, the save

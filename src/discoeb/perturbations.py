@@ -283,13 +283,14 @@ TAU_START = 0.1
 #        w_DE_0, w_DE_a, cs2_DE, grhok, grhor_nu, n_mnu, amnu,
 #        YHe, Tcmb, H0, Omegab, z_re,
 #        eps, dir_grhog, dir_grhornomass, dir_grhoc, dir_grhob, dir_grhov, dir_YHe, dir_Tcmb, dir_H0, dir_Omegab,
-#        dir_z_re)
+#        dir_z_re, dir_grhok, dir_w_DE_0, dir_w_DE_a, dir_cs2_DE, dir_grhor_nu, dir_n_mnu, dir_amnu)
 # grhok = grhom * Omega_k is the constant comoving curvature density
 # coefficient 8 pi G rho_K a^2, zero for a flat cosmology. The recombination
 # rates and reionization read the five columns after ``amnu``
 # (:data:`discoeb.recombination.THERMAL_PARAMETERS`). The model reads each input
 # a derivative may move (:data:`DIRECTED_ROW_COLUMNS`: the five densities,
-# ``YHe``, ``Tcmb``, ``H0``, ``Omegab`` and ``z_re``) as ``x_nominal + eps dir_x``. ``eps`` is zero in
+# ``YHe``, ``Tcmb``, ``H0``, ``Omegab``, ``z_re``, ``grhok``, the dark-energy
+# and the massive-neutrino columns) as ``x_nominal + eps dir_x``. ``eps`` is zero in
 # every primal solve, and the derivative in ``eps`` is the directional
 # derivative along the row's ``dir`` vector, so each trajectory carries a
 # single sensitivity column for its own direction (:func:`solve_eb`).
@@ -327,11 +328,32 @@ DIRECTED_NAMES = (
 """The inputs a trajectory's sensitivity direction may move, in the order of :data:`DIRECTED_COLUMNS`."""
 DIRECTED_COLUMNS = (0, 1, 2, 3, 4, IX_YHE, IX_TCMB, IX_H0, IX_OMEGAB)
 """The columns of :data:`DIRECTED_NAMES`: their nominal values, with ``eps`` and the ``dir`` block after the row."""
-DIRECTED_ROW_NAMES = (*DIRECTED_NAMES, "z_re")
+DIRECTED_ROW_NAMES = (
+    *DIRECTED_NAMES,
+    "z_re",
+    "grhok",
+    "w_DE_0",
+    "w_DE_a",
+    "cs2_DE",
+    "grhor_nu",
+    "n_mnu",
+    "amnu",
+)
 """Every row input a direction may move: :data:`DIRECTED_NAMES`, the inputs a
-caller may give, and the reionization redshift, which :func:`solve_eb` moves
-with the parameters it is solved from."""
-DIRECTED_ROW_COLUMNS = (*DIRECTED_COLUMNS, IX_Z_RE)
+caller may give, then the reionization redshift, the curvature, the
+dark-energy and the massive-neutrino inputs, which :func:`solve_eb` moves
+with the parameters they come from."""
+DIRECTED_ROW_COLUMNS = (
+    *DIRECTED_COLUMNS,
+    IX_Z_RE,
+    IX_GRHOK,
+    IX_W_DE_0,
+    IX_W_DE_A,
+    IX_CS2_DE,
+    IX_GRHOR_NU,
+    IX_NMNU,
+    IX_AMNU,
+)
 """The columns of :data:`DIRECTED_ROW_NAMES`, whose directions fill the ``dir`` block."""
 N_PARAM = IX_DIR + len(DIRECTED_ROW_COLUMNS)
 IX_DY0 = N_PARAM
@@ -350,13 +372,13 @@ PARAM_COLUMNS = {
     "k": IX_K,
     "cosmology_tag": IX_COSMOLOGY,
     "save_index": IX_SAVE_INDEX,
-    "w_DE_0": IX_W_DE_0,
-    "w_DE_a": IX_W_DE_A,
-    "cs2_DE": IX_CS2_DE,
-    "grhok": IX_GRHOK,
-    "grhor_nu": IX_GRHOR_NU,
-    "n_mnu": IX_NMNU,
-    "amnu": IX_AMNU,
+    "w_DE_0_nominal": IX_W_DE_0,
+    "w_DE_a_nominal": IX_W_DE_A,
+    "cs2_DE_nominal": IX_CS2_DE,
+    "grhok_nominal": IX_GRHOK,
+    "grhor_nu_nominal": IX_GRHOR_NU,
+    "n_mnu_nominal": IX_NMNU,
+    "amnu_nominal": IX_AMNU,
     **{name: N_PARAM_HIERARCHY + i for i, name in enumerate(THERMAL_PARAMETERS)},
     "eps": IX_EPS,
     **{f"dir_{name}": IX_DIR + i for i, name in enumerate(DIRECTED_ROW_NAMES)},
@@ -727,13 +749,16 @@ def _row(cosmology, tau_end: float, z_re: float, xp=np) -> dict:
             f"{name}_nominal": d[name]
             for name in ("grhog", "grhornomass", "grhoc", "grhob", "grhov")
         },
-        **{name: d[name] for name in ("grhok", "grhor_nu", "n_mnu", "amnu")},
+        **{
+            f"{name}_nominal": d[name]
+            for name in ("grhok", "grhor_nu", "n_mnu", "amnu")
+        },
         "tau_start": TAU_START,
         "tau_end": tau_end,
         "save_index": 1.0,
-        "w_DE_0": cosmology.w_DE_0,
-        "w_DE_a": cosmology.w_DE_a,
-        "cs2_DE": cosmology.cs2_DE,
+        "w_DE_0_nominal": cosmology.w_DE_0,
+        "w_DE_a_nominal": cosmology.w_DE_a,
+        "cs2_DE_nominal": cosmology.cs2_DE,
         "YHe_nominal": cosmology.Y_He,
         "Tcmb_nominal": cosmology.T_cmb,
         "H0_nominal": cosmology.H0,
@@ -1353,26 +1378,53 @@ def _keep_hook(layout, extra, names, tangent, shifted=False):
     )
 
 
-DIFFERENTIABLE_PARAMETERS = ("Omegam", "Omegab", "H0", "Tcmb", "Neff")
+DIFFERENTIABLE_PARAMETERS = (
+    "Omegam",
+    "Omegab",
+    "H0",
+    "Tcmb",
+    "Neff",
+    "YHe",
+    "tau_reio",
+    "Omegak",
+    "w_DE_0",
+    "w_DE_a",
+    "cs2_DE",
+    "Nmnu",
+    "mnu",
+)
 """The cosmology-dictionary keys :func:`solve_eb` differentiates with respect to.
 
-They reach the solve through the five background densities and the
-recombination block's thermal inputs (:data:`DIRECTED_NAMES`). The forward
-sensitivities carry them through both the hierarchy and the recombination
-history. The derivative is complete: the conformal age ``tau0`` at which a
-trajectory stops, the reionization redshift found for ``tau_reio``, the
-initial state and, at scale factors, the conformal times of them move with
-the parameters. The other keys may be JAX values but are not differentiated.
-Some enter as parameter columns the sensitivities do not carry (``Omegak``,
-``Nmnu``, ``mnu``, ``w_DE_0``, ``w_DE_a``, ``cs2_DE``, ``YHe``,
-``tau_reio``), the rest not at all (``A_s``, ``n_s``, ``k_p``)."""
+Every key the solve reads. They reach it through the row's directed inputs
+(:data:`DIRECTED_ROW_NAMES`): the background densities, the recombination
+block's thermal inputs, the reionization redshift, the curvature, the
+dark-energy fluid and the massive neutrinos. The forward sensitivities carry
+them through both the hierarchy and the recombination history. The
+derivative is complete: the conformal age ``tau0`` at which a trajectory
+stops, the reionization redshift found for ``tau_reio``, the initial state
+and, at scale factors, the conformal times of them move with the
+parameters. ``w_DE_0``, ``w_DE_a`` and ``cs2_DE`` need a layout with the
+dark-energy fluid, ``Nmnu`` and ``mnu`` one with massive neutrinos. The other
+keys (``A_s``, ``n_s``, ``k_p``) do not enter the solve."""
+
+PARAMETER_DEFAULTS = {
+    "w_DE_0": -1.0,
+    "w_DE_a": 0.0,
+    "cs2_DE": 1.0,
+    "Omegak": 0.0,
+    "Nmnu": 0.0,
+    "mnu": 0.0,
+    "tau_reio": 0.0,
+    "k_p": 0.05,
+}
+"""The values of the keys a parameter dictionary may leave out (:func:`_as_cosmology`)."""
 
 
 def _cosmology_dictionary(cosmology) -> dict:
     """Return a cosmology's parameter dictionary, given a dictionary or a cosmology object."""
 
     if isinstance(cosmology, dict):
-        return dict(cosmology)
+        return {**PARAMETER_DEFAULTS, **cosmology}
     d = cosmology.to_background_params()
     d["k_p"] = cosmology.k_pivot
     return d
@@ -1700,12 +1752,11 @@ def solve_eb(
     -----
     The hook compiles once per batch shape and set of names, like the
     right-hand side. The returned ``values`` are differentiable in the
-    cosmologies' ``Omegam``, ``Omegab``, ``H0``, ``Tcmb`` and ``Neff`` under
-    ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad``, and the solve runs under
-    ``jit``: with concrete values the host prepares the batch (cached), with
-    traced ones JAX does, the endpoints, rows and initial states included. The
-    derivative runs through the five background densities and the
-    recombination block's ``Tcmb``, ``H0`` and ``Omegab``. A
+    cosmologies' :data:`DIFFERENTIABLE_PARAMETERS` under ``jax.jvp``,
+    ``jax.jacfwd`` and ``jax.grad``, and the solve runs under ``jit``: with
+    concrete values the host prepares the batch (cached), with traced ones JAX
+    does, the endpoints, rows and initial states included. The derivative runs
+    through the row's directed inputs (:data:`DIRECTED_ROW_NAMES`). A
     forward-sensitivity launch carries it, with a hook that stores each kept
     quantity's derivative beside it, so it also costs one joint launch and no
     history. It is the complete derivative, at fixed
@@ -1955,6 +2006,17 @@ def solve_eb(
             for k in DIFFERENTIABLE_PARAMETERS
             if not isinstance(dtheta[k], SymbolicZero)
         ]
+        left_out = [
+            k
+            for k in keys
+            if (k in ("w_DE_0", "w_DE_a", "cs2_DE") and not layout.enable_dark_energy)
+            or (k in ("Nmnu", "mnu") and not layout.has_massive_neutrinos)
+        ]
+        if left_out:
+            raise ValueError(
+                f"{left_out[0]!r} cannot be differentiated through solve_eb with "
+                f"{layout}: it acts on what the layout leaves out"
+            )
         theta = {k: jnp.asarray(v, dtype=jnp.float64) for k, v in theta.items()}
         prepared = prepared_of(theta, fixed)
         (params, y0, t_rows), linear = jax.linearize(

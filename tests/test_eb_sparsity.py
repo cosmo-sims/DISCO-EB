@@ -37,7 +37,7 @@ def finite_difference_pattern(layout, seed=0, tau=100.0) -> set[tuple[int, int]]
     p = rng.uniform(
         0.5, 1.5, N_PARAM
     )  # order one, curvature and sensitivity direction included
-    p[PARAM_COLUMNS["w_DE_0"]] = -0.9
+    p[PARAM_COLUMNS["w_DE_0_nominal"]] = -0.9
     y = rng.standard_normal(layout.nvar)
 
     def f(state):

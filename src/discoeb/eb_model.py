@@ -97,6 +97,10 @@ class Background(Component):
     def inv_k2(self, k):
         return 1.0 / (k * k)
 
+    def amnu(self, amnu_nominal, eps, dir_amnu):
+        """The neutrino mass over the temperature, ``m_nu c^2 / k T_nu``, along the row's direction."""
+        return amnu_nominal + eps * dir_amnu
+
     def adotoa(self, grho):
         """The conformal Hubble rate ``a'/a = sqrt(grho / 3)``."""
         return math.sqrt(grho * (1.0 / 3.0))
@@ -130,6 +134,9 @@ class AdiabaticMode(Component):
 
 class Curvature(Species):
     """Spatial curvature: a density ``grhok = 8 pi G rho_K a^2`` and the metric factors."""
+
+    def grhok(self, grhok_nominal, eps, dir_grhok):
+        return grhok_nominal + eps * dir_grhok
 
     def grho(self, grhok):
         return grhok
@@ -542,6 +549,12 @@ class MassiveNeutrinos(Species):
         self.weight = tuple(float(x) for x in w)
         self.dlnf0 = tuple(float(x) for x in dlnf0)
 
+    def grhor_nu(self, grhor_nu_nominal, eps, dir_grhor_nu):
+        return grhor_nu_nominal + eps * dir_grhor_nu
+
+    def n_mnu(self, n_mnu_nominal, eps, dir_n_mnu):
+        return n_mnu_nominal + eps * dir_n_mnu
+
     def nu_norm(self, grhor_nu, n_mnu, inv_a2):
         return grhor_nu * n_mnu * inv_a2
 
@@ -620,6 +633,15 @@ class DarkEnergy(_DarkEnergyDensity):
     # adiabatic, at rest
     clxq = State(initial=lambda w_DE_0, clxc: (1.0 + w_DE_0) * clxc)
     thetaq = State()
+
+    def w_DE_0(self, w_DE_0_nominal, eps, dir_w_DE_0):
+        return w_DE_0_nominal + eps * dir_w_DE_0
+
+    def w_DE_a(self, w_DE_a_nominal, eps, dir_w_DE_a):
+        return w_DE_a_nominal + eps * dir_w_DE_a
+
+    def cs2_DE(self, cs2_DE_nominal, eps, dir_cs2_DE):
+        return cs2_DE_nominal + eps * dir_cs2_DE
 
     def w_Q(self, a, w_DE_0, w_DE_a):
         return w_DE_0 + w_DE_a * (1.0 - a)
