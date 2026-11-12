@@ -7,6 +7,8 @@ that each layout builds and runs as plain Python, and that the sums the
 Einstein constraints read are the sums over the species the layout enables.
 """
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import HOST, LAYOUTS, ConstantThermalHistory
@@ -143,17 +145,22 @@ def test_the_initial_state_and_sparsity_come_from_the_components():
     model, _ = build(layout)
     densities = (1.5e-7, 1.0e-7, 1.1e-4, 1.9e-5, 2.0e-7)
     k = np.array([1e-3, 1e-1])
-    y0 = model.initial_state(
-        k,
-        tau=0.1,
-        grhog=densities[0],
-        grhornomass=densities[1],
-        grhoc=densities[2],
-        grhob=densities[3],
-        grhov=densities[4],
-        w_DE_0=-0.9,
-        w_DE_a=0.1,
-    )
+
+    def initial_state(densities, xp=np):
+        return model.initial_state(
+            k,
+            xp=xp,
+            tau=0.1,
+            grhog=densities[0],
+            grhornomass=densities[1],
+            grhoc=densities[2],
+            grhob=densities[3],
+            grhov=densities[4],
+            w_DE_0=-0.9,
+            w_DE_a=0.1,
+        )
+
+    y0 = initial_state(densities)
     assert y0.shape == (2, layout.nvar) and np.isfinite(y0).all()
     np.testing.assert_allclose(y0[:, model.index["etak"]], -k, rtol=1e-3)
     np.testing.assert_allclose(
@@ -168,6 +175,9 @@ def test_the_initial_state_and_sparsity_come_from_the_components():
         y0[:, model.index["psi_1_0"]],
         -0.25 * y0[:, model.index["n_0"]] * model.components[-2].dlnf0[1],
     )
+    # The same state traced with jax.numpy, as a function of the densities.
+    traced = jax.jit(lambda d: initial_state(d, xp=jnp))(jnp.asarray(densities))
+    np.testing.assert_allclose(traced, y0, rtol=1e-14, atol=0.0)
     # The sparsity pattern is traced through the same components: the metric
     # reads the dark-energy momentum through dgq, a free-streaming neutrino
     # multipole reads only its neighbours.

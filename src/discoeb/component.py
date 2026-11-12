@@ -563,16 +563,30 @@ def _bound_function(
 _SOURCES = itertools.count(1)
 
 
+class _Scratch:
+    """A JAX array that a vector state's filler writes into as if it were mutable."""
+
+    def __init__(self, array):
+        self.array = array
+
+    def __getitem__(self, index):
+        return self.array[index]
+
+    def __setitem__(self, index, value):
+        self.array = self.array.at[index].set(value)
+
+
 class _HostValues:
     """The value of every quantity, resolved on demand on the host.
 
     A name is a base value, a state (its initial value: zeros, or its
     ``initial`` filler), or a provider evaluated from the same pool. The
     providers run as plain Python with ``names`` in place of the device
-    names, so the values may be floats or JAX arrays.
+    names, so the values may be floats or JAX arrays. ``xp`` is the array
+    module of the states' initial values (``jax.numpy`` to trace them).
     """
 
-    def __init__(self, model, base, names, memo=None, batch_shape=()):
+    def __init__(self, model, base, names, memo=None, batch_shape=(), xp=np):
         self.model, self.values, self.names = model, dict(base), names
         self.memo = {} if memo is None else memo
         self.providers, self.contributions = model._host_providers()
@@ -580,6 +594,7 @@ class _HostValues:
         # trailing axes of every state's value (the wave modes of a vectorised
         # initial state), so a vector state's filler writes rows of them
         self.batch_shape = tuple(batch_shape)
+        self.xp = xp
 
     def _call(self, fn, component, takes_self, args):
         bound = _bound_function(fn, lambda f: f, self.names, self.memo)
@@ -597,7 +612,7 @@ class _HostValues:
         if name in self.model.states:
             s = self.model.states[name]
             if s.shape or self.batch_shape:
-                result = np.zeros(s.shape + self.batch_shape)
+                result = self.xp.zeros(s.shape + self.batch_shape)
             else:
                 result = 0.0
             fn = s.declared.initial_fn
@@ -606,10 +621,13 @@ class _HostValues:
                 _check_output(
                     f"{name}.initial", "the initial condition", s.shape, params
                 )
-                args = [result if p == OUTPUT else self[p] for p in params]
+                output = result if self.xp is np else _Scratch(result)
+                args = [output if p == OUTPUT else self[p] for p in params]
                 filled = self._call(fn, s.component, takes_self, args)
                 if not s.shape:
                     result = filled
+                elif output is not result:
+                    result = output.array
         elif name in self.model.sums:
             parts = [
                 self._call(p.fn, p.component, p.takes_self, [self[d] for d in p.params])
@@ -905,7 +923,7 @@ class Model:
         results = tuple(values[q] for q in quantities)
         return results[0] if len(quantities) == 1 else results
 
-    def initial_state(self, k_values, **base) -> np.ndarray:
+    def initial_state(self, k_values, xp=np, **base):
         """The initial state, ``(n_k, nvar)``, from the states' initial conditions.
 
         ``base`` holds the quantities the initial conditions may name besides
@@ -914,27 +932,34 @@ class Model:
         evaluated on the host from the same pool.
 
         One resolution covers all wave modes: ``k`` is the whole array,
-        ``numpy`` stands in for ``math`` so the initial conditions' algebra
+        ``xp`` stands in for ``math`` so the initial conditions' algebra
         broadcasts over it, and a vector state's filler writes rows of ``n_k``
         values (``batch_shape`` of :class:`_HostValues`). Resolving once per
         mode cost 6 ms per cosmology at 144 modes, mostly in inspecting every
         initial condition's signature at every mode: 0.85 s of a batch of 128
-        cosmologies.
+        cosmologies. ``xp`` is ``numpy`` for a cosmology given as floats,
+        ``jax.numpy`` for a traced one.
         """
 
-        k_values = np.asarray(k_values, dtype=np.float64)
+        k_values = xp.asarray(k_values, dtype=xp.float64)
         n_k = len(k_values)
-        memo = self.__dict__.setdefault("_host_memo", {}).setdefault(id(np), {})
+        memo = self.__dict__.setdefault("_host_memo", {}).setdefault(id(xp), {})
         values = _HostValues(
-            self, dict(base, k=k_values), _host_names(np), memo, batch_shape=(n_k,)
+            self,
+            dict(base, k=k_values),
+            _host_names(xp),
+            memo,
+            batch_shape=(n_k,),
+            xp=xp,
         )
-        y0 = np.zeros((n_k, self.nvar), dtype=np.float64)
-        for s in self.states.values():
-            value = np.broadcast_to(
-                np.asarray(values[s.name], dtype=np.float64), s.shape + (n_k,)
-            )
-            y0[:, s.offset : s.offset + s.size] = value.reshape(s.size, n_k).T
-        return y0
+        # the states are stored in offset order
+        columns = [
+            xp.broadcast_to(
+                xp.asarray(values[s.name], dtype=xp.float64), s.shape + (n_k,)
+            ).reshape(s.size, n_k)
+            for s in self.states.values()
+        ]
+        return xp.concatenate(columns).T
 
     # --- compiled functions ----------------------------------------------------------
 
