@@ -5,6 +5,28 @@ Releases are cut by python-semantic-release from the Conventional Commits on
 
 <!-- version list -->
 
+## v2.0.1 (2026-11-12)
+
+### Bug Fixes
+
+- Stop each trajectory at tau0 on modax 0.3.0
+  ([`e798ae4`](https://github.com/cosmo-sims/DISCO-EB/commit/e798ae496465cf18d81198a11c37d248050edb3d))
+
+### Documentation
+
+- Add the DISCO-EB logo to the README
+  ([`d727a74`](https://github.com/cosmo-sims/DISCO-EB/commit/d727a74bda63ee19ca8c0ccde0ea0e4f791e76f9))
+
+- Capitalise Einstein-Boltzmann in the logo
+  ([`eb83c87`](https://github.com/cosmo-sims/DISCO-EB/commit/eb83c872ea4f4074a08ec66fed6acc7f0fd3bbb6))
+
+- Rewrite docstrings and comments plainly
+  ([`5a97260`](https://github.com/cosmo-sims/DISCO-EB/commit/5a972606cbda164bc01e652b6b7e965d17404489))
+
+- Show the logo in the docs sidebar
+  ([`07239ec`](https://github.com/cosmo-sims/DISCO-EB/commit/07239eca2cee64f154f8bed8203ea36a35780946))
+
+
 ## v2.0.0 (2026-11-11)
 
 ### Features
