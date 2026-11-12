@@ -808,10 +808,12 @@ def _launch(
     from modax import solve as modax_solve
 
     method = Rodas5P(lu_precision=lu_precision, gains=PIDGains(pcoeff=0.3, icoeff=0.4))
-    if isinstance(params, np.ndarray):
-        t_rows = np.minimum(np.asarray(t_span)[None, :], params[:, IX_TAU_END, None])
+    # A tuple is the row split into leaves, the first holding IX_TAU_END.
+    head = params[0] if isinstance(params, tuple) else params
+    if isinstance(head, np.ndarray):
+        t_rows = np.minimum(np.asarray(t_span)[None, :], head[:, IX_TAU_END, None])
     else:
-        tau_end = jax.lax.stop_gradient(params[:, IX_TAU_END, None])
+        tau_end = jax.lax.stop_gradient(head[:, IX_TAU_END, None])
         t_rows = jnp.minimum(jnp.asarray(t_span)[None, :], tau_end)
     return modax_solve(
         prepared.ode_fn,
@@ -826,7 +828,7 @@ def _launch(
         trajectories_per_block=TRAJECTORIES_PER_BLOCK,
         max_registers=max_registers,
         error_weights=error_weights_for(
-            prepared, np.shape(params)[0], error_weights, thermo_weight
+            prepared, np.shape(head)[0], error_weights, thermo_weight
         ),
         cache=True,
         **extra,
@@ -1058,29 +1060,8 @@ class EBSolution:
         return self.values[:, self.names.index(name)]
 
 
-def eps_sensitivity(nvar: int):
-    """Return the sensitivity spec of a joint launch along the parameter row's ``eps``.
-
-    It adds one column ``S = dy / d eps`` after the state, outside step control.
-    The model reads each directed input as ``x_nominal + eps dir_x``
-    (:data:`DIRECTED_COLUMNS`), so ``S`` is the derivative along the row's
-    ``dir``, through both the hierarchy and the recombination block.
-    """
-
-    from modax.rodas5P import SensitivitySpec
-
-    return SensitivitySpec(
-        nvar,
-        N_PARAM,
-        wrt_y0=False,
-        wrt_params=True,
-        error_control=False,
-        param_columns=(IX_EPS,),
-    )
-
-
-def build_keep_hook(model, names, *, tangent: bool = False):
-    """Return a modax save hook that stores the quantities ``names`` at every save.
+def build_keep_hook(model, names):
+    """Return a modax save hook ``(y, tau, p) -> tuple`` of the quantities ``names``.
 
     A name is a state element or a quantity the joint model provides. State
     elements (``clxc``, ``theta_2``, ``psi_0_1``: the
@@ -1092,18 +1073,13 @@ def build_keep_hook(model, names, *, tangent: bool = False):
     the parameter row as inputs. The hook clamps the time to the trajectory's
     own ``tau_end``: a save past a cosmology's ``tau0`` holds its final state,
     and the background at ``tau0`` goes with it. ``hook._generated_source``
-    holds the generated device function of ``(y, tau, p)``, which modax's
-    :func:`~modax.rodas5P.quantity_hook` turns into the hook.
+    holds its generated source.
 
-    With ``tangent``, the hook serves a joint launch that carries one
-    sensitivity column ``S = dy/d eps`` after the state
-    (:func:`eps_sensitivity`). It stores each quantity and, after the save's
-    quantities, each one's total derivative along the column, ``dq/d eps =
-    (dq/dy) S + dq/d eps``. modax forms these in one Enzyme forward sweep of the
-    quantities seeded with ``(S, 0, e_eps)``, built for the kernel's own target.
+    modax keeps what it returns at every save, and differentiates it like the
+    history: a forward-sensitivity launch stores each quantity's derivative
+    along every sensitivity column beside it, one Enzyme sweep of the hook per
+    column.
     """
-
-    from modax.rodas5P import quantity_hook
 
     names = tuple(names)
     if not names:
@@ -1136,24 +1112,14 @@ def build_keep_hook(model, names, *, tangent: bool = False):
         for name in names
     ]
     lines.append(f"    return ({', '.join(values)},)")
-    quantities = _compile("quantities", "\n".join(lines) + "\n", namespace)
-    source = quantities._generated_source
-    hook = quantity_hook(
-        quantities,
-        len(names),
-        model.nvar,
-        N_PARAM,
-        eps_sensitivity(model.nvar) if tangent else None,
-    )
-    setattr(hook, "_generated_source", source)
-    return hook
+    return _compile("quantities", "\n".join(lines) + "\n", namespace)
 
 
 @functools.lru_cache(maxsize=None)
-def _keep_hook(layout, extra, names, tangent):
-    """Return the compiled hook for a layout, extra components, names and tangent flag (cached)."""
+def _keep_hook(layout, extra, names):
+    """Return the compiled hook for a layout, extra components and names (cached)."""
 
-    return build_keep_hook(joint_model(layout, extra), names, tangent=tangent)
+    return build_keep_hook(joint_model(layout, extra), names)
 
 
 DIFFERENTIABLE_PARAMETERS = ("Omegam", "Omegab", "H0", "Tcmb", "Neff")
@@ -1281,9 +1247,10 @@ def _kept_values(
     value. A forward-sensitivity launch gives the tangent: it replicates every
     trajectory once per input, and each replica carries the single column
     ``S = dy / d eps`` of its unit direction through ``IX_EPS`` and ``IX_DIR``.
-    Its hook is the tangent hook of :func:`build_keep_hook`, which stores each
-    kept quantity and its derivative along the column. So the kernel forms the
-    derivative too and stores no history.
+    That column is ``jax.jvp`` of the launch in ``eps``, a leaf of the
+    parameter row of its own, so modax integrates it alone. modax stores each
+    kept quantity of :func:`build_keep_hook` and its derivative along the
+    column, so the kernel forms the derivative too and stores no history.
 
     The joint launch uses the fp64 LU and keeps the sensitivities out of step
     control. Its primal agrees with the plain fp32-LU one to ~1e-6 of a
@@ -1304,7 +1271,6 @@ def _kept_values(
         max_steps=max_steps,
         thermo_weight=thermo_weight,
     )
-    nvar = prepared.model.nvar
 
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_grid)
     if isinstance(error_weights, dict):
@@ -1344,8 +1310,7 @@ def _kept_values(
             jnp.asarray(y0),
             t_span_j,
             error_weights=error_weights,
-            save_hook=_keep_hook(layout, extra, names, False),
-            hook_size=n_keep * n_grid,
+            save_hook=_keep_hook(layout, extra, names),
             save_history=False,
             **settings,
         )
@@ -1360,32 +1325,41 @@ def _kept_values(
         params_rep[:, IX_DIR : IX_DIR + n_dir] = np.tile(
             np.eye(n_dir), (n_k * n_cosmo, 1)
         )
-        _, out = _launch(
-            prepared,
-            with_inputs(params_rep, x, n_dir),
-            jnp.asarray(np.repeat(y0, n_dir, axis=0)),
-            t_span_j,
-            error_weights=None
-            if error_weights is None
-            else np.repeat(np.asarray(error_weights), n_dir, axis=0),
-            save_hook=_keep_hook(layout, extra, names, True),
-            hook_size=2 * n_keep * n_grid,
-            save_history=False,
-            lu_precision="fp64",
-            # Thread-local memory, not registers, bounds the joint system's
-            # occupancy. An uncapped register budget halves the resident
-            # threads the driver reserves local memory for.
-            max_registers=None,
-            sensitivity=eps_sensitivity(nvar),
-            **settings,
-        )
-        out = out.reshape(n_k * n_cosmo, n_dir, n_grid, 2, n_keep)
+        row = with_inputs(params_rep, x, n_dir)
+        head, eps, tail = row[:, :IX_EPS], row[:, IX_EPS:IX_DIR], row[:, IX_DIR:]
+
+        def kept_of(e):
+            # eps is a leaf of its own, so differentiating it carries the one
+            # column S = dy / d eps, out of step control.
+            _, out = _launch(
+                prepared,
+                (head, e, tail),
+                jnp.asarray(np.repeat(y0, n_dir, axis=0)),
+                t_span_j,
+                error_weights=None
+                if error_weights is None
+                else np.repeat(np.asarray(error_weights), n_dir, axis=0),
+                save_hook=_keep_hook(layout, extra, names),
+                save_history=False,
+                lu_precision="fp64",
+                # Thread-local memory, not registers, bounds the joint system's
+                # occupancy. An uncapped register budget halves the resident
+                # threads the driver reserves local memory for.
+                max_registers=None,
+                sens_error_control=False,
+                **settings,
+            )
+            return out
+
+        out, d_out = jax.jvp(kept_of, (eps,), (jnp.ones_like(eps),))
+        out = out.reshape(n_k * n_cosmo, n_dir, n_grid, n_keep)
+        d_out = d_out.reshape(n_k * n_cosmo, n_dir, n_grid, n_keep)
         # Every replica integrates the same state, so the first's primal serves.
-        values = arrange(out[:, 0, :, 0, :])
-        # sens[i, j] = d q_i / d x_j at every save. The contraction with the
+        values = arrange(out[:, 0])
+        # d_out[i, j] = d q_i / d x_j at every save. The contraction with the
         # input tangent is linear, so jax.grad transposes it.
         dx_rows = jnp.tile(dx, (n_k, 1))
-        tangent = arrange(jnp.einsum("ijsq,ij->isq", out[:, :, :, 1, :], dx_rows))
+        tangent = arrange(jnp.einsum("ijsq,ij->isq", d_out, dx_rows))
         return values, tangent
 
     return of_inputs
