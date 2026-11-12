@@ -2,50 +2,53 @@
 
 The equations themselves are gated on the GPU against CLASS
 (``test_matter_power_spectrum_matches_class``); here the model's assembly is
-checked: that its state order is the one every index in the code base assumes,
-that each layout builds and runs as plain Python, and that the sums the
-Einstein constraints read are the sums over the species the layout enables.
+checked: that its state order follows the model's components, that each
+model builds and runs as plain Python, and that the sums the Einstein
+constraints read are the sums over the species the model includes.
 """
 
 import numpy as np
 import pytest
-from conftest import HOST, LAYOUTS, ConstantThermalHistory
+from conftest import HOST, MODELS, ConstantThermalHistory, state_index
 
-from discoeb.eb_model import PerturbationLayout, perturbation_model
 from discoeb.kernel import N_PARAM, PARAM_COLUMNS, make_initial_states
 from discoeb.models import LCDM
-from discoeb.species import MassiveNeutrinos, Photons
+from discoeb.species import DarkEnergy, MassiveNeutrinos, Photons
 
 
-def build(layout):
-    model = perturbation_model(layout, ConstantThermalHistory())
+def build(cosmology_model):
+    model = cosmology_model.build(ConstantThermalHistory())
     return model, model.build(PARAM_COLUMNS, **HOST)
 
 
-@pytest.mark.parametrize("name", list(LAYOUTS))
-def test_the_state_order_is_the_layout(name):
-    layout = LAYOUTS[name]
-    model, _ = build(layout)
-    assert model.nvar == layout.nvar
-    assert model.index["etak"] == layout.ix_etak
-    assert model.index["vb"] == layout.ix_vb
-    assert model.index["theta_0"] == layout.ix_g
-    assert model.index[f"theta_{layout.lmaxg}"] == layout.ix_g + layout.lmaxg
-    assert model.index["e_0"] == layout.ix_pol  # E_2
-    assert model.index[f"e_{layout.lmaxpol - 2}"] == layout.ix_pol + layout.lmaxpol - 2
-    assert model.index["n_0"] == layout.ix_r
-    if layout.enable_dark_energy:
-        assert model.index["clxq"] == layout.ix_clxq
-    if layout.has_massive_neutrinos:
-        for q in range(layout.nqmax):
-            for ell in range(layout.lmaxnu + 1):
-                assert model.index[f"psi_{q}_{ell}"] == layout.ix_psi(ell, q)
+def expected_state_names(model) -> list[str]:
+    """Metric, CDM, baryons, photons, massless neutrinos, then the dark-energy fluid and the massive-neutrino bins."""
+
+    names = ["etak", "clxc", "clxb", "vb"]
+    names += [f"theta_{ell}" for ell in range(model.setting("LMAX_G") + 1)]
+    names += [f"e_{i}" for i in range(model.setting("LMAX_POL") - 1)]  # E_2 ...
+    names += [f"n_{ell}" for ell in range(model.setting("LMAX_NR") + 1)]
+    if model.has(DarkEnergy):
+        names += ["clxq", "thetaq"]
+    if model.has(MassiveNeutrinos):
+        for q in range(model.setting("NQMAX")):
+            names += [f"psi_{q}_{ell}" for ell in range(model.setting("LMAX_NU") + 1)]
+    return names
 
 
-@pytest.mark.parametrize("name", list(LAYOUTS))
+@pytest.mark.parametrize("name", list(MODELS))
+def test_the_state_order_follows_the_components(name):
+    """Each bin's free-streaming tail ``psi_q_3 .. psi_q_LMAX_NU`` stays contiguous."""
+    cosmology_model = MODELS[name]
+    model, _ = build(cosmology_model)
+    assert list(cosmology_model.state_names()) == expected_state_names(cosmology_model)
+    assert list(model.state) == expected_state_names(cosmology_model)
+
+
+@pytest.mark.parametrize("name", list(MODELS))
 def test_the_rhs_builds_and_is_finite(name):
-    layout = LAYOUTS[name]
-    model, rhs = build(layout)
+    cosmology_model = MODELS[name]
+    model, rhs = build(cosmology_model)
     rng = np.random.default_rng(0)
     p = np.zeros(N_PARAM)
     p[:5] = [1.5e-7, 1.0e-7, 1.1e-4, 1.9e-5, 2.0e-7]
@@ -56,13 +59,13 @@ def test_the_rhs_builds_and_is_finite(name):
         p[PARAM_COLUMNS["n_mnu"]],
         p[PARAM_COLUMNS["amnu"]],
     ) = 1e-7, 1.0, 300.0
-    y = rng.standard_normal(layout.nvar)
+    y = rng.standard_normal(model.nvar)
     dy = np.asarray(rhs(tuple(y), 100.0, tuple(p)))
-    assert dy.shape == (layout.nvar,) and np.isfinite(dy).all()
+    assert dy.shape == (model.nvar,) and np.isfinite(dy).all()
 
 
 def test_the_einstein_sources_sum_over_the_enabled_species():
-    model, _ = build(LAYOUTS["flat-lcdm"])
+    model, _ = build(MODELS["flat-lcdm"])
     lines = [ell.strip() for ell in model.source.splitlines()]
     assert (
         "grho = Curvature__grho(Curvature_self, grhok) + ColdDarkMatter__grho(ColdDarkMatter_self, grhoc_t) + Baryons__grho(Baryons_self, grhob_t)"
@@ -74,7 +77,7 @@ def test_the_einstein_sources_sum_over_the_enabled_species():
     )
     assert "rhonu" not in model.source  # the massive-neutrino table is not read
 
-    model, _ = build(LAYOUTS["ragged-blocks"])
+    model, _ = build(MODELS["ragged-blocks"])
     assert (
         "DarkEnergy__grho(DarkEnergy_self, grhov_t) + MassiveNeutrinos__grho(MassiveNeutrinos_self, nu_norm, rhonu)"
         in model.source
@@ -92,7 +95,7 @@ def test_the_einstein_sources_sum_over_the_enabled_species():
 
 
 def test_thomson_scattering_writes_the_photon_and_baryon_derivatives():
-    model, _ = build(LAYOUTS["flat-lcdm"])
+    model, _ = build(MODELS["flat-lcdm"])
     lines = [ell.strip() for ell in model.source.splitlines()]
     assert (
         "d_vb = Baryons__d_vb(Baryons_self, adotoa, vb, k, cs2, clxb) + ThomsonScattering__d_vb(ThomsonScattering_self, photbar, opacity, slip)"
@@ -113,13 +116,54 @@ def test_thomson_scattering_writes_the_photon_and_baryon_derivatives():
 
 def test_a_hierarchy_needs_an_octupole():
     with pytest.raises(ValueError, match="octupole"):
-        build(PerturbationLayout(lmaxg=2))
+        build(MODELS["flat-lcdm"].with_settings(LMAX_G=2))
+
+
+def test_models_derive_from_each_other():
+    from discoeb.models import LCDM, LCDM_MNU, W0WACDM
+    from discoeb.species import CosmologicalConstant
+
+    assert W0WACDM.components.index(DarkEnergy) == LCDM.components.index(
+        CosmologicalConstant
+    )
+    assert LCDM_MNU.components == (*LCDM.components, MassiveNeutrinos)
+    assert LCDM.with_settings(LMAX_G=20).setting("LMAX_G") == 20
+    assert LCDM.with_settings(LMAX_G=20) != LCDM and hash(LCDM) == hash(
+        LCDM.with_settings()
+    )
+    with pytest.raises(ValueError, match="NQMAX"):
+        LCDM.with_settings(NQMAX=4)  # LCDM has no massive neutrinos
+
+
+def test_a_model_rejects_a_cosmology_it_cannot_represent():
+    from discoeb.cosmology import as_cosmology
+    from discoeb.models import LCDM, LCDM_MNU, W0WACDM
+
+    base = dict(
+        Omegam=0.31,
+        Omegab=0.049,
+        A_s=2.1e-9,
+        n_s=0.966,
+        H0=67.0,
+        Tcmb=2.7255,
+        YHe=0.245,
+        Neff=3.046,
+    )
+    LCDM.check(as_cosmology(base))
+    LCDM_MNU.check(as_cosmology({**base, "Nmnu": 1.0, "mnu": 0.06}))
+    W0WACDM.check(as_cosmology({**base, "w_DE_0": -0.9}))
+    with pytest.raises(ValueError, match="DarkEnergy"):
+        LCDM.check(as_cosmology({**base, "w_DE_0": -0.9}))
+    with pytest.raises(ValueError, match="w != -1"):
+        W0WACDM.check(as_cosmology(base))
+    with pytest.raises(ValueError, match="MassiveNeutrinos"):
+        LCDM.check(as_cosmology({**base, "Nmnu": 1.0, "mnu": 0.06}))
 
 
 def test_the_truncations_are_the_components_settings():
-    """The layout's lmax values reach the components, which size their hierarchies."""
-    layout = LAYOUTS["ragged-blocks"]
-    model, _ = build(layout)
+    """The model's lmax settings reach the components, which size their hierarchies."""
+    cosmology_model = MODELS["ragged-blocks"]
+    model, _ = build(cosmology_model)
     photons = next(c for c in model.components if isinstance(c, Photons))
     assert (photons.LMAX_G, photons.LMAX_POL) == (11, 13)
     assert (model.states["theta"].shape, model.states["e"].shape) == ((12,), (12,))
@@ -127,13 +171,12 @@ def test_the_truncations_are_the_components_settings():
     assert (neutrinos.NQMAX, neutrinos.LMAX_NU) == (2, 9)
     assert model.states["psi"].shape == (2, 10) and len(neutrinos.weight) == 2
     # The defaults are the DISCO_LMAX_* environment settings, 15 unless set.
-    assert Photons.LMAX_G == PerturbationLayout().lmaxg
+    assert MODELS["flat-lcdm"].setting("LMAX_G") == Photons.LMAX_G
 
 
 def test_the_initial_state_and_sparsity_come_from_the_components():
     """The adiabatic mode: etak ~ -k, matter at 3/4 of the photon density, zero above the octupole."""
-    layout = LAYOUTS["ragged-blocks"]
-    model, _ = build(layout)
+    model, _ = build(MODELS["ragged-blocks"])
     densities = (1.5e-7, 1.0e-7, 1.1e-4, 1.9e-5, 2.0e-7)
     k = np.array([1e-3, 1e-1])
     y0 = model.initial_state(
@@ -147,7 +190,7 @@ def test_the_initial_state_and_sparsity_come_from_the_components():
         w_DE_0=-0.9,
         w_DE_a=0.1,
     )
-    assert y0.shape == (2, layout.nvar) and np.isfinite(y0).all()
+    assert y0.shape == (2, model.nvar) and np.isfinite(y0).all()
     np.testing.assert_allclose(y0[:, model.index["etak"]], -k, rtol=1e-3)
     np.testing.assert_allclose(
         y0[:, model.index["clxc"]], 0.75 * y0[:, model.index["theta_0"]]
@@ -157,9 +200,10 @@ def test_the_initial_state_and_sparsity_come_from_the_components():
     )
     assert (y0[:, model.index["theta_4"] : model.index["e_0"]] == 0.0).all()
     assert (y0[:, model.index["n_4"] : model.index["n_17"] + 1] == 0.0).all()
+    neutrinos = next(c for c in model.components if isinstance(c, MassiveNeutrinos))
     np.testing.assert_allclose(
         y0[:, model.index["psi_1_0"]],
-        -0.25 * y0[:, model.index["n_0"]] * model.components[-2].dlnf0[1],
+        -0.25 * y0[:, model.index["n_0"]] * neutrinos.dlnf0[1],
     )
     # The sparsity pattern is traced through the same components: the metric
     # reads the dark-energy momentum through dgq, a free-streaming neutrino
@@ -207,9 +251,9 @@ def test_the_pressure_sums_over_the_species_and_gives_the_comoving_curvature():
     """``gpres`` is left out of the right-hand side and read by ``R`` alone."""
 
     for name in ("flat-lcdm", "ragged-blocks"):
-        model, _ = build(LAYOUTS[name])
+        model, _ = build(MODELS[name])
         assert "gpres" not in model.source
-    model = perturbation_model(LAYOUTS["ragged-blocks"], ConstantThermalHistory())
+    model = MODELS["ragged-blocks"].build(ConstantThermalHistory())
     fn = model.build_function(
         ("R", "gpres", "grho", "adotoa"),
         inputs=("y", "tau"),
@@ -224,8 +268,8 @@ def test_the_pressure_sums_over_the_species_and_gives_the_comoving_curvature():
 
     # Flat LCDM with the fluids at rest: R is the curvature eta alone, and
     # the velocity term is the total momentum over rho + p.
-    layout = LAYOUTS["flat-lcdm"]
-    model = perturbation_model(layout, ConstantThermalHistory(a=1.0))
+    cosmology_model = MODELS["flat-lcdm"]
+    model = cosmology_model.build(ConstantThermalHistory(a=1.0))
     fn = model.build_function(
         ("R", "gpres", "grho", "adotoa"),
         inputs=("y", "tau"),
@@ -237,9 +281,9 @@ def test_the_pressure_sums_over_the_species_and_gives_the_comoving_curvature():
     p[:5] = [grhog, grhor, grhoc, grhob, grhov]
     p[PARAM_COLUMNS["k"]] = 0.05
     p[PARAM_COLUMNS["w_DE_0"]] = -1.0
-    y = np.zeros(layout.nvar)
-    y[layout.ix_etak] = -0.05
-    y[layout.ix_vb] = 0.3
+    y = np.zeros(model.nvar)
+    y[state_index(cosmology_model)["etak"]] = -0.05
+    y[state_index(cosmology_model)["vb"]] = 0.3
     R, gpres, grho, adotoa = fn(y, 100.0, p)
     assert gpres == pytest.approx((grhog + grhor) / 3.0 - grhov)
     assert grho == pytest.approx(grhog + grhor + grhoc + grhob + grhov)

@@ -1,17 +1,17 @@
 """The Jacobian sparsity pattern, and what modax's analysis makes of it.
 
-All host-side: the pattern is traced through the providers of the layout's
-component model (:meth:`discoeb.component.Model.sparsity`), and the ordering
+All host-side: the pattern is traced through the providers of the model's
+component model (:meth:`discoeb.models.CosmologyModel.sparsity`), and the ordering
 and symbolic factorisation that turn it into a compiled solver run on the host
 when the kernel is built. Nothing here needs a GPU.
 """
 
 import numpy as np
 import pytest
-from conftest import HOST, LAYOUTS, ConstantThermalHistory
+from conftest import HOST, MODELS, ConstantThermalHistory, state_index
 
-from discoeb.eb_model import perturbation_model, perturbation_sparsity
 from discoeb.kernel import N_PARAM, PARAM_COLUMNS
+from discoeb.species import MassiveNeutrinos
 
 sparse_direct = pytest.importorskip("modax._sparse_direct")
 colour_sparsity = pytest.importorskip("modax._sparsity").colour_sparsity
@@ -25,50 +25,56 @@ pressure and the dark-energy density fall below the rounding of the rest of
 the row."""
 
 
+def nvar(model) -> int:
+    return len(model.state_names())
+
+
 def entries(pattern) -> set[tuple[int, int]]:
     return {(int(r), int(c)) for r, c in pattern}
 
 
-def finite_difference_pattern(layout, seed=0, tau=100.0) -> set[tuple[int, int]]:
+def finite_difference_pattern(model, seed=0, tau=100.0) -> set[tuple[int, int]]:
     """The nonzeros of the host-built right-hand side's Jacobian at a random state and ``tau``."""
-    model = perturbation_model(layout, ConstantThermalHistory(**ORDER_ONE))
-    rhs = model.build(PARAM_COLUMNS, **HOST)
+    built = model.build(ConstantThermalHistory(**ORDER_ONE))
+    rhs = built.build(PARAM_COLUMNS, **HOST)
     rng = np.random.default_rng(seed)
     p = rng.uniform(
         0.5, 1.5, N_PARAM
     )  # order one, curvature and sensitivity direction included
     p[PARAM_COLUMNS["w_DE_0"]] = -0.9
-    y = rng.standard_normal(layout.nvar)
+    y = rng.standard_normal(nvar(model))
 
     def f(state):
         return np.asarray(rhs(tuple(state), tau, tuple(p)))
 
-    jacobian = np.zeros((layout.nvar, layout.nvar))
-    for j in range(layout.nvar):
-        e = np.zeros(layout.nvar)
+    jacobian = np.zeros((nvar(model), nvar(model)))
+    for j in range(nvar(model)):
+        e = np.zeros(nvar(model))
         e[j] = 1e-6
         jacobian[:, j] = (f(y + e) - f(y - e)) / 2e-6
     # A structural zero is exactly zero: the variable never enters the expression.
     return entries(zip(*np.nonzero(np.abs(jacobian) > 1e-9 * np.abs(jacobian).max())))
 
 
-def structure(layout):
+def structure(model):
     """``(core, tails)``: the free-streaming tails above the octupole (``E_2`` for the E-modes), the rest core."""
+    ix = state_index(model)
     tails = [
-        list(range(layout.ix_g + 3, layout.ix_g + layout.lmaxg + 1)),
-        list(range(layout.ix_pol + 1, layout.ix_pol + layout.lmaxpol - 1)),
-        list(range(layout.ix_r + 3, layout.ix_r + layout.lmaxr + 1)),
+        [ix[f"theta_{ell}"] for ell in range(3, model.setting("LMAX_G") + 1)],
+        [ix[f"e_{i}"] for i in range(1, model.setting("LMAX_POL") - 1)],
+        [ix[f"n_{ell}"] for ell in range(3, model.setting("LMAX_NR") + 1)],
     ]
-    if layout.has_massive_neutrinos:
-        for q in range(layout.nqmax):
-            tails.append([layout.ix_psi(ell, q) for ell in range(3, layout.lmaxnu + 1)])
+    if model.has(MassiveNeutrinos):
+        for q in range(model.setting("NQMAX")):
+            lmax = model.setting("LMAX_NU")
+            tails.append([ix[f"psi_{q}_{ell}"] for ell in range(3, lmax + 1)])
     in_tail = {i for tail in tails for i in tail}
-    return [i for i in range(layout.nvar) if i not in in_tail], tails
+    return [i for i in range(nvar(model)) if i not in in_tail], tails
 
 
-def dense_core_pattern(layout) -> set[tuple[int, int]]:
+def dense_core_pattern(model) -> set[tuple[int, int]]:
     """The pattern the states used to declare: a dense core, tridiagonal tails hanging off it."""
-    core, tails = structure(layout)
+    core, tails = structure(model)
     found = {(r, c) for r in core for c in core}
     for tail in tails:
         parent = tail[0] - 1
@@ -82,11 +88,11 @@ def dense_core_pattern(layout) -> set[tuple[int, int]]:
     return found
 
 
-def diagonal(layout) -> set[tuple[int, int]]:
-    return {(i, i) for i in range(layout.nvar)}
+def diagonal(model) -> set[tuple[int, int]]:
+    return {(i, i) for i in range(nvar(model))}
 
 
-@pytest.mark.parametrize("name", list(LAYOUTS))
+@pytest.mark.parametrize("name", list(MODELS))
 def test_the_pattern_is_the_jacobians(name):
     """Traced through the providers, the pattern is exactly the nonzeros of the Jacobian.
 
@@ -99,25 +105,25 @@ def test_the_pattern_is_the_jacobians(name):
     rsa``, a coefficient zero in both regimes that a tracer cannot see
     through, so those two rows carry the extra, safe superset.
     """
-    layout = LAYOUTS[name]
-    pattern = perturbation_sparsity(layout)
+    model = MODELS[name]
+    pattern = model.sparsity()
 
     assert pattern.ndim == 2 and pattern.shape[1] == 2 and pattern.dtype == np.int64
-    assert pattern.min() >= 0 and pattern.max() < layout.nvar
-    streaming = finite_difference_pattern(layout, tau=1.0)
-    approximated = finite_difference_pattern(layout, tau=100.0)
+    assert pattern.min() >= 0 and pattern.max() < nvar(model)
+    streaming = finite_difference_pattern(model, tau=1.0)
+    approximated = finite_difference_pattern(model, tau=100.0)
     assert streaming | approximated <= entries(pattern)
     extra = entries(pattern) - (streaming | approximated)
-    assert {r for r, _ in extra} <= {layout.ix_vb, layout.ix_g + 1}
+    assert {r for r, _ in extra} <= {state_index(model)[n] for n in ("vb", "theta_1")}
     assert approximated < entries(pattern), (
         "the approximation freezes the hierarchies' rows"
     )
-    assert not diagonal(layout) <= entries(pattern), (
+    assert not diagonal(model) <= entries(pattern), (
         "an undamped multipole has no diagonal"
     )
 
 
-@pytest.mark.parametrize("name", list(LAYOUTS))
+@pytest.mark.parametrize("name", list(MODELS))
 def test_the_pattern_has_the_physics_structure(name):
     """A core of metric, fluids and the lowest multipoles, bordered by tridiagonal free-streaming tails.
 
@@ -127,11 +133,11 @@ def test_the_pattern_has_the_physics_structure(name):
     when Thomson scattering damps it), and the metric reads the densities and
     momenta but not the shears.
     """
-    layout = LAYOUTS[name]
-    found = entries(perturbation_sparsity(layout))
-    core, tails = structure(layout)
+    model = MODELS[name]
+    found = entries(model.sparsity())
+    core, tails = structure(model)
 
-    assert found <= dense_core_pattern(layout)
+    assert found <= dense_core_pattern(model)
     for tail in tails:
         for i, idx in enumerate(tail):
             neighbours = {tail[i - 1] if i else tail[0] - 1, idx}
@@ -144,7 +150,7 @@ def test_the_pattern_has_the_physics_structure(name):
     # Every variable couples to something and something couples to it: a
     # state index the pattern never mentions is one the sparse solver would
     # silently drop.
-    assert {r for r, _ in found} == {c for _, c in found} == set(range(layout.nvar))
+    assert {r for r, _ in found} == {c for _, c in found} == set(range(nvar(model)))
     # Nothing in the core is dense: the sums reach the metric, not every row.
     assert len({(r, c) for r, c in found if r in core and c in core}) < len(core) ** 2
 
@@ -166,10 +172,10 @@ def test_the_flat_lcdm_pattern_is_the_expected_size():
     photon dipole also read ``z``'s ``etak``, ``clxc`` and the monopole or
     density they did not already: 4 each.
     """
-    layout = LAYOUTS["flat-lcdm"]
-    assert layout.nvar == 50
+    model = MODELS["flat-lcdm"]
+    assert nvar(model) == 50
     assert (
-        len(perturbation_sparsity(layout))
+        len(model.sparsity())
         == (
             8
             + 5
@@ -184,7 +190,7 @@ def test_the_flat_lcdm_pattern_is_the_expected_size():
     )
 
 
-@pytest.mark.parametrize("name", list(LAYOUTS))
+@pytest.mark.parametrize("name", list(MODELS))
 def test_amd_fills_in_only_the_core(name):
     """The exact pattern factorises in fewer slots than the dense core ever took.
 
@@ -194,29 +200,27 @@ def test_amd_fills_in_only_the_core(name):
     the dense core the pattern used to declare -- which factorised with zero
     fill, so its size is exactly what the solver used to work on.
     """
-    layout = LAYOUTS[name]
-    pattern = normalize_sparsity(perturbation_sparsity(layout), layout.nvar)
+    model = MODELS[name]
+    pattern = normalize_sparsity(model.sparsity(), nvar(model))
     layout_lu = sparse_direct.analyse(pattern, "amd")
-    declared = dense_core_pattern(layout)
-    core, _ = structure(layout)
+    declared = dense_core_pattern(model)
+    core, _ = structure(model)
 
     nnz = sum(len(cols) for cols in pattern)
     assert nnz < layout_lu.nnz < len(declared)
     table = layout_lu.slot_table()
     factorised = entries(zip(*np.nonzero(table >= 0)))
     # The factorisation holds every diagonal, for the ``1/(h gamma)``.
-    fill = factorised - entries(perturbation_sparsity(layout)) - diagonal(layout)
+    fill = factorised - entries(model.sparsity()) - diagonal(model)
     assert fill and fill <= {(r, c) for r in core for c in core}
     assert factorised <= declared
 
 
 def test_the_solver_and_the_kernel_share_one_layout():
     """The slots the sweeps write are the slots the factorisation reads; the fill has its own."""
-    layout = LAYOUTS["flat-lcdm"]
-    solver = sparse_direct.sparse_direct_solver(
-        perturbation_sparsity(layout), layout.nvar
-    )
-    pattern = normalize_sparsity(perturbation_sparsity(layout), layout.nvar)
+    model = MODELS["flat-lcdm"]
+    solver = sparse_direct.sparse_direct_solver(model.sparsity(), nvar(model))
+    pattern = normalize_sparsity(model.sparsity(), nvar(model))
 
     assert (
         solver.compressed.n_colours == 11
@@ -231,7 +235,7 @@ def test_the_solver_and_the_kernel_share_one_layout():
     assert set(slots) <= set(range(203))
 
 
-@pytest.mark.parametrize("name", list(LAYOUTS))
+@pytest.mark.parametrize("name", list(MODELS))
 def test_undeclared_diagonals_get_the_factorisations_slots(name):
     """Where ``J`` has no diagonal, the ``1/(h gamma)`` must still reach the factorisation's.
 
@@ -239,35 +243,33 @@ def test_undeclared_diagonals_get_the_factorisations_slots(name):
     an entry in its row, so the ``(row, colour)`` grid cell of its diagonal
     belongs to that neighbour. modax used to resolve ``slot(i, i)`` through
     the grid and put the ``1/(h gamma)`` there, for twelve rows of the
-    default layout, and the solve returned the initial state; it now goes
+    default model, and the solve returned the initial state; it now goes
     through the factorisation's own diagonal table (modax 9f54d12).
     """
-    layout = LAYOUTS[name]
-    pattern = normalize_sparsity(perturbation_sparsity(layout), layout.nvar)
+    model = MODELS[name]
+    pattern = normalize_sparsity(model.sparsity(), nvar(model))
     table = sparse_direct.analyse(pattern, "amd").slot_table()
     compressed = sparse_direct.sparse_direct_solver(
-        perturbation_sparsity(layout), layout.nvar
+        model.sparsity(), nvar(model)
     ).compressed
 
-    undeclared = [i for i in range(layout.nvar) if i not in pattern[i]]
+    undeclared = [i for i in range(nvar(model)) if i not in pattern[i]]
     taken = [
         i
         for i in undeclared
         if compressed.packed[i * compressed.n_colours + compressed.colour[i]] >= 0
     ]
     assert taken, "the case the grid lookup got wrong"
-    assert all(compressed.slot(i, i) == table[i, i] for i in range(layout.nvar))
-    assert compressed.diagonal == tuple(table[i, i] for i in range(layout.nvar))
+    assert all(compressed.slot(i, i) == table[i, i] for i in range(nvar(model)))
+    assert compressed.diagonal == tuple(table[i, i] for i in range(nvar(model)))
 
 
-@pytest.mark.parametrize("name", list(LAYOUTS))
+@pytest.mark.parametrize("name", list(MODELS))
 def test_the_exact_pattern_needs_no_more_colours_than_the_dense_core(name):
-    layout = LAYOUTS[name]
-    exact = colour_sparsity(
-        normalize_sparsity(perturbation_sparsity(layout), layout.nvar)
-    )
+    model = MODELS[name]
+    exact = colour_sparsity(normalize_sparsity(model.sparsity(), nvar(model)))
     declared = colour_sparsity(
-        normalize_sparsity(np.array(sorted(dense_core_pattern(layout))), layout.nvar)
+        normalize_sparsity(np.array(sorted(dense_core_pattern(model))), nvar(model))
     )
     assert exact.n_colours < declared.n_colours
 
@@ -278,8 +280,8 @@ def test_the_colouring_keeps_every_entry_apart():
     modax checks this when it colours; asserting it here is what says the
     *pattern* is the reason it holds, rather than luck in the colouring.
     """
-    for name, layout in LAYOUTS.items():
-        pattern = normalize_sparsity(perturbation_sparsity(layout), layout.nvar)
+    for name, model in MODELS.items():
+        pattern = normalize_sparsity(model.sparsity(), nvar(model))
         compressed = colour_sparsity(pattern)
         for row, cols in enumerate(pattern):
             colours = {compressed.colour[c] for c in cols}

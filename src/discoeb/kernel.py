@@ -98,7 +98,7 @@ PARAM_COLUMNS = {
     **{f"dir_{name}": IX_DIR + i for i, name in enumerate(DIRECTED_NAMES)},
 }
 """The row's columns by the names the component model's providers take them under
-(:mod:`discoeb.eb_model`, :mod:`discoeb.recombination`)."""
+(:mod:`discoeb.species`, :mod:`discoeb.recombination`)."""
 
 TRAJECTORIES_PER_BLOCK = 32
 """Wave modes packed into one CUDA block by modax's thread-local Rodas5P kernel."""

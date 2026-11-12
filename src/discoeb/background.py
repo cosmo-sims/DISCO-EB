@@ -163,7 +163,7 @@ TAU_START = 0.1
 
 
 def _densities(cosmology) -> dict:
-    """Return :func:`discoeb.eb_model.density_parameters` of a cosmology as floats, memoised."""
+    """Return :func:`density_parameters` of a cosmology as floats, memoised."""
 
     return _densities_of(_as_cosmology(cosmology))
 
@@ -175,7 +175,7 @@ def _densities_of(cosmology: _ParamCosmology) -> dict:
 
 
 def density_coefficients(cosmology) -> tuple[float, float, float, float, float]:
-    """Return ``(grhog, grhornomass, grhoc, grhob, grhov)`` of :func:`discoeb.eb_model.density_parameters`."""
+    """Return ``(grhog, grhornomass, grhoc, grhob, grhov)`` of :func:`density_parameters`."""
 
     d = _densities(cosmology)
     return (d["grhog"], d["grhornomass"], d["grhoc"], d["grhob"], d["grhov"])

@@ -19,7 +19,7 @@ jax.config.update("jax_enable_x64", True)
 
 # after x64 is on, so nothing of DISCO-EB is built in single precision
 from discoeb.component import Component  # noqa: E402
-from discoeb.eb_model import PerturbationLayout  # noqa: E402
+from discoeb.models import LCDM, LCDM_MNU, W0WACDM, W0WACDM_MNU  # noqa: E402
 
 
 def _cuda_available() -> bool:
@@ -42,16 +42,22 @@ HOST = dict(
     float64=np.float64,
 )
 
-LAYOUTS = {
-    "flat-lcdm": PerturbationLayout(),
-    "dark-energy": PerturbationLayout(enable_dark_energy=True),
-    "massive-nu": PerturbationLayout(nqmax=3, lmaxnu=8),
+MODELS = {
+    "flat-lcdm": LCDM,
+    "dark-energy": W0WACDM,
+    "massive-nu": LCDM_MNU.with_settings(NQMAX=3, LMAX_NU=8),
     # Blocks of unequal length: the hand-written Schur solver this replaced
     # could not take them.
-    "ragged-blocks": PerturbationLayout(
-        lmaxg=11, lmaxpol=13, lmaxr=17, nqmax=2, lmaxnu=9, enable_dark_energy=True
+    "ragged-blocks": W0WACDM_MNU.with_settings(
+        LMAX_G=11, LMAX_POL=13, LMAX_NR=17, NQMAX=2, LMAX_NU=9
     ),
 }
+
+
+def state_index(model) -> dict[str, int]:
+    """The perturbation state's indices by element name."""
+
+    return {name: i for i, name in enumerate(model.state_names())}
 
 
 class ConstantThermalHistory(Component):

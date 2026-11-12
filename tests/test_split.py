@@ -25,7 +25,7 @@ def test_the_recombination_block_publishes_the_thermal_quantities():
     assert recombination.n == 5 and recombination.n_outputs == len(THERMAL_QUANTITIES)
     assert perturbations.n == nvar and perturbations.reads == (recombination,)
     assert model.state_indices(THERMAL_STATES) == list(thermal_indices(model))
-    # the hierarchy alone, as perturbation_sparsity traces it: 173 entries
+    # the hierarchy alone, as the model's sparsity traces it: 173 entries
     # (165 and the slip's reading of z under the radiation streaming approximation), 11 colours
     main = (
         perturbations.sparsity

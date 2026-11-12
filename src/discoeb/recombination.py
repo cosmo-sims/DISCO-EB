@@ -35,7 +35,7 @@ so the joint model is a modax hierarchy of two blocks
 on its own ahead of the hierarchy and publishes the four quantities, which
 modax hands over as quintic polynomials of time between its steps. Nothing
 is tabulated and no device buffer is refilled: the right-hand side compiles
-once per layout and serves every batch.
+once per model and serves every batch.
 
 RECFAST's equations are unaltered, with two implementation choices beside
 them. ``x_H`` is clamped to ``[0, 1]``: a hierarchy-sized step can overshoot

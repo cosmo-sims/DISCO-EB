@@ -340,7 +340,7 @@ class MassiveNeutrinos(Species):
     still relativistic, so each bin starts as the massless hierarchy,
     ``psi_l = -(1/4) N_l dlnf0/dlnq``. The quadrature nodes and weights are
     instance constants the providers read through ``self``. Each bin adds
-    ``LMAX_NU + 1`` states. 3 bins give the default layout ``nvar = 98``.
+    ``LMAX_NU + 1`` states. 3 bins give LCDM_MNU ``nvar = 98``.
     5 bins compile about 4x slower and gain no ``P(k)`` accuracy against
     CLASS.
     """
