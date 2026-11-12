@@ -58,7 +58,7 @@ You need a GPU to run a solve, but not to import the package. modax brings the C
 
 <!-- start:quickstart -->
 
-This example keeps the comoving curvature perturbation $\mathcal{R}$ and the CDM density contrast of 64 wave modes at 100 conformal times:
+Every solve names its model. This example keeps the comoving curvature perturbation $\mathcal{R}$ and the CDM density contrast of flat LCDM, for 64 wave modes at 100 conformal times:
 
 ```python
 import jax
@@ -66,7 +66,7 @@ import jax
 jax.config.update("jax_enable_x64", True)
 
 import numpy as np
-from discoeb import solve_eb
+from discoeb import LCDM, solve_eb
 
 h = 0.6732
 cosmology = {
@@ -78,9 +78,14 @@ cosmology = {
 k = np.geomspace(1e-4, 1.0, 64)      # 1/Mpc
 tau = np.geomspace(1.0, 2e4, 100)    # Mpc, the last times past today
 
-solution = solve_eb(cosmology, k, tau, keep=("R", "clxc"))
+solution = solve_eb(cosmology, k, tau, model=LCDM, keep=("R", "clxc"))
 R = solution["R"]  # (1, 64, 100): cosmologies, wave modes, times
 ```
+
+`discoeb.models` has `LCDM`, `W0WACDM` (a CPL dark-energy fluid) and their
+massive-neutrino variants `LCDM_MNU` and `W0WACDM_MNU`.
+`examples/flat_lcdm_power_spectrum.py` computes the matter power spectrum of
+flat LCDM from the command line.
 
 <!-- end:quickstart -->
 

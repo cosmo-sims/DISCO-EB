@@ -18,7 +18,8 @@ times* of a batch of cosmologies and wave modes. The kernel launch evaluates
 them from the solver's dense output and returns those values, never the
 state history:
 
-* :func:`solve_eb` ``(cosmologies, k, tau, keep=names, extra=components)``
+* :func:`solve_eb` ``(cosmologies, k, tau, model=LCDM, keep=names,
+  extra=components)``
   returns an :class:`EBSolution` whose ``values`` are ``(n_cosmologies,
   len(keep), n_k, n_tau)``, with each cosmology's conformal age ``tau0``.
   Past its own ``tau0``, a cosmology's trajectories hold their state today.
