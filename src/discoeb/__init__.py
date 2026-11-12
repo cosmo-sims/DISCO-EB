@@ -35,8 +35,11 @@ state history:
 * Differentiation: pass :data:`DIFFERENTIABLE_PARAMETERS` as JAX values, or
   the nine :data:`DIRECTED_NAMES` inputs (:func:`directed_inputs`) as
   ``inputs``, and ``values`` becomes differentiable (``jax.jvp``,
-  ``jax.grad``) through forward sensitivities the kernel computes. The
-  derivatives hold ``tau0`` and the reionization redshift fixed.
+  ``jax.grad``) through forward sensitivities the kernel computes. In the
+  parameters the derivative is complete (``tau0``, the reionization redshift
+  and the initial state move with them); in ``inputs`` it holds the
+  background endpoints fixed. ``solve_eb(..., a=...)`` records at scale
+  factors instead of conformal times, and runs under ``jax.jit``.
 
 :func:`background_history`, :func:`density_coefficients` and
 :func:`conformal_ages` give the background for building grids. A cosmology

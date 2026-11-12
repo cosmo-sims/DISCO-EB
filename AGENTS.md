@@ -183,10 +183,27 @@ The codebase is organized into modular components in `src/discoeb/`:
      caller's order); a time past a cosmology's `tau0` holds its state today.
      The hook is cached per layout and set of names (`_keep_hook`). `values` is differentiable
      in the dictionary's `DIFFERENTIABLE_PARAMETERS` (`Omegam`, `Omegab`,
-     `H0`, `Tcmb`, `Neff`, given as JAX values; the other keys must be plain
-     numbers): a `custom_jvp` in those parameters whose rule, with concrete
-     primals, prepares the batch and chains `density_parameters` (JAX)
-     into the inputs-level rule `_kept_values`, which runs the
+     `H0`, `Tcmb`, `Neff`, given as JAX values): a `custom_jvp` in those
+     parameters, one leaf per key, whose rule takes the complete derivative.
+     It linearizes the launch's inputs in the parameters (JAX: rows with
+     their directed inputs and `z_re`, `tau0`, the initial state, the save
+     times) and runs one launch with a replica per key with a tangent plus
+     one time replica, on `joint_kernel(layout, shift=True)`, whose blocks
+     read the state as `u + eps dy0` (`IX_DY0` columns past `N_PARAM`) so the
+     sensitivity starts at the initial state's tangent. Its hook
+     (`build_keep_hook(..., shifted=True)`) also moves the time by `eps` times
+     the row's time flag and the state by `dt f` (the joint model's
+     right-hand side built whole), so the time replica's tangent is `dq/dtau`;
+     the rule adds it times the derivative of `min(t_save, tau0)`. `z_re`
+     is a directed row column (`DIRECTED_ROW_COLUMNS`); the bisection gets
+     its derivative by the implicit function theorem, zero in value.
+     `solve_eb(..., a=...)` saves at each cosmology's conformal times of
+     the scale factors (`_conformal_times`, linear in `ln a`, `a = 1` is
+     `tau0`), the derivative then at fixed `a`
+     (`test_solve_eb_complete_derivatives`: `jacfwd` against central
+     differences of whole converged solves, at fixed `a` and `tau`). With
+     `inputs=` the inputs-level rule `_kept_values` serves instead, at fixed
+     background endpoints: it runs the
      one-column-per-replica sensitivity launch with the
      *tangent* hook (`build_keep_hook(..., tangent=True)`: Enzyme's forward
      sweep of the compiled quantities seeded with `(S, 0, e_eps)`, state
@@ -204,8 +221,8 @@ The codebase is organized into modular components in `src/discoeb/`:
      xp=jnp)`, uncached; `layout=` is needed when `w_DE_0`, `w_DE_a` or `Nmnu`
      are traced (`test_solve_eb_under_jit`). A derivative along a key outside
      `DIFFERENTIABLE_PARAMETERS` raises in the parameter-level rule, which takes
-     those keys as an argument. `test_solve_eb_derivatives` gates the densities-level rule
-     against central differences and the parameter-level one as its chain rule.
+     those keys as an argument. `test_solve_eb_derivatives` gates the
+     inputs-level rule against central differences.
      Example: `examples/solve_eb_comoving_curvature.py`
    - Hierarchy truncations are the components' settings (`eb_model.py`):
      `DISCO_LMAX_G`, `DISCO_LMAX_POL`, `DISCO_LMAX_NR`, `DISCO_LMAX_NU`

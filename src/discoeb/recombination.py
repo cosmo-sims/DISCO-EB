@@ -46,8 +46,9 @@ transcendental functions run in single precision by default
 
 Reionization follows CAMB. Hydrogen and HeII reionize together in a tanh
 step of width 0.5 in ``y = (1+z)^{3/2}`` about ``z_re``, HeIII at
-``z = 3.5``. ``z_re`` is a column of the parameter row, which
-:func:`discoeb.perturbations.background_endpoints` solves from the optical
+``z = 3.5``. ``z_re`` is read off the parameter row like the other inputs a
+derivative may move (``z_re_nominal`` plus ``eps`` times its direction), and
+:func:`discoeb.perturbations.background_endpoints` solves it from the optical
 depth ``tau_reio`` on the background.
 """
 
@@ -170,7 +171,7 @@ THERMAL_PARAMETERS = (
     "Tcmb_nominal",
     "H0_nominal",
     "Omegab_nominal",
-    "z_re",
+    "z_re_nominal",
 )
 """The cosmology's inputs to the recombination rates and reionization. They
 are columns of the parameter row after the hierarchy's own
@@ -571,6 +572,9 @@ class Recombination(Component):
 
     def Omegab(self, Omegab_nominal, eps, dir_Omegab):
         return Omegab_nominal + eps * dir_Omegab
+
+    def z_re(self, z_re_nominal, eps, dir_z_re):
+        return z_re_nominal + eps * dir_z_re
 
     def fHe(self, YHe):
         return YHe / (const_mHe_mH * (1.0 - YHe))

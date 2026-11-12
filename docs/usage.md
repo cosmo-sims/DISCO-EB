@@ -18,7 +18,9 @@ def R_today(omega_m):
 dR = jax.jacfwd(R_today)(jnp.asarray(cosmology["Omegam"]))  # (64,)
 ```
 
-The derivative holds the conformal age and the reionization redshift fixed. The other parameters must be plain numbers.
+The derivative is complete: the conformal age, the reionization redshift and the initial state move with the parameters. The other parameters may be JAX values but are not differentiated.
+
+To record at scale factors instead of conformal times, pass `a=` in place of `tau`. Each cosmology then records at its own conformal times of them, and the derivative is the one at fixed `a`. `solve_eb` also runs under `jax.jit`; pass `layout=` when `w_DE_0`, `w_DE_a` or `Nmnu` are traced.
 
 ## Extending the model
 

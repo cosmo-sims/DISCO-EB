@@ -306,8 +306,9 @@ def test_solve_eb_derivatives():
     values are tiny), so the Jacobian is checked as the change it predicts
     over a 0.1 percent step against the measured change, in units of each
     quantity's scale, and the gradient of a scale-weighted sum over a 1
-    percent step. The parameter-level derivative is then the chain rule
-    through ``density_parameters``.
+    percent step. This is the inputs-level rule of ``inputs=``, at fixed
+    background endpoints; the parameter-level derivative is checked in
+    :func:`test_solve_eb_complete_derivatives`.
     """
 
     import jax
@@ -395,23 +396,15 @@ def test_solve_eb_derivatives():
         grad, summed, rtol=1.0e-6, err_msg="grad vs contracted jacfwd"
     )
 
-    # Through the dictionary: the chain rule with the densities' Jacobian,
-    # under jacfwd and grad alike, and a plain number where a derivative is
-    # not carried.
+    # Through the dictionary, jax.grad is the transposed jacfwd, and a plain
+    # number refuses a derivative. The parameter-level derivative is the
+    # complete one, not the chain rule of this fixed-endpoint rule
+    # (test_solve_eb_complete_derivatives).
     def of_parameters(theta):
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
         return solve_eb(param, SOLVE_EB_K, tau, keep=names).values
 
     jac_theta = np.asarray(jax.jacfwd(of_parameters)(theta))
-    d_densities = np.asarray(jax.jacfwd(lambda t: _input_vector(fixed, t))(theta))
-    # Omegab's column is the near-cancelling difference of the CDM and
-    # baryon columns, so the contraction itself carries ~1e-9 of roundoff.
-    np.testing.assert_allclose(
-        jac_theta,
-        np.einsum("cqktj,jp->cqktp", jac, d_densities),
-        rtol=1e-6,
-        atol=1e-9 * np.abs(jac_theta).max(),
-    )
     grad_theta = np.asarray(
         jax.grad(lambda t: jnp.sum(of_parameters(t) * weights))(theta)
     )
@@ -426,6 +419,100 @@ def test_solve_eb_derivatives():
                 solve_eb({**cosmology, "mnu": m}, SOLVE_EB_K, tau, keep=names).values
             )
         )(0.0)
+
+
+def _check_solve_eb_derivatives(cosmology, parameters, grid, gates):
+    """``jax.jacfwd`` of ``solve_eb`` against central differences of whole solves.
+
+    Everything moves with the parameters (the background, the recombination
+    history, ``tau0``, ``z_re``, the initial state and, at scale factors, their
+    conformal times), so the differences re-solve all of it. They run at
+    rtol = atol = 1e-6: at the default 1e-4 a step-acceptance flip between the
+    two shifted solves moves the photon quadrupole by 1e-3 of its scale. The
+    Jacobian is checked as the change it predicts over a 0.03 percent step,
+    in units of each kept quantity's scale (``gates``, by name), ``tau0``
+    relative to itself, and ``jax.grad`` of a weighted sum as the transposed
+    contraction of the same Jacobian.
+    """
+
+    import jax
+    import jax.numpy as jnp
+
+    from discoeb.perturbations import solve_eb
+
+    names = tuple(gates)
+    theta = jnp.asarray([cosmology[key] for key in parameters])
+    layout = solve_eb(cosmology, SOLVE_EB_K, keep=names, **grid).layout
+
+    def solve(theta, **tolerances):
+        solution = solve_eb(
+            {**cosmology, **dict(zip(parameters, theta))},
+            SOLVE_EB_K,
+            keep=names,
+            layout=layout,
+            **grid,
+            **tolerances,
+        )
+        return solution.values, solution.tau0
+
+    base, tau0 = (np.asarray(x) for x in solve(theta))
+    scale = np.abs(base).max(axis=(2, 3), keepdims=True)
+    jac, jac_tau0 = (np.asarray(x) for x in jax.jacfwd(solve)(theta))
+    assert jac.shape == base.shape + (len(parameters),)
+    assert np.isfinite(jac).all() and np.isfinite(jac_tau0).all()
+
+    converged = dict(rtol=1.0e-6, atol=1.0e-6, max_steps=200_000)
+    for j, key in enumerate(parameters):
+        step = 3.0e-4 * abs(float(theta[j]))
+        plus, tau0_plus = (
+            np.asarray(x) for x in solve(theta.at[j].add(step), **converged)
+        )
+        minus, tau0_minus = (
+            np.asarray(x) for x in solve(theta.at[j].add(-step), **converged)
+        )
+        err = np.abs(jac[..., j] * step - (plus - minus) / 2.0) / scale
+        for q, name in enumerate(names):
+            assert err[:, q].max() < gates[name], (
+                f"d{name}/d{key}: {err[:, q].max():.3g} of the scale over a 3e-4 step"
+            )
+        change = (tau0_plus - tau0_minus) / 2.0
+        assert np.all(np.abs(jac_tau0[:, j] * step - change) < 1.0e-9 * tau0), key
+
+    weights = 1.0 / scale
+    grad = np.asarray(jax.grad(lambda t: jnp.sum(solve(t)[0] * weights))(theta))
+    np.testing.assert_allclose(
+        grad, np.einsum("cqkt,cqktp->p", weights, jac), rtol=1e-8
+    )
+
+
+@pytest.mark.parametrize(
+    "grid",
+    [
+        pytest.param(dict(a=np.geomspace(1.0e-4, 1.0, 12)), id="a"),
+        pytest.param(dict(tau=np.geomspace(10.0, 2.0e4, 12)), id="tau"),
+    ],
+)
+def test_solve_eb_complete_derivatives(grid):
+    """The parameter-level derivative is the complete one, at fixed ``a`` or ``tau``.
+
+    With reionization, so ``z_re`` moves with the parameters as well. At
+    scale factors the conformal time of each moves too, and the last, ``a =
+    1``, is ``tau0``.
+    """
+
+    from discoeb.perturbations import DIFFERENTIABLE_PARAMETERS, solve_eb
+
+    cosmology = {**_perturbed_cosmologies(1)[0], "tau_reio": 0.054}
+    if "a" in grid:
+        solution = solve_eb(cosmology, SOLVE_EB_K, keep=("R",), **grid)
+        assert solution.tau.shape == (1, len(grid["a"]))
+        assert solution.tau[0, -1] == solution.tau0[0]
+    _check_solve_eb_derivatives(
+        cosmology,
+        DIFFERENTIABLE_PARAMETERS,
+        grid,
+        {"R": 1.0e-6, "clxc": 2.0e-6, "theta_2": 2.0e-4},
+    )
 
 
 def test_solve_eb_under_jit():
@@ -449,6 +536,9 @@ def test_solve_eb_under_jit():
     tau = np.geomspace(10.0, 2.0e4, 12)
     names = ("R", "clxc")
     gate = 5.0e-6
+    # The derivative launch reads the initial state's tangent too, so a flip
+    # there moves a Jacobian entry by a little more.
+    jac_gate = 2.0e-5
     eager = [
         np.asarray(solve_eb(c, SOLVE_EB_K, tau, keep=names).values)
         for c in (first, second, [first, second])
@@ -487,14 +577,27 @@ def test_solve_eb_under_jit():
     jac = np.asarray(jax.jacfwd(of_parameters)(theta))
     jac_jit = np.asarray(jax.jit(jax.jacfwd(of_parameters))(theta))
     jac_scale = np.abs(jac).max(axis=(2, 3), keepdims=True)
-    assert (np.abs(jac_jit - jac) / jac_scale).max() < gate
+    assert (np.abs(jac_jit - jac) / jac_scale).max() < jac_gate
     weights = 1.0 / scale
     grad_jit = np.asarray(
         jax.jit(jax.grad(lambda t: jnp.sum(of_parameters(t) * weights)))(theta)
     )
     np.testing.assert_allclose(
-        grad_jit, np.einsum("cqkt,cqktp->p", weights, jac), rtol=gate
+        grad_jit, np.einsum("cqkt,cqktp->p", weights, jac), rtol=jac_gate
     )
+
+    # At scale factors, whose conformal times are traced as well.
+    def at_a(theta):
+        param = {**traced(first), **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
+        return solve_eb(
+            param, SOLVE_EB_K, a=np.geomspace(1.0e-4, 1.0, 6), keep=names, layout=layout
+        ).values
+
+    assert error(jax.jit(at_a)(theta), np.asarray(at_a(theta))) < gate
+    jac_a = np.asarray(jax.jacfwd(at_a)(theta))
+    jac_a_jit = np.asarray(jax.jit(jax.jacfwd(at_a))(theta))
+    jac_a_scale = np.abs(jac_a).max(axis=(2, 3), keepdims=True)
+    assert (np.abs(jac_a_jit - jac_a) / jac_a_scale).max() < jac_gate
 
     with pytest.raises(ValueError, match="cannot be differentiated"):
         jax.jit(jax.grad(lambda y: jnp.sum(solve({**traced(first), "YHe": y}))))(
