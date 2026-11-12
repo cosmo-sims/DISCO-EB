@@ -198,8 +198,13 @@ The codebase is organized into modular components in `src/discoeb/`:
      `tau_end_of` is given, as `matter_power_spectrum_jax` does: its value
      stops at the inputs' own `tau0` and an explicit end-time term carries
      `d tau0 / d densities`; it shares this launch path since 2026-11-11). `jax.jvp`, `jacfwd`, `grad` all
-     cost one joint launch (0.33 s against 0.12 s plain for 8 modes); not
-     under `jit`. `test_solve_eb_derivatives` gates the densities-level rule
+     cost one joint launch (0.33 s against 0.12 s plain for 8 modes). Under
+     `jit` (every key may be traced) JAX prepares the batch in place of the
+     host: `_prepare_traced`, `_pack(..., xp=jnp)`, `Model.initial_state(...,
+     xp=jnp)`, uncached; `layout=` is needed when `w_DE_0`, `w_DE_a` or `Nmnu`
+     are traced (`test_solve_eb_under_jit`). A derivative along a key outside
+     `DIFFERENTIABLE_PARAMETERS` raises in the parameter-level rule, which takes
+     those keys as an argument. `test_solve_eb_derivatives` gates the densities-level rule
      against central differences and the parameter-level one as its chain rule.
      Example: `examples/solve_eb_comoving_curvature.py`
    - Hierarchy truncations are the components' settings (`eb_model.py`):

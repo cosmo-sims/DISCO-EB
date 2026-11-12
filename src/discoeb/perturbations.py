@@ -1,11 +1,13 @@
 import functools
 import os
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.custom_derivatives import SymbolicZero
 
 from .component import Model, _compile
 from .eb_model import (
@@ -223,28 +225,32 @@ class _ParamCosmology(NamedTuple):
         }
 
 
-def _as_cosmology(cosmology):
-    """Return a parameter dictionary as a ``_ParamCosmology``, anything else as is."""
+def _as_cosmology(cosmology, number=float):
+    """Return a parameter dictionary as a ``_ParamCosmology``, anything else as is.
+
+    ``number`` converts each value: ``float`` for the hashable form the caches
+    key on, a JAX conversion to keep traced values.
+    """
 
     if not isinstance(cosmology, dict):
         return cosmology
     return _ParamCosmology(
-        Omegam=float(cosmology["Omegam"]),
-        Omegab=float(cosmology["Omegab"]),
-        w_DE_0=float(cosmology.get("w_DE_0", -1.0)),
-        w_DE_a=float(cosmology.get("w_DE_a", 0.0)),
-        cs2_DE=float(cosmology.get("cs2_DE", 1.0)),
-        Omegak=float(cosmology.get("Omegak", 0.0)),
-        A_s=float(cosmology["A_s"]),
-        n_s=float(cosmology["n_s"]),
-        H0=float(cosmology["H0"]),
-        T_cmb=float(cosmology["Tcmb"]),
-        Y_He=float(cosmology["YHe"]),
-        Neff_massless=float(cosmology["Neff"]),
-        num_massive_neutrinos=float(cosmology.get("Nmnu", 0.0)),
-        mnu=float(cosmology.get("mnu", 0.0)),
-        k_pivot=float(cosmology.get("k_p", 0.05)),
-        tau_reio=float(cosmology.get("tau_reio", 0.0)),
+        Omegam=number(cosmology["Omegam"]),
+        Omegab=number(cosmology["Omegab"]),
+        w_DE_0=number(cosmology.get("w_DE_0", -1.0)),
+        w_DE_a=number(cosmology.get("w_DE_a", 0.0)),
+        cs2_DE=number(cosmology.get("cs2_DE", 1.0)),
+        Omegak=number(cosmology.get("Omegak", 0.0)),
+        A_s=number(cosmology["A_s"]),
+        n_s=number(cosmology["n_s"]),
+        H0=number(cosmology["H0"]),
+        T_cmb=number(cosmology["Tcmb"]),
+        Y_He=number(cosmology["YHe"]),
+        Neff_massless=number(cosmology["Neff"]),
+        num_massive_neutrinos=number(cosmology.get("Nmnu", 0.0)),
+        mnu=number(cosmology.get("mnu", 0.0)),
+        k_pivot=number(cosmology.get("k_p", 0.05)),
+        tau_reio=number(cosmology.get("tau_reio", 0.0)),
     )
 
 
@@ -610,10 +616,30 @@ def _prepared(cosmologies, extra) -> _PreparedSolve:
     return _PreparedSolve(cosmologies, layout, model, hierarchy, tau0, lna_start, z_re)
 
 
-def _row(cosmology, tau_end: float, z_re: float) -> dict:
-    """Return one cosmology's parameter row by name, without the wave number."""
+def _prepare_traced(cosmologies, layout) -> _PreparedSolve:
+    """Return the prepared solve of cosmologies of JAX values, as under ``jit``.
 
-    d = _densities(cosmology)
+    The endpoints stay JAX values, so nothing is cached and :func:`_pack_batch`
+    packs the batch in JAX. The layout is given, since the values that choose
+    it may be traced.
+    """
+
+    model, hierarchy = joint_kernel(layout)
+    tau0, lna_start, z_re = background_endpoints(_stack_background_params(cosmologies))
+    return _PreparedSolve(cosmologies, layout, model, hierarchy, tau0, lna_start, z_re)
+
+
+def _row(cosmology, tau_end: float, z_re: float, xp=np) -> dict:
+    """Return one cosmology's parameter row by name, without the wave number.
+
+    ``xp`` is ``numpy`` for a cosmology of floats, ``jax.numpy`` for one of
+    JAX values, whose densities are then traced.
+    """
+
+    if xp is np:
+        d = _densities(cosmology)
+    else:
+        d = density_parameters(cosmology.to_background_params(), xp=xp)
     return {
         **{
             f"{name}_nominal": d[name]
@@ -634,23 +660,34 @@ def _row(cosmology, tau_end: float, z_re: float) -> dict:
     }
 
 
-def _row_vector(cosmology, tau_end: float, z_re: float) -> np.ndarray:
+def _row_vector(cosmology, tau_end: float, z_re: float, xp=np) -> np.ndarray:
     """Return :func:`_row` as the ``N_PARAM`` columns of :data:`PARAM_COLUMNS`, zero where it has no value."""
 
-    row = _row(cosmology, tau_end, z_re)
+    row = _row(cosmology, tau_end, z_re, xp)
+    if xp is not np:
+        values = {column: row.get(name, 0.0) for name, column in PARAM_COLUMNS.items()}
+        return xp.stack(
+            [xp.asarray(values.get(c, 0.0), dtype=xp.float64) for c in range(N_PARAM)]
+        )
     out = np.zeros(N_PARAM, dtype=np.float64)
     for name, column in PARAM_COLUMNS.items():
         out[column] = row.get(name, 0.0)
     return out
 
 
-def _initial_inputs(cosmologies, spread) -> dict:
+def _initial_inputs(cosmologies, spread, xp=np) -> dict:
     """Return what :meth:`Model.initial_state` reads of the cosmologies.
 
     ``spread`` maps one value per cosmology to the trajectories' values.
     """
 
-    densities = np.array([density_coefficients(c) for c in cosmologies]).T
+    if xp is np:
+        densities = np.array([density_coefficients(c) for c in cosmologies]).T
+    else:
+        traced = [
+            density_parameters(c.to_background_params(), xp=xp) for c in cosmologies
+        ]
+        densities = [xp.stack([d[name] for d in traced]) for name in DIRECTED_NAMES[:5]]
     return {
         **dict(zip(DIRECTED_NAMES[:5], map(spread, densities))),
         "w_DE_0": spread([c.w_DE_0 for c in cosmologies]),
@@ -697,30 +734,13 @@ def make_initial_states(
 @functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
 def _packed(cosmologies, model, tau0, lna_start, z_re, k_bytes, tau_bytes):
     k_arr = np.frombuffer(k_bytes, dtype=np.float64)
-    n_cosmo = len(cosmologies)
-    order = np.argsort(k_arr, kind="stable")
-    k_sorted = k_arr[order]
-    rows = np.array([_row_vector(c, t, z) for c, t, z in zip(cosmologies, tau0, z_re)])
-    params = np.tile(rows, (len(k_sorted), 1))
-    params[:, IX_K] = np.repeat(k_sorted, n_cosmo)
-    params[:, IX_COSMOLOGY] = np.tile(
-        np.arange(n_cosmo, dtype=np.float64), len(k_sorted)
-    )
-    # per-cosmology inputs, tiled over the wave modes (row = k_idx * n_cosmo + c)
-
-    def tile(values):
-        return np.tile(np.asarray(values, dtype=np.float64), len(k_sorted))
-
-    y0 = model.initial_state(
-        params[:, IX_K],
-        tau=TAU_START,
-        lna_start=tile(lna_start),
-        **_initial_inputs(cosmologies, tile),
-    )
     if tau_bytes is None:
         t_span = np.asarray((TAU_START, float(np.max(tau0))), dtype=np.float64)
     else:
         t_span = np.frombuffer(tau_bytes, dtype=np.float64).copy()
+    params, y0, order, k_sorted = _pack(
+        cosmologies, model, tau0, lna_start, z_re, k_arr
+    )
     return (
         np.ascontiguousarray(params),
         np.ascontiguousarray(y0),
@@ -728,6 +748,42 @@ def _packed(cosmologies, model, tau0, lna_start, z_re, k_bytes, tau_bytes):
         order,
         k_sorted,
     )
+
+
+def _pack(cosmologies, model, tau0, lna_start, z_re, k_arr, xp=np):
+    """Return ``(params, y0, order, k_sorted)``: the rows and initial states of a batch.
+
+    ``xp`` is ``numpy`` for cosmologies of floats and ``jax.numpy`` for ones
+    of JAX values, whose rows and initial states are then traced.
+    """
+
+    n_cosmo = len(cosmologies)
+    order = np.argsort(k_arr, kind="stable")
+    k_sorted = k_arr[order]
+    rows = xp.stack(
+        [_row_vector(c, t, z, xp) for c, t, z in zip(cosmologies, tau0, z_re)]
+    )
+    params = xp.tile(rows, (len(k_sorted), 1))
+    k_column = np.repeat(k_sorted, n_cosmo)
+    tags = np.tile(np.arange(n_cosmo, dtype=np.float64), len(k_sorted))
+    if xp is np:
+        params[:, IX_K] = k_column
+        params[:, IX_COSMOLOGY] = tags
+    else:
+        params = params.at[:, IX_K].set(k_column).at[:, IX_COSMOLOGY].set(tags)
+    # per-cosmology inputs, tiled over the wave modes (row = k_idx * n_cosmo + c)
+
+    def tile(values):
+        return xp.tile(xp.asarray(values, dtype=xp.float64), len(k_sorted))
+
+    y0 = model.initial_state(
+        k_column,
+        xp=xp,
+        tau=TAU_START,
+        lna_start=tile(lna_start),
+        **_initial_inputs(cosmologies, tile, xp),
+    )
+    return params, y0, order, k_sorted
 
 
 def _pack_batch(prepared, k_values, tau_save=None):
@@ -739,6 +795,23 @@ def _pack_batch(prepared, k_values, tau_save=None):
     ``tau0``.
     """
 
+    if not isinstance(prepared.tau0, np.ndarray):
+        # a batch of JAX values (traced under jit): packed in JAX, not cached
+        params, y0, order, k_sorted = _pack(
+            prepared.cosmologies,
+            prepared.model,
+            prepared.tau0,
+            prepared.lna_start,
+            prepared.z_re,
+            np.asarray(k_values, dtype=np.float64),
+            xp=jnp,
+        )
+        t_span = (
+            jnp.stack([jnp.asarray(TAU_START), jnp.max(prepared.tau0)])
+            if tau_save is None
+            else np.asarray(tau_save, dtype=np.float64)
+        )
+        return params, y0, t_span, order, k_sorted
     k_bytes = np.ascontiguousarray(np.asarray(k_values, dtype=np.float64)).tobytes()
     tau_bytes = (
         None
@@ -1058,6 +1131,14 @@ class EBSolution:
         return self.values[:, self.names.index(name)]
 
 
+# a pytree, so a jitted function may return it
+jax.tree_util.register_dataclass(
+    EBSolution,
+    data_fields=["k", "tau", "tau0", "values"],
+    meta_fields=["names", "layout"],
+)
+
+
 def eps_sensitivity(nvar: int):
     """Return the sensitivity spec of a joint launch along the parameter row's ``eps``.
 
@@ -1184,26 +1265,15 @@ def _split_cosmologies(cosmologies):
     """Return ``(fixed, theta)``: each cosmology's plain and differentiable parameters.
 
     ``fixed`` holds one dictionary per cosmology of the keys outside
-    :data:`DIFFERENTIABLE_PARAMETERS`, as floats. The float conversion raises
-    ``ValueError`` for a JAX tracer given for one of those keys. ``theta`` is
+    :data:`DIFFERENTIABLE_PARAMETERS`, as given: numbers, or JAX values under
+    ``jit`` (:func:`solve_eb` refuses a derivative along them). ``theta`` is
     the ``(n_cosmologies, 5)`` array of the differentiable keys, traced or not.
     """
 
     fixed, rows = [], []
     for cosmology in cosmologies:
         d = _cosmology_dictionary(cosmology)
-        plain = {}
-        for key, value in d.items():
-            if key in DIFFERENTIABLE_PARAMETERS:
-                continue
-            try:
-                plain[key] = float(value)
-            except TypeError as error:
-                raise ValueError(
-                    f"{key!r} cannot be differentiated through solve_eb: the "
-                    f"differentiable parameters are {DIFFERENTIABLE_PARAMETERS}"
-                ) from error
-        fixed.append(plain)
+        fixed.append({k: v for k, v in d.items() if k not in DIFFERENTIABLE_PARAMETERS})
         values = [d[k] for k in DIFFERENTIABLE_PARAMETERS]
         if any(isinstance(v, jax.Array) for v in values):
             rows.append(jnp.stack([jnp.asarray(v, dtype=jnp.float64) for v in values]))
@@ -1213,6 +1283,39 @@ def _split_cosmologies(cosmologies):
         # plain numbers: one host array, no per-cosmology device work
         return tuple(fixed), np.stack(rows)
     return tuple(fixed), jnp.stack(rows)
+
+
+LAYOUT_KEYS = ("w_DE_0", "w_DE_a", "Nmnu")
+"""The parameter-dictionary keys that choose a cosmology's perturbation layout."""
+
+
+def _batch_layout(dictionaries) -> PerturbationLayout:
+    """Return the layout the cosmologies' :data:`LAYOUT_KEYS` imply, which must be numbers."""
+
+    defaults = {"w_DE_0": -1.0, "w_DE_a": 0.0, "Nmnu": 0.0}
+    layouts = set()
+    for d in dictionaries:
+        values = {key: d.get(key, defaults[key]) for key in LAYOUT_KEYS}
+        if any(isinstance(v, jax.core.Tracer) for v in values.values()):
+            raise ValueError(
+                f"{LAYOUT_KEYS} choose the perturbation layout and are traced: "
+                "pass layout= to solve_eb"
+            )
+        layouts.add(
+            _layout_for(
+                SimpleNamespace(
+                    w_DE_0=float(values["w_DE_0"]),
+                    w_DE_a=float(values["w_DE_a"]),
+                    num_massive_neutrinos=float(values["Nmnu"]),
+                )
+            )
+        )
+    if len(layouts) > 1:
+        raise ValueError(
+            "all cosmologies in a batch must share a perturbation layout "
+            "(same dark-energy / massive-neutrino settings)"
+        )
+    return layouts.pop()
 
 
 def _input_vector(fixed: dict, theta_row, xp=jnp) -> jax.Array:
@@ -1308,7 +1411,9 @@ def _kept_values(
 
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_grid)
     if isinstance(error_weights, dict):
-        error_weights = _named_error_weights(error_weights, layout, params[:, IX_K])
+        error_weights = _named_error_weights(
+            error_weights, layout, np.repeat(k_sorted, n_cosmo)
+        )
     n_k, n_grid, n_keep = len(k_sorted), len(tau_grid), len(names)
     first = 1 if drop_first else 0
     columns = jnp.asarray(DIRECTED_COLUMNS)
@@ -1356,14 +1461,15 @@ def _kept_values(
         (x,), (dx,) = primals, tangents
         # Replica j of trajectory i is row i * n_dir + j, along the unit
         # direction e_j. Each carries the single column S = dy / d eps.
-        params_rep = np.repeat(params, n_dir, axis=0)
-        params_rep[:, IX_DIR : IX_DIR + n_dir] = np.tile(
-            np.eye(n_dir), (n_k * n_cosmo, 1)
+        params_rep = (
+            jnp.repeat(jnp.asarray(params), n_dir, axis=0)
+            .at[:, IX_DIR : IX_DIR + n_dir]
+            .set(np.tile(np.eye(n_dir), (n_k * n_cosmo, 1)))
         )
         _, out = _launch(
             prepared,
             with_inputs(params_rep, x, n_dir),
-            jnp.asarray(np.repeat(y0, n_dir, axis=0)),
+            jnp.repeat(jnp.asarray(y0), n_dir, axis=0),
             t_span_j,
             error_weights=None
             if error_weights is None
@@ -1399,6 +1505,7 @@ def solve_eb(
     keep=None,
     extra=(),
     inputs=None,
+    layout=None,
     rtol: float = PERTURB_RTOL,
     atol: float = PERTURB_ATOL,
     first_step: float = PERTURB_FIRST_STEP,
@@ -1421,9 +1528,9 @@ def solve_eb(
     ----------
     cosmologies
         One cosmology (a parameter dictionary or a cosmology object) or a
-        sequence of them, all with one perturbation layout. The values of
-        :data:`DIFFERENTIABLE_PARAMETERS` may be JAX arrays, traced or not. The
-        others must be plain numbers.
+        sequence of them, all with one perturbation layout. Any value may be a
+        JAX array, traced or not, as under ``jit``. Only those of
+        :data:`DIFFERENTIABLE_PARAMETERS` may be differentiated.
     k_values
         Wave numbers in 1/Mpc, in any order.
     tau
@@ -1453,6 +1560,10 @@ def solve_eb(
         (:func:`directed_inputs`). They are differentiable in their own right:
         the solution becomes a function of them, at fixed background endpoints
         of the cosmologies.
+    layout
+        The batch's :class:`PerturbationLayout`. Needed when ``w_DE_0``,
+        ``w_DE_a`` or ``Nmnu``, which choose it, are traced. Otherwise it is
+        the one they imply.
     rtol, atol, first_step, max_steps, error_weights, thermo_weight
         Solver settings, as in :func:`solve_perturbation_history_batch`.
         ``error_weights`` is either ``{state name: weight}`` or modax's array
@@ -1466,8 +1577,9 @@ def solve_eb(
     The hook compiles once per batch shape and set of names, like the
     right-hand side. The returned ``values`` are differentiable in the
     cosmologies' ``Omegam``, ``Omegab``, ``H0``, ``Tcmb`` and ``Neff`` under
-    ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad``. They are not under ``jit``,
-    since the host finds the background endpoints from the concrete values. The
+    ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad``, and the solve runs under
+    ``jit``: with concrete values the host prepares the batch (cached), with
+    traced ones JAX does, the endpoints, rows and initial states included. The
     derivative runs through the five background densities and the
     recombination block's ``Tcmb``, ``H0`` and ``Omegab``. The
     forward-sensitivity launch of :func:`_kept_values` carries it, with a hook
@@ -1497,26 +1609,47 @@ def solve_eb(
         max_steps=max_steps,
         thermo_weight=thermo_weight,
     )
-    held = {}
 
-    def prepare(theta):
-        """Prepare the solve of the concrete parameters and return its kept-value function."""
-
-        concrete = np.asarray(theta, dtype=np.float64)
-        cosmos = tuple(
-            _as_cosmology(
-                {**fixed[i], **dict(zip(DIFFERENTIABLE_PARAMETERS, concrete[i]))}
-            )
+    def dictionaries(theta, fixed):
+        return [
+            {**fixed[i], **dict(zip(DIFFERENTIABLE_PARAMETERS, theta[i]))}
             for i in range(n_cosmo)
+        ]
+
+    if layout is None:
+        layout = _batch_layout(dictionaries(theta, fixed))
+    names = tuple(layout_state_names(layout) if keep is None else keep)
+    if len(set(names)) != len(names):
+        raise ValueError(f"keep names a quantity twice: {names}")
+
+    def prepared_of(theta, fixed):
+        """The prepared solve: on the host for numbers (cached), in JAX for traced values."""
+
+        if any(
+            isinstance(v, jax.core.Tracer)
+            for v in jax.tree_util.tree_leaves((theta, fixed))
+        ):
+            cosmos = tuple(
+                _as_cosmology(d, lambda v: jnp.asarray(v, dtype=jnp.float64))
+                for d in dictionaries(theta, fixed)
+            )
+            return _prepare_traced(cosmos, layout)
+        cosmos = tuple(
+            _as_cosmology(d)
+            for d in dictionaries(np.asarray(theta, dtype=np.float64), fixed)
         )
-        prepared = held["prepared"] = _prepare_solve(cosmos)
-        layout = prepared.layout
-        names = tuple(layout_state_names(layout) if keep is None else keep)
-        if len(set(names)) != len(names):
-            raise ValueError(f"keep names a quantity twice: {names}")
-        held["names"] = names
+        prepared = _prepare_solve(cosmos)
+        if prepared.layout != layout:
+            raise ValueError(
+                f"layout= {layout} is not the cosmologies' own {prepared.layout}"
+            )
+        return prepared
+
+    def prepare(theta, fixed):
+        """Prepare the solve of the parameters and return its kept-value function."""
+
         return _kept_values(
-            prepared,
+            prepared_of(theta, fixed),
             k_values,
             tau_grid,
             names,
@@ -1526,7 +1659,7 @@ def solve_eb(
             **settings,
         )
 
-    def inputs_of(theta):
+    def inputs_of(theta, fixed):
         # JAX arithmetic throughout, also for parameters given as plain numbers
         theta = jnp.asarray(theta, dtype=jnp.float64)
         keys = set(fixed[0])
@@ -1547,13 +1680,14 @@ def solve_eb(
         return _input_vector(columns, [theta[:, j] for j in range(theta.shape[1])]).T
 
     def solution(values):
+        tau0 = prepared_of(jax.lax.stop_gradient(theta), fixed).tau0
         return EBSolution(
-            names=held["names"],
+            names=names,
             k=np.asarray(k_values, dtype=np.float64).reshape(-1),
             tau=tau,
-            tau0=np.asarray(held["prepared"].tau0, dtype=np.float64),
+            tau0=tau0 if isinstance(tau0, jax.Array) else np.asarray(tau0),
             values=values,
-            layout=held["prepared"].layout,
+            layout=layout,
         )
 
     if inputs is not None:
@@ -1564,23 +1698,32 @@ def solve_eb(
             raise ValueError(
                 f"inputs must be (n_cosmologies, {len(DIRECTED_NAMES)}), got {inputs.shape}"
             )
-        return solution(prepare(np.asarray(jax.lax.stop_gradient(theta)))(inputs))
+        return solution(prepare(jax.lax.stop_gradient(theta), fixed)(inputs))
 
-    # The background endpoints need the parameters as numbers, which a custom
-    # rule's primals are under jax.grad and jax.jacfwd. The tangent chains the
-    # inputs' dependence on the parameters (JAX) into the inputs-level rule of
-    # _kept_values.
+    # The tangent chains the inputs' dependence on the parameters (JAX) into
+    # the inputs-level rule of _kept_values. The other keys come in as an
+    # argument, not a closure, so a derivative along one of them is refused
+    # here rather than lost.
     @jax.custom_jvp
-    def kept_of(theta):
-        return prepare(theta)(inputs_of(theta))
+    def kept_of(theta, fixed):
+        return prepare(theta, fixed)(inputs_of(theta, fixed))
 
-    @kept_of.defjvp
     def kept_of_jvp(primals, tangents):
-        (theta,), (dtheta,) = primals, tangents
-        of_inputs = prepare(theta)
-        return jax.jvp(lambda t: of_inputs(inputs_of(t)), (theta,), (dtheta,))
+        (theta, fixed), (dtheta, dfixed) = primals, tangents
+        for f, df in zip(fixed, dfixed):
+            for key in f:
+                if not isinstance(df[key], SymbolicZero):
+                    raise ValueError(
+                        f"{key!r} cannot be differentiated through solve_eb: the "
+                        f"differentiable parameters are {DIFFERENTIABLE_PARAMETERS}"
+                    )
+        if isinstance(dtheta, SymbolicZero):
+            dtheta = jnp.zeros_like(theta)
+        of_inputs = prepare(theta, fixed)
+        return jax.jvp(lambda t: of_inputs(inputs_of(t, fixed)), (theta,), (dtheta,))
 
-    return solution(kept_of(theta))
+    kept_of.defjvp(kept_of_jvp, symbolic_zeros=True)
+    return solution(kept_of(theta, fixed))
 
 
 def directed_inputs(cosmologies) -> np.ndarray:

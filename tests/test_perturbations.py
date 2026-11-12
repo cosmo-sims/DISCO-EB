@@ -426,3 +426,81 @@ def test_solve_eb_derivatives():
                 solve_eb({**cosmology, "mnu": m}, SOLVE_EB_K, tau, keep=names).values
             )
         )(0.0)
+
+
+def test_solve_eb_under_jit():
+    """``solve_eb`` traces under ``jax.jit``, every parameter a traced value.
+
+    JAX then prepares the batch (endpoints, rows, initial states) in place of
+    the host, so one program gives the eager values for whichever cosmologies
+    it is called with, and its derivatives are the eager ones. The layout keys
+    being traced, the layout comes as an argument. The values agree to a
+    step-acceptance flip: XLA and numpy round the initial state differently
+    in the last bit (1e-23), which moves R and clxc by ~1e-7 of their scale
+    (the photon quadrupole after recombination by 1e-3, so it is left out).
+    """
+
+    import jax
+    import jax.numpy as jnp
+
+    from discoeb.perturbations import DIFFERENTIABLE_PARAMETERS, solve_eb
+
+    first, second = _perturbed_cosmologies(3)[::2]
+    tau = np.geomspace(10.0, 2.0e4, 12)
+    names = ("R", "clxc")
+    gate = 5.0e-6
+    eager = [
+        np.asarray(solve_eb(c, SOLVE_EB_K, tau, keep=names).values)
+        for c in (first, second, [first, second])
+    ]
+    layout = solve_eb(first, SOLVE_EB_K, tau, keep=names).layout
+    scale = np.abs(eager[0]).max(axis=(2, 3), keepdims=True)
+
+    def error(x, expected):
+        return float((np.abs(np.asarray(x) - expected) / scale).max())
+
+    assert error(eager[1], eager[0]) > 1.0e-4  # far apart against the gates below
+
+    def solve(c):
+        return solve_eb(c, SOLVE_EB_K, tau, keep=names, layout=layout).values
+
+    def traced(c):
+        return {key: jnp.asarray(value) for key, value in c.items()}
+
+    jitted = jax.jit(solve)
+    for c, expected in ((first, eager[0]), (second, eager[1]), (first, eager[0])):
+        assert error(jitted(traced(c)), expected) < gate
+    assert error(jitted([traced(first), traced(second)]), eager[2]) < gate
+
+    solution = jax.jit(
+        lambda c: solve_eb(c, SOLVE_EB_K, tau, keep=names, layout=layout)
+    )(traced(first))
+    np.testing.assert_allclose(
+        solution.tau0, solve_eb(first, SOLVE_EB_K, tau, keep=names).tau0, rtol=1e-12
+    )
+
+    theta = jnp.asarray([first[key] for key in DIFFERENTIABLE_PARAMETERS])
+
+    def of_parameters(theta):
+        return solve({**traced(first), **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))})
+
+    jac = np.asarray(jax.jacfwd(of_parameters)(theta))
+    jac_jit = np.asarray(jax.jit(jax.jacfwd(of_parameters))(theta))
+    jac_scale = np.abs(jac).max(axis=(2, 3), keepdims=True)
+    assert (np.abs(jac_jit - jac) / jac_scale).max() < gate
+    weights = 1.0 / scale
+    grad_jit = np.asarray(
+        jax.jit(jax.grad(lambda t: jnp.sum(of_parameters(t) * weights)))(theta)
+    )
+    np.testing.assert_allclose(
+        grad_jit, np.einsum("cqkt,cqktp->p", weights, jac), rtol=gate
+    )
+
+    with pytest.raises(ValueError, match="cannot be differentiated"):
+        jax.jit(jax.grad(lambda y: jnp.sum(solve({**traced(first), "YHe": y}))))(
+            first["YHe"]
+        )
+    with pytest.raises(ValueError, match="pass layout="):
+        jax.jit(lambda c: solve_eb(c, SOLVE_EB_K, tau, keep=names).values)(
+            traced(first)
+        )
