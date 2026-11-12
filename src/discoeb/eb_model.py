@@ -1,45 +1,44 @@
 """The linear Einstein-Boltzmann system in synchronous gauge, as components.
 
-Each species of :mod:`discoeb.component` owns its perturbation variables and
-states its own equations; the Einstein constraints, the Friedmann equation and
-the Thomson coupling are components of their own. What a function needs it
-names in its signature -- ``d_vb(adotoa, vb, k, cs2, clxb)`` -- and
-:class:`~discoeb.component.Model` injects it, so a species never sees another
-species' internals except through the quantities they publish.
+Each species is a :mod:`discoeb.component` component that owns its
+perturbation variables and states its own equations. The Einstein
+constraints, the Friedmann equation and the Thomson coupling are components
+too. A function names what it needs in its signature, as in
+``d_vb(adotoa, vb, k, cs2, clxb)``, and :class:`~discoeb.component.Model`
+injects it. A species sees another only through the quantities it publishes.
 
-Conventions (CAMB's): ``k`` in 1/Mpc, conformal time ``tau`` in Mpc, ``etak =
-k eta``, velocities are the ``q_i = (1 + w_i) theta_i / k`` of CAMB, and the
-density coefficients are ``grho_i_t = 8 pi G rho_i a^2``. The metric enters the
-fluid equations through ``0.5 h' = k z`` and the shear ``sigma``; see
-:class:`Metric`. The curved-geometry relations follow CLASS's ``perturbations.c``
-with ``K = -grhok / 3`` and ``s2^2 = 1 - 3K/k^2``.
+Conventions follow CAMB: ``k`` in 1/Mpc, conformal time ``tau`` in Mpc,
+``etak = k eta``, velocities ``q_i = (1 + w_i) theta_i / k`` and density
+coefficients ``grho_i_t = 8 pi G rho_i a^2``. The metric enters the fluid
+equations through ``0.5 h' = k z`` and the shear ``sigma`` (see
+:class:`Metric`). The curved-geometry relations follow CLASS's
+``perturbations.c`` with ``K = -grhok / 3`` and ``s2^2 = 1 - 3K/k^2``.
 
-The Boltzmann hierarchies are vector states -- ``theta`` holds ``Theta_0 ..
-Theta_lmax``, ``e`` holds ``E_2 .. E_lmax``, ``n`` the neutrino multipoles and
-``psi`` one row per massive-neutrino momentum bin -- and their equations are
-loops over multipoles, with the free-streaming tail written once in
-:func:`stream`. Their truncations are the components' settings: ``LMAX_G``
-and ``LMAX_POL`` on :class:`Photons`, ``LMAX_NR`` on
-:class:`MasslessNeutrinos`, ``LMAX_NU`` and ``NQMAX`` on
-:class:`MassiveNeutrinos`, each overridable by ``DISCO_<NAME>`` in the
-environment or by a constructor argument, and read by the equations as
-``self.NQMAX`` like any attribute. Each state also carries its
-adiabatic initial condition (CAMB's ``initial()`` series at ``k tau << 1``,
-with the growing-mode quantities of :class:`AdiabaticMode`), and the
-Jacobian's sparsity pattern is traced through the equations themselves
-(:meth:`Model.sparsity`), so the layout, the initial state and the sparse
-solver are all read off the components. The photon
-monopole, dipole and quadrupole are ``theta[0]``, ``theta[1]``, ``theta[2]``;
-the scalar names ``clxg``, ``qg``, ``pig`` and ``E2`` are published for the
-equations that read them.
+The Boltzmann hierarchies are vector states: ``theta`` holds ``Theta_0 ..
+Theta_lmax``, ``e`` holds ``E_2 .. E_lmax``, ``n`` the neutrino multipoles
+and ``psi`` one row per massive-neutrino momentum bin. Their equations loop
+over multipoles and share the free-streaming tail in :func:`stream`. The
+truncations are component settings: ``LMAX_G`` and ``LMAX_POL`` on
+:class:`Photons`, ``LMAX_NR`` on :class:`MasslessNeutrinos`, ``LMAX_NU`` and
+``NQMAX`` on :class:`MassiveNeutrinos`. ``DISCO_<NAME>`` in the environment
+or a constructor argument overrides each one, and the equations read them
+as ``self.NQMAX`` like any attribute.
 
-The background lives here too, on the same species: the Friedmann sum ``grho``
-the perturbation kernel reads is, evaluated by :meth:`Model.evaluate` on JAX
-arrays at ``a``, the expansion rate the conformal-time quadrature and the
-thermal history integrate (:func:`expansion_rate`, :func:`dtauda`), and
-:func:`density_parameters` closes the density budget at ``a = 1`` with that
-same sum. The density constants and the massive-neutrino quadrature are defined
-once, below.
+Each state carries its adiabatic initial condition (CAMB's ``initial()``
+series at ``k tau << 1``, using the growing-mode quantities of
+:class:`AdiabaticMode`). :meth:`Model.sparsity` traces the Jacobian's
+sparsity pattern through the equations. So the layout, the initial state
+and the sparse solver all come from the components. The photon monopole,
+dipole and quadrupole are ``theta[0]``, ``theta[1]``, ``theta[2]``. The
+scalar names ``clxg``, ``qg``, ``pig`` and ``E2`` exist for the equations
+that read them.
+
+The background uses the same species. :meth:`Model.evaluate` computes the
+kernel's Friedmann sum ``grho`` on JAX arrays at ``a``, which gives the
+expansion rate the conformal-time quadrature and the thermal history
+integrate (:func:`expansion_rate`, :func:`dtauda`).
+:func:`density_parameters` closes the density budget at ``a = 1`` with the
+same sum.
 """
 
 from __future__ import annotations
@@ -56,17 +55,21 @@ from .spline_interpolation import FastUniformCubicSpline1D
 from .util import generalized_gauss_laguerre_weights
 
 SUMS = ("grho", "gpres", "dgrho", "dgq", "dgpi")
-"""The quantities summed over species: the Friedmann density, the pressure
-``gpres = Sum 8 pi G p_i a^2`` (CAMB's, so the comoving curvature perturbation
-can divide by ``rho + p``), the sources of the Einstein constraints
-``dgrho = Sum grho_i_t delta_i`` and ``dgq = Sum grho_i_t q_i``, and the
-anisotropic stress ``dgpi = Sum grho_i_t pi_i`` the Weyl potential of the
-line-of-sight sources needs. Spatial curvature enters ``grho`` through
-``grhok`` but, not being a fluid, contributes no pressure."""
+"""The quantities summed over species.
+
+``grho`` is the Friedmann density and ``gpres = Sum 8 pi G p_i a^2`` the
+pressure (CAMB's, so the comoving curvature perturbation can divide by
+``rho + p``). ``dgrho = Sum grho_i_t delta_i`` and ``dgq = Sum grho_i_t q_i``
+source the Einstein constraints. ``dgpi = Sum grho_i_t pi_i`` is the
+anisotropic stress the line-of-sight sources' Weyl potential needs. Spatial
+curvature adds ``grhok`` to ``grho`` but no pressure, since it is no fluid."""
 
 
 def _needs_octupole(**lmax):
-    """The quadrupole equations couple to ``l = 3``, so a hierarchy truncates at 3 or above."""
+    """Raise ``ValueError`` unless every hierarchy reaches ``l = 3``.
+
+    The quadrupole equations couple to the octupole.
+    """
 
     low = {name: ell for name, ell in lmax.items() if ell < 3}
     if low:
@@ -100,13 +103,13 @@ class Background(Component):
 
 
 class AdiabaticMode(Component):
-    """The adiabatic growing mode deep in radiation domination, for the initial conditions.
+    """The adiabatic growing mode deep in radiation domination.
 
     CAMB's ``initial()`` series at ``x = k tau << 1``, normalised to unit
-    comoving curvature: the neutrino fraction of the radiation ``R_nu``, the
-    matter-radiation parameter ``om``, and their combinations. These are
-    evaluated on the host from the background densities when the initial
-    state is assembled; the states' ``initial`` functions read them by name.
+    comoving curvature: the neutrino fraction of the radiation ``Rv``, the
+    matter-radiation parameter ``om`` and their combinations. The host
+    evaluates them from the background densities when it assembles the
+    initial state, and the states' ``initial`` functions read them by name.
     """
 
     def x(self, k, tau):
@@ -163,17 +166,17 @@ class Metric(Component):
     def R(self, etak, k, adotoa, dgq, grho, gpres, grhok):
         """The comoving curvature perturbation ``R``, unity for the adiabatic mode.
 
-        The curvature perturbation of the slices on which the total momentum
-        density vanishes, a gauge invariant: from synchronous gauge the slicing
-        shifts by ``T = theta / k^2`` with ``theta = k dgq / (grho_fluid +
-        gpres)`` the total velocity divergence (``dgq = 8 pi G a^2 (rho + p)
-        theta / k``), under which the curvature ``eta`` becomes ``eta + aH T``.
-        The sign is CAMB's, in which the initial conditions set ``R = 1``
-        (``etak = -k`` at ``k tau << 1``); Ma & Bertschinger's ``phi``
-        convention is the negative, so in matter domination the Newtonian
-        potentials are ``phi = psi = -3 R / 5`` outside the horizon. ``R`` is
-        conserved on super-horizon scales up to ``O((k tau)^2)``; through
-        horizon entry it decays as the mode's potentials do.
+        ``R`` is the gauge-invariant curvature on slices where the total
+        momentum density vanishes. From synchronous gauge the slicing shifts
+        by ``T = theta / k^2``, with ``theta = k dgq / (grho_fluid + gpres)``
+        the total velocity divergence (``dgq = 8 pi G a^2 (rho + p) theta /
+        k``), and the curvature ``eta`` becomes ``eta + aH T``. The sign is
+        CAMB's: the initial conditions set ``R = 1`` (``etak = -k`` at
+        ``k tau << 1``). Ma & Bertschinger's ``phi`` convention flips it, so
+        in matter domination the Newtonian potentials are
+        ``phi = psi = -3 R / 5`` outside the horizon. ``R`` stays constant on
+        super-horizon scales up to ``O((k tau)^2)`` and decays with the
+        mode's potentials through horizon entry.
         """
         return -etak / k - adotoa * dgq / (k * (grho - grhok + gpres))
 
@@ -182,15 +185,14 @@ class Metric(Component):
 
 
 # --- matter -------------------------------------------------------------------------
-# The density coefficients ``grho_i = 8 pi G rho_i a^2`` today are inputs of the
-# row; derivatives with respect to them are modax's sensitivities over their
-# columns.
+# The row holds each density coefficient ``grho_i = 8 pi G rho_i a^2`` today as a
+# nominal value plus ``eps`` times its direction, so modax's sensitivity in
+# ``eps`` is the derivative along that direction.
 
 
 class ColdDarkMatter(Species):
-    clxc = State(
-        initial=lambda theta: 0.75 * theta[0]
-    )  # the adiabatic mode: 3/4 of the photon density
+    # adiabatic mode: 3/4 of the photon density contrast
+    clxc = State(initial=lambda theta: 0.75 * theta[0])
 
     def grhoc(self, grhoc_nominal, eps, dir_grhoc):
         return grhoc_nominal + eps * dir_grhoc
@@ -210,7 +212,10 @@ class ColdDarkMatter(Species):
 
 
 class Baryons(Species):
-    """Baryon continuity and Euler equations; the Thomson drag is :class:`ThomsonScattering`."""
+    """Baryon continuity and Euler equations, without the Thomson drag.
+
+    :class:`ThomsonScattering` adds the drag.
+    """
 
     clxb = State(initial=lambda theta: 0.75 * theta[0])
     vb = State(initial=lambda theta: 0.75 * theta[1])
@@ -243,20 +248,21 @@ class Baryons(Species):
 class RadiationStreaming(Component):
     """The radiation streaming approximation of CLASS (Blas, Lesgourgues & Tram 2011).
 
-    Well inside the horizon and once the photons have decoupled, the photon
-    and massless-neutrino hierarchies oscillate at ``k`` about a particular
-    solution driven by the metric, and the oscillation decays as ``1/(k tau)``.
-    ``rsa`` is 1 there and the hierarchies are replaced by that solution,
+    Well inside the horizon, once the photons decouple, the photon and
+    massless-neutrino hierarchies oscillate at ``k`` about a particular
+    solution driven by the metric, and the oscillation decays as
+    ``1/(k tau)``. Where ``rsa`` is 1 the model swaps the hierarchies for
+    that solution,
 
         delta = 4 (aH h' - k^2 eta) / k^2,   theta = -h'/2,   no shear, no polarization,
 
-    (synchronous gauge, ``h' = 2 k z``, ``k eta = etak``), with ``h'`` taken
-    without the streaming species as CLASS does; their states are frozen.
+    (synchronous gauge, ``h' = 2 k z``, ``k eta = etak``), takes ``h'``
+    without the streaming species as CLASS does, and freezes their states.
     The switch is CLASS's: ``k tau > RSA_K_TAU`` (45) and ``kappa' tau <
-    RSA_KAPPA_TAU`` (``tau_c / tau > 5``). It is one-way, as in CLASS, which
-    switches at a fixed ``tau_free_streaming``: past ``a = RSA_A_LATCH`` it
-    stays on through reionization. CLASS's Thomson corrections for
-    reionization are not included. ``RSA = 0`` (``DISCO_RSA=0``) turns it off.
+    RSA_KAPPA_TAU`` (``tau_c / tau > 5``). Like CLASS, which switches at a
+    fixed ``tau_free_streaming``, it only turns on: past ``a = RSA_A_LATCH``
+    it stays on through reionization. CLASS's Thomson corrections for
+    reionization are missing. ``RSA = 0`` (``DISCO_RSA=0``) turns it off.
     """
 
     RSA = Setting(1)
@@ -265,8 +271,8 @@ class RadiationStreaming(Component):
     RSA_A_LATCH = Setting(0.02)
 
     def rsa(self, k, tau, opacity, a):
-        # branch-free steps 0.5 + 0.5 sign(x), and "or" as x + y - x y: the same
-        # expression serves the device, plain floats and JAX arrays on the host
+        # Branch-free steps 0.5 + 0.5 sign(x), and "or" as x + y - x y, so one
+        # expression serves the device, plain floats and JAX arrays on the host.
         inside = 0.5 + 0.5 * math.copysign(1.0, k * tau - self.RSA_K_TAU)
         decoupled = 0.5 + 0.5 * math.copysign(1.0, self.RSA_KAPPA_TAU - opacity * tau)
         latched = 0.5 + 0.5 * math.copysign(1.0, a - self.RSA_A_LATCH)
@@ -281,8 +287,11 @@ class RadiationStreaming(Component):
         return -(4.0 / 3.0) * z
 
     def dgrho_streaming(self, rsa, rsa_delta, grhog_t, grhor_t):
-        """The streaming photons' and neutrinos' density, left out of ``dgrho`` (and so of ``h'``)
-        under the RSA but, as in CLASS, part of everything else that reads the density."""
+        """The streaming photons' and neutrinos' density under the RSA.
+
+        ``dgrho`` (and so ``h'``) leaves it out, but as in CLASS everything
+        else that reads the density includes it.
+        """
         return rsa * rsa_delta * (grhog_t + grhor_t)
 
 
@@ -303,8 +312,8 @@ def stream(k, kv, z, sigma, dlnf0, x, inv_tau, output):
     closing at ``L = len(x) - 1`` with ``x_L' = kv x_{L-1} - (L+1) x_L / tau``.
     ``kv`` is ``k v`` and ``dlnf0`` the log-derivative of the background
     distribution: ``k`` and ``-4`` for massless particles, the bin's own for a
-    massive-neutrino momentum bin. Collisional damping is not here: it is the
-    Thomson interaction's contribution to the same derivatives.
+    massive-neutrino momentum bin. The Thomson interaction adds collisional
+    damping to the same derivatives.
     """
 
     output[0] = -kv * x[1] + k * z * (1.0 / 3.0) * dlnf0
@@ -323,13 +332,13 @@ def stream(k, kv, z, sigma, dlnf0, x, inv_tau, output):
 class Photons(Species):
     """Photon temperature multipoles ``theta`` (``Theta_0 .. Theta_LMAX_G``) and E-modes ``e``.
 
-    ``e[l - 2]`` is ``E_l`` for ``l = 2 .. LMAX_POL``. The collisionless part
-    of the Boltzmann hierarchy; Thomson scattering, which damps the multipoles
-    and sources the polarization, is :class:`ThomsonScattering`. The E-mode
-    hierarchy couples upwards with ``(l+3)(l-1)/(l+1)`` in place of ``l+1``
-    and closes with ``k L E_{L-1} / (2L+1) - (L+3) E_L / tau``. Both
-    hierarchies stream freely above their lowest three (``theta``) or one
-    (``e``) multipoles; the E-modes start at zero.
+    ``e[l - 2]`` is ``E_l`` for ``l = 2 .. LMAX_POL``. This is the
+    collisionless part of the hierarchy. :class:`ThomsonScattering` damps the
+    multipoles and sources the polarization. The E-mode hierarchy couples
+    upwards with ``(l+3)(l-1)/(l+1)`` in place of ``l+1`` and closes with
+    ``k L E_{L-1} / (2L+1) - (L+3) E_L / tau``. Both hierarchies stream
+    freely above their lowest three (``theta``) or one (``e``) multipoles.
+    The E-modes start at zero.
     """
 
     LMAX_G = Setting(15)
@@ -370,7 +379,11 @@ class Photons(Species):
         return (1.0 - rsa) * e[0]
 
     def dgrho(self, grhog_t, theta, rsa):
-        """The hierarchy's density; none under the RSA, as in CLASS's ``h'``, which the RSA density reads."""
+        """The hierarchy's density, zero under the RSA.
+
+        As in CLASS, the ``h'`` that the RSA density reads leaves the
+        streaming species out.
+        """
         return grhog_t * (1.0 - rsa) * theta[0]
 
     def dgq(self, grhog_t, qg):
@@ -406,11 +419,12 @@ class Photons(Species):
 class ThomsonScattering(Interaction):
     """Thomson scattering between the photons and the baryons.
 
-    The momentum exchange (drag on ``vb``, its reaction on ``qg``), the
-    scattering source ``Pi = pig/10 + (9/15) E_2`` of the quadrupoles, and the
-    damping ``-kappa' X_l`` of every higher temperature and polarization
-    multipole. ``opacity`` is ``kappa' = a n_e sigma_T``. The buffers it fills
-    start at zero, so the monopole it does not scatter is left alone.
+    Provides the momentum exchange (drag on ``vb`` and its reaction on
+    ``qg``), the scattering source ``Pi = pig/10 + (9/15) E_2`` of the
+    quadrupoles, and the damping ``-kappa' X_l`` of every higher temperature
+    and polarization multipole. ``opacity`` is ``kappa' = a n_e sigma_T``.
+    The buffers it fills start at zero, so it leaves the unscattered monopole
+    alone.
     """
 
     def photbar(self, grhog_t, grhob_t):
@@ -495,17 +509,18 @@ class MasslessNeutrinos(Species):
 class MassiveNeutrinos(Species):
     """Massive neutrinos on ``NQMAX`` momentum bins: ``psi[i, l]`` (Ma & Bertschinger).
 
-    Per bin ``i`` with node ``q_i``, weight ``w_i`` and ``dlnf0/dlnq``, each
-    bin streams freely (:func:`stream`) with ``kv = k v_i``,
-    ``v_i = q / sqrt(q^2 + a^2 amnu^2)``. The bins' moments ``Sum w psi0 / v``,
-    ``Sum w psi1`` and ``Sum w v psi2`` enter the Einstein sources; the background density
-    ratio ``rhonu`` and pressure ratio ``pnu`` come from the recombination block. Deep in radiation domination the
-    neutrinos are still relativistic, so each bin starts as the massless
-    hierarchy, ``psi_l = -(1/4) N_l dlnf0/dlnq``. The quadrature nodes and
-    weights are constants of the instance, which the providers read through
-    ``self``. Each bin adds ``LMAX_NU + 1`` state variables; 3 bins give the
-    default layout ``nvar = 98``, and 5 bins compile ~4x slower for no gain
-    in ``P(k)`` accuracy against CLASS.
+    Bin ``i`` has node ``q_i``, weight ``w_i`` and ``dlnf0/dlnq``, and
+    streams freely (:func:`stream`) with ``kv = k v_i``,
+    ``v_i = q / sqrt(q^2 + a^2 amnu^2)``. The moments ``Sum w psi0 / v``,
+    ``Sum w psi1`` and ``Sum w v psi2`` enter the Einstein sources. The
+    recombination block provides the background density ratio ``rhonu`` and
+    pressure ratio ``pnu``. Deep in radiation domination the neutrinos are
+    still relativistic, so each bin starts as the massless hierarchy,
+    ``psi_l = -(1/4) N_l dlnf0/dlnq``. The quadrature nodes and weights are
+    instance constants the providers read through ``self``. Each bin adds
+    ``LMAX_NU + 1`` states. 3 bins give the default layout ``nvar = 98``.
+    5 bins compile about 4x slower and gain no ``P(k)`` accuracy against
+    CLASS.
     """
 
     LMAX_NU = Setting(15)
@@ -598,13 +613,12 @@ class DarkEnergy(_DarkEnergyDensity):
               - 9 (1+w)(cs2 - c_a^2) (aH)^2 thetaq / k^2``,
     ``thetaq' = -(1 - 3 cs2) aH thetaq + cs2 k^2 clxq / (1+w)``.
 
-    Valid for ``w != -1``; a cosmological constant is :class:`CosmologicalConstant`.
+    Valid for ``w != -1``. Use :class:`CosmologicalConstant` for ``w = -1``.
     The fluid starts in the adiabatic mode, ``clxq = (1 + w_0) clxc`` at rest.
     """
 
-    clxq = State(
-        initial=lambda w_DE_0, clxc: (1.0 + w_DE_0) * clxc
-    )  # adiabatic, at rest
+    # adiabatic, at rest
+    clxq = State(initial=lambda w_DE_0, clxc: (1.0 + w_DE_0) * clxc)
     thetaq = State()
 
     def w_Q(self, a, w_DE_0, w_DE_a):
@@ -656,14 +670,14 @@ def perturbation_model(
     """The components a :class:`~discoeb.perturbations.PerturbationLayout` enables.
 
     ``thermal_history`` provides ``a``, ``opacity``, ``cs2``, ``rhonu`` and
-    ``pnu`` as functions of ``tau`` (in a test, anything; in the solve the
-    recombination block of :func:`discoeb.perturbations.joint_kernel`);
-    without it the model still gives the state layout, the initial conditions
-    and the sparsity pattern. ``extra`` components (the line-of-sight sources
-    of :mod:`discocmb.cmb`) are appended. The layout's truncations are passed to the
-    components as their settings, so a layout built from the components' own
-    (environment-loaded) settings reproduces them exactly. The state order
-    reproduces the layout's indices: metric, CDM, baryons, photon temperature
+    ``pnu`` as functions of ``tau``. In the solve it is the recombination
+    block of :func:`discoeb.perturbations.joint_kernel`, in a test anything.
+    Without it the model still gives the state layout, the initial conditions
+    and the sparsity pattern. The model appends the ``extra`` components (the
+    line-of-sight sources of :mod:`discocmb.cmb`). The components take the
+    layout's truncations as settings, so a layout built from the components'
+    own (environment-loaded) settings comes back unchanged. The state order
+    matches the layout's indices: metric, CDM, baryons, photon temperature
     and polarization, massless neutrinos, then the dark-energy fluid and the
     massive-neutrino bins when enabled.
     """
@@ -695,30 +709,27 @@ def perturbation_model(
 def perturbation_sparsity(layout) -> np.ndarray:
     """The ``(nnz, 2)`` index array of the Jacobian's nonzeros for ``layout``.
 
-    modax's Rodas5P kernel takes a sparsity pattern and does two things with
-    it: it colours the column intersection graph, so the Jacobian costs
-    ``n_colours + 1`` Enzyme sweeps rather than ``nvar + 1``; and it hands the
-    pattern to ``modax._sparse_direct``, which orders it, factorises it
-    symbolically and compiles a sparse LU and a pair of sparse triangular
-    solves for that exact structure. Nothing declares the pattern: it is
-    traced through the equations by :meth:`Model.sparsity`, which resolves the
-    providers on values that carry the state elements they depend on, so the
-    tridiagonal free-streaming tails of :func:`stream` and the Einstein
-    constraints tying the metric, the fluids and the lowest multipoles to each
-    other come out of the code that writes them. The pattern is exact, so it
-    is the superset a colouring needs (a subset would silently corrupt the
-    entries where two columns of a colour group overlap) and no more: at the
-    default layout 165 entries, 11 colours and 198 slots of ``L + U`` after
-    AMD's fill-in, against 238, 12 and 238 for the dense core the states used
-    to declare (``tests/test_eb_sparsity.py``).
+    modax's Rodas5P kernel uses the pattern twice. It colours the column
+    intersection graph, so a Jacobian costs ``n_colours + 1`` Enzyme sweeps
+    rather than ``nvar + 1``. And ``modax._sparse_direct`` orders it,
+    factorises it symbolically and compiles a sparse LU and a pair of sparse
+    triangular solves for that exact structure. :meth:`Model.sparsity`
+    traces the pattern through the equations, resolving the providers on
+    values that carry the state elements they depend on. So the tridiagonal
+    free-streaming tails of :func:`stream` and the Einstein constraints that
+    tie the metric, the fluids and the lowest multipoles together come
+    straight from the code that writes them. The pattern is exact: the
+    superset a colouring needs (a subset would silently corrupt entries
+    where two columns of a colour group overlap) and no more. At the default
+    layout it has 165 entries, 11 colours and 198 slots of ``L + U`` after
+    AMD's fill-in (``tests/test_eb_sparsity.py``).
 
-    The diagonal of the matrix the kernel factorises, ``I/(h gamma) - J``, is
-    modax's business: its packed layout keeps a slot for every diagonal, and
-    since 2026-11-01 resolves ``slot(i, i)`` through that table whether or
-    not ``J`` has an entry there (an undamped free-streaming multipole has
-    none). Before that fix the lookup went through the ``(row, colour)`` grid
-    and, where another column of the same colour held the row's cell, put the
-    ``1/(h gamma)`` on that entry instead; this pattern needs the fixed modax.
+    The kernel factorises ``I/(h gamma) - J``. modax keeps a slot for every
+    diagonal in its packed layout and resolves ``slot(i, i)`` through that
+    table even where ``J`` has no entry (an undamped free-streaming
+    multipole has none). This needs modax at or after commit 9f54d12
+    (2026-11-01). Older versions put ``1/(h gamma)`` on another column's
+    entry of the same colour.
     """
 
     return perturbation_model(layout).sparsity()
@@ -732,10 +743,10 @@ def layout_state_names(layout) -> tuple[str, ...]:
 
 
 # --- the expansion history ----------------------------------------------------------
-# Density coefficients in the convention of the rest of the code (and of CAMB):
-# ``8 pi G rho / c^2`` in 1/Mpc^2, so that ``H^2 = sum_i rho_i / 3`` is the Hubble
-# rate in 1/Mpc and ``a'/a = a H`` the conformal one. The perturbation kernel's
-# ``grho_i_t = 8 pi G rho_i a^2`` are these times ``a^2``.
+# Density coefficients in CAMB's convention, ``8 pi G rho / c^2`` in 1/Mpc^2:
+# ``H^2 = sum_i grho_i / 3`` gives the Hubble rate in 1/Mpc and ``a'/a = a H``
+# the conformal one. The perturbation kernel's ``grho_i_t = 8 pi G rho_i a^2``
+# are these times ``a^2``.
 
 GRHOM_PER_H0SQ = 3.33795017e-11  # 8 pi G rho_crit / c^2 per (H0 in km/s/Mpc)^2
 GRHOG_PER_TCMB4 = 1.49594245e-13  # photons, per K^4
@@ -743,8 +754,9 @@ GRHOR_PER_TCMB4 = 3.39739477e-14  # one massless neutrino flavour, per K^4
 C2OK = 1.62581581e4  # K / eV: amnu = m_nu c^2 / (k_B T_nu0) = mnu * C2OK / Tcmb
 
 NQ_NEUTRINO_TABLE = 100
-"""Momentum nodes of the massive-neutrino background density: the ``rho_nu`` tables
-and the budget closing both integrate the Fermi-Dirac distribution on these."""
+"""Momentum nodes for the massive-neutrino background density. The ``rho_nu``
+table and the budget closing both integrate the Fermi-Dirac distribution on
+these."""
 
 
 def _neutrino_momentum_bins(nqmax: int) -> tuple[jax.Array, jax.Array]:
@@ -774,12 +786,13 @@ def neutrino_momentum_bins(nqmax: int):
     """Return ``(q, w, dlnf0_dlnq)`` momentum bins as read-only NumPy arrays.
 
     ``q`` are the nodes (in units of ``k_B T_nu0 / c``) and ``w`` the weights,
-    normalised so that one massless flavour integrates to unit density;
-    ``nqmax = 3, 4, 5`` are CAMB's high-accuracy formulas, higher counts a
-    generalised Gauss-Laguerre rule. ``dlnf0/dlnq = -q/(1 + exp(-q))`` is the
-    log-derivative of the Fermi-Dirac background distribution that sources
-    the ``psi`` hierarchy. Computed once per ``nqmax`` and precision: the
-    rule's eigendecomposition, op by op, cost a second of compiles a call.
+    normalised so one massless flavour integrates to unit density. For
+    ``nqmax`` of 3, 4 or 5 they are CAMB's high-accuracy formulas, for higher
+    counts a generalised Gauss-Laguerre rule. ``dlnf0/dlnq = -q/(1 +
+    exp(-q))`` is the log-derivative of the Fermi-Dirac background
+    distribution that sources the ``psi`` hierarchy. Cached per ``nqmax`` and
+    precision, because the rule's eigendecomposition, op by op, cost a second
+    of compiles per call.
     """
 
     return _momentum_bins(int(nqmax), bool(jax.config.read("jax_enable_x64")))
@@ -797,10 +810,10 @@ def _momentum_bins(nqmax: int, x64: bool):
     return q, w, dlfdlq
 
 
-# The massive-neutrino density relative to the massless flavour depends on
-# ``y = amnu * a`` alone, so it is tabulated once over ``ln y`` and shared by
-# every cosmology. Below the table the neutrinos are relativistic and the ratio
-# is 1; that limit also serves ``amnu = 0``.
+# The massive-neutrino density relative to the massless flavour depends only on
+# ``y = amnu * a``, so one table over ``ln y`` serves every cosmology. Below the
+# table the neutrinos are relativistic and the ratio is 1, which also covers
+# ``amnu = 0``.
 _LN_Y_MIN, _LN_Y_MAX = math.log(1.0e-6), math.log(1.0e4)
 _NEUTRINO_TABLE: dict = {}
 
@@ -808,8 +821,9 @@ _NEUTRINO_TABLE: dict = {}
 def _neutrino_table(n_y_grid: int = 1000):
     """The spline of ``ln(rho_nu / rho_nu,massless)`` over ``ln y``.
 
-    Built on first use rather than at import, so it takes the ``jax_enable_x64``
-    setting in force then, and concretely even when first used inside a ``jit``.
+    Built on first use rather than at import, so it picks up the
+    ``jax_enable_x64`` setting in force then. It stays concrete even when
+    first used inside a ``jit``.
     """
 
     key = (n_y_grid, bool(jax.config.read("jax_enable_x64")))
@@ -833,9 +847,9 @@ def _neutrino_table(n_y_grid: int = 1000):
 def neutrino_density_ratio(a, amnu, xp=jnp):
     """``rho_nu(a) / rho_nu,massless`` of one flavour of mass ``amnu`` (1 when massless).
 
-    With ``xp=jnp`` (the default) the shared table, so it traces under ``jit``;
-    with ``xp=np`` the same quadrature summed directly, for the host-side
-    budget closing of a cosmology given as floats.
+    With ``xp=jnp`` (the default) it reads the shared table, so it traces
+    under ``jit``. With ``xp=np`` it sums the same quadrature directly, for
+    closing the budget on the host for a cosmology given as floats.
     """
 
     if xp is np:
@@ -855,9 +869,9 @@ _BACKGROUND_MODEL: list = []
 def background_model() -> Model:
     """The species whose ``grho`` is the Friedmann sum, with every component enabled.
 
-    The dark-energy fluid at ``w = -1`` is the cosmological constant and a
+    At ``w = -1`` the dark-energy fluid is the cosmological constant, and a
     massive-neutrino density with ``n_mnu = 0`` vanishes, so one model serves
-    every cosmology; the hierarchy truncations are irrelevant to the background.
+    every cosmology. The hierarchy truncations don't affect the background.
     """
 
     if not _BACKGROUND_MODEL:
@@ -880,15 +894,17 @@ def background_model() -> Model:
 
 
 def density_parameters(param, xp=jnp) -> dict:
-    """The background densities of a parameter dictionary, as the model names them.
+    """The background densities of a parameter dictionary, keyed as the model names them.
 
     ``grhom`` is the critical density, ``grhog`` the photons', ``grhor`` one
-    massless neutrino flavour's, ``grhornomass`` the ``Neff`` massless flavours',
-    ``grhoc``, ``grhob`` and ``grhok`` the cold dark matter, baryons and
-    curvature, ``grhor_nu``, ``n_mnu`` and ``amnu`` the massive neutrinos', and
-    ``grhov`` the dark energy's, fixed by closing the budget at ``a = 1`` with
-    the model's own Friedmann sum: ``grhov = grhom - grho(a=1 | grhov=0)``.
-    ``xp`` is ``jnp`` for a traced cosmology, ``np`` for one given as floats.
+    massless neutrino flavour's, ``grhornomass`` the ``Neff`` massless
+    flavours'. ``grhoc``, ``grhob`` and ``grhok`` are the cold dark matter,
+    baryons and curvature, and ``grhor_nu``, ``n_mnu`` and ``amnu`` the
+    massive neutrinos'. ``grhov``, the dark energy's, closes the budget at
+    ``a = 1`` with the model's own Friedmann sum:
+    ``grhov = grhom - grho(a=1 | grhov=0)``. The dictionary also holds
+    ``OmegaDE``, ``grho_mnu_today`` and the dark-energy parameters. Pass
+    ``xp=jnp`` for a traced cosmology and ``xp=np`` for one given as floats.
     """
 
     H0, Tcmb = param["H0"], param["Tcmb"]

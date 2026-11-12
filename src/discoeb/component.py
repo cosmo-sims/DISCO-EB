@@ -1,9 +1,9 @@
 """A right-hand side assembled from components whose functions name what they read.
 
-A model is a list of *components*. A component declares its settings and its
-state variables as class attributes and provides *quantities* through ordinary
-Python functions whose **parameter names are the names of the quantities they
-depend on**::
+A model is a list of *components*. A component declares its settings and state
+variables as class attributes and provides *quantities* through ordinary Python
+functions whose **parameter names are the names of the quantities they depend
+on**::
 
     class Baryons(Species):
         clxb = State(initial=lambda clxg: 0.75 * clxg)
@@ -29,93 +29,94 @@ depend on**::
                 output[l] = k * (l * n[l - 1] - (l + 1) * n[l + 1]) * (1.0 / (2 * l + 1))
             ...
 
-Nothing is passed explicitly. :meth:`Model.build` reads each provider's
-dependencies off its signature, orders the providers with a topological sort
-and generates a driver that calls them in that order, injecting each value by
-name -- the dependency-injection pattern of ``inspect.signature`` +
-``graphlib.TopologicalSorter``, resolved once, at build time. State variables
-(``y[i]``), parameters (``p[j]``) and the time are the base quantities;
-everything else is derived.
+Nothing gets passed explicitly. :meth:`Model.build` reads each provider's
+dependencies off its signature (``inspect.signature``), orders the providers
+with ``graphlib.TopologicalSorter`` and generates a driver that calls them in
+that order, injecting each value by name. This happens once, at build time.
+State variables (``y[i]``), parameters (``p[j]``) and the time are the base
+quantities. Everything else is derived.
 
-**Settings.** ``LMAX_G = Setting(15)`` declares a setting with its default. It
-is loaded when the class is created, from the environment variable
-``DISCO_<NAME>`` when set (cast to the default's type), and reads as a plain
-value on the class and on its instances; the constructor takes an override as
-a keyword argument (``Photons(LMAX_G=11)``). A provider reads it as
-``self.LMAX_G``, like any other attribute of its component.
+**Settings.** ``LMAX_G = Setting(15)`` declares a setting with its default.
+The class loads it at creation from the environment variable ``DISCO_<NAME>``
+when set, cast to the default's type. It reads as a plain value on the class
+and its instances, and the constructor takes an override as a keyword
+(``Photons(LMAX_G=11)``). A provider reads it as ``self.LMAX_G``.
 
 **States.** ``theta = State(shape)`` declares a state variable: a scalar
-(``State()``), a vector (``State(16)``) or a matrix (``State((3, 16))``); the
+(``State()``), a vector (``State(16)``) or a matrix (``State((3, 16))``). The
 shape may be a function of the component instance when it depends on its
 settings. The flat state vector holds the components' states in declaration
-order, a vector ``theta`` as the elements ``theta_0, theta_1, ...``
-(``psi_0_0, psi_0_1, ...``). A state also carries its *initial condition*,
-``State(..., initial=fn)``, a function (a lambda for a scalar, a
-``_``-prefixed function defined just above for a vector) whose parameters are
-injected like a provider's (:meth:`Model.evaluate` is the same resolution for
-any quantity, on floats or JAX arrays), from the quantities
-:meth:`Model.initial_state` is given (``k``, ``tau``, the background
-densities), from other states' initial values, and from providers that can be
-evaluated on the host (``clxg`` for ``theta[0]``). A scalar's returns the
-value; a vector's takes ``output``, zero-filled, and writes into it. A state
-without one starts at zero.
+order, a vector ``theta`` as the elements ``theta_0, theta_1, ...`` and a
+matrix ``psi`` as ``psi_0_0, psi_0_1, ...``.
 
-**Sparsity.** Nothing declares which state a derivative depends on: the
-Jacobian's sparsity pattern is read off the providers. :meth:`Model.sparsity`
+A state also carries its *initial condition*, ``State(..., initial=fn)``: a
+lambda for a scalar, or a ``_``-prefixed function defined just above for a
+vector. Its parameters resolve like a provider's, from the quantities
+:meth:`Model.initial_state` gets (``k``, ``tau``, the background densities),
+from other states' initial values, and from providers the host can evaluate
+(``clxg`` for ``theta[0]``). :meth:`Model.evaluate` does the same resolution
+for any quantity, on floats or JAX arrays. A scalar's initial condition
+returns the value. A vector's takes ``output``, zero-filled, and writes into
+it. A state without one starts at zero.
+
+**Sparsity.** Nothing declares which states a derivative depends on.
+:meth:`Model.sparsity` reads the Jacobian's pattern off the providers. It
 resolves the same dependency graph as a build, but on values that carry the
-set of state elements they depend on instead of numbers (a state element its
-own index, the time and the parameters nothing, every operation the union of
-its operands'), so ``output[l] = kv * (l * x[l - 1] - (l + 1) * x[l + 1])``
-is traced as the tridiagonal band it is, with no one saying so. The pattern
-is exact; a data-dependent branch, the one construct that could hide a
-dependency, is refused.
+set of state elements they depend on instead of numbers. A state element
+carries its own index, the time and parameters carry nothing, and every
+operation carries the union of its operands'. So
+``output[l] = kv * (l * x[l - 1] - (l + 1) * x[l + 1])`` traces as the
+tridiagonal band it is. The pattern is exact. A data-dependent branch, the
+one construct that could hide a dependency, makes the provider count as
+reading all of its inputs.
 
 **Providers.** Every method of a component is a provider, named after the
 quantity it provides, and so is a function stored on the instance in
-``__init__``. It is an ordinary method: ``self`` is the component, whose
-settings and other public numeric attributes (a tuple of quadrature weights
-the constructor derived) it reads as ``self.NQMAX`` or ``self.weight[i]``; the
-remaining parameters are the quantities it depends on. A method or a lambda
-that reads nothing of its component may leave ``self`` out. Three kinds of
-name are special. ``d_<state>`` provides a contribution to that state's
-derivative: for a scalar state it returns the contribution; for a vector state
-it takes ``output``, which the framework hands it filled with zeros, and
-writes its contribution into it. A function named in the model's ``sums`` (for
-the Einstein-Boltzmann system, ``grho``, ``dgrho`` and ``dgq``) contributes to
-that sum over components. Names starting with an underscore are the
-component's own business. Several components may write one state (the baryon
-Euler equation and the Thomson drag both write ``vb``); the derivative is the
-sum of their contributions. A vector state reaches a provider as a 1-D array
-(a matrix as a 2-D one), so ``len()``, indexing and loops over multipoles are
-the ordinary Python ones, and a provider may call a plain module-level helper
-(``stream``), which is compiled for the device alongside it. Wherever a
-function fills an array instead of returning, that array is its parameter
-``output``.
+``__init__``. ``self`` is the component. A provider reads its settings and
+other public numeric attributes (a tuple of quadrature weights the
+constructor derived, say) as ``self.NQMAX`` or ``self.weight[i]``. The
+remaining parameters are the quantities it depends on. A method or lambda
+that reads nothing of its component may leave ``self`` out.
+
+Three kinds of name are special. ``d_<state>`` provides a contribution to
+that state's derivative. For a scalar state it returns the contribution. For
+a vector state it takes ``output``, which the framework fills with zeros, and
+writes its contribution into it. A function named in the model's ``sums``
+(``grho``, ``dgrho`` and ``dgq`` for the Einstein-Boltzmann system)
+contributes to that sum over components. Names starting with an underscore
+are private to the component.
+
+Several components may write one state (the baryon Euler equation and the
+Thomson drag both write ``vb``), and the derivative is the sum of their
+contributions. A vector state reaches a provider as a 1-D array (a matrix as
+2-D), so ``len()``, indexing and loops over multipoles work as in plain
+Python. A provider may call a plain module-level helper (``stream``), which
+the build compiles for the device alongside it. Wherever a function fills an
+array instead of returning, that array is its parameter ``output``.
 
 On the device ``self`` is a named tuple of the component's constants
-(:meth:`Component.device_self`), passed to each provider by the generated
-driver as a compile-time constant, so ``self.NQMAX`` folds into the loop bound
-and ``self.weight[i]`` into the unrolled sum exactly as a literal would. On
-the host (:meth:`Model.evaluate`) it is the component itself.
+(:meth:`Component.device_self`). The generated driver passes it to each
+provider as a compile-time constant, so ``self.NQMAX`` folds into the loop
+bound and ``self.weight[i]`` into the unrolled sum just like a literal. On the
+host (:meth:`Model.evaluate`) ``self`` is the component itself.
 
 **Device names.** A provider that needs scratch space may use ``cuda`` and
-``float64`` imported from this module (``cuda.local.array(16, float64)``; the
-size must be a literal, since numba types it before the optimiser folds
-``self.N``); they are placeholders, replaced by the real objects when a
-provider is compiled, or by the stand-ins a host test passes to
-:meth:`Model.build`, so a model imports nothing from CUDA and runs as plain
-Python under test.
+``float64`` imported from this module (``cuda.local.array(16, float64)``).
+The size must be a literal, since numba types it before the optimiser folds
+``self.N``. Both are placeholders. Compiling a provider swaps in the real
+objects, and a host test passes stand-ins to :meth:`Model.build`. So a model
+imports nothing from CUDA and runs as plain Python under test.
 
-Each provider is compiled as its own ``cuda.jit(device=True)`` function, and
-the generated driver is one more. The driver copies ``y`` into a local array
-per state, allocates the contribution buffers, calls the providers and sums
-the contributions into local arrays it returns as a tuple, so the primal has
+Each provider compiles to its own ``cuda.jit(device=True)`` function, and the
+generated driver is one more. The driver copies ``y`` into a local array per
+state, allocates the contribution buffers, calls the providers and sums the
+contributions into local arrays it returns as a tuple. The primal thus has
 the fixed-size tuple signature the Enzyme-differentiated numba-CUDA kernel
-needs while the components see arrays. numba-enzyme optimises the primal with
-LLVM's ``O3`` before Enzyme differentiates it, which inlines the providers,
-unrolls the loops and promotes every local array to scalars; what Enzyme and
-the kernel see is the hand-written straight-line right-hand side. The
-driver's text is kept on the function as ``_generated_source`` and registered
+needs, while the components see arrays. numba-enzyme optimises the primal
+with LLVM's ``O3`` before Enzyme differentiates it. That pass inlines the
+providers, unrolls the loops and promotes every local array to scalars, so
+Enzyme and the kernel see a straight-line right-hand side, as if written by
+hand. The driver keeps its text as ``_generated_source`` and registers it
 with ``linecache`` so numba can read it.
 """
 
@@ -145,7 +146,7 @@ OUTPUT = "output"
 
 
 class _Ambient:
-    """A name a provider uses that the build step supplies: see the module docstring."""
+    """A device name the build step supplies to providers (see the module docstring)."""
 
     def __init__(self, name: str):
         self.name = name
@@ -169,7 +170,7 @@ float64 = _Ambient("float64")
 
 float32 = _Ambient("float32")
 """``numba_cuda_mlir.types.float32`` inside a compiled provider: ``float32(x)`` rounds
-``x`` to single precision, so that a transcendental of it runs at single rate."""
+``x`` to single precision, so a transcendental of it runs at single rate."""
 
 
 def _device_names():
@@ -196,9 +197,9 @@ _HOST_NAMES = {
 def _host_names(math_module) -> dict:
     """The host names for providers evaluated with ``math_module`` as ``math``.
 
-    On arrays (``numpy``, ``jax.numpy``) a provider's ``max`` and ``min`` are
-    the module's elementwise ``maximum`` and ``minimum``, so the clamps of the
-    recombination block broadcast like the rest of its algebra.
+    On arrays (``numpy``, ``jax.numpy``) a provider's ``max`` and ``min``
+    become the module's elementwise ``maximum`` and ``minimum``, so the
+    recombination block's clamps broadcast like the rest of its algebra.
     """
 
     names = {**_HOST_NAMES, "math": math_module}
@@ -242,9 +243,9 @@ T = TypeVar("T", bool, int, float, str)
 class Setting(Generic[T]):
     """A component setting, ``LMAX_G = Setting(15)``, loaded from ``DISCO_LMAX_G``.
 
-    On the class it reads as the loaded value; on an instance, as the
-    constructor's override or the loaded value. The descriptor is typed by its
-    default, so ``self.LMAX_G`` is an ``int`` to a type checker.
+    On the class it reads as the loaded value, on an instance as the
+    constructor's override or the loaded value. The default's type types the
+    descriptor, so a type checker sees ``self.LMAX_G`` as an ``int``.
     """
 
     def __init__(self, default: T):
@@ -294,7 +295,7 @@ class State:
 
     ``shape`` is ``()`` for a scalar, ``n`` for a vector, ``(n, m)`` for a
     matrix, or a function of the component instance returning one of those.
-    ``initial`` is the initial condition; see the module docstring.
+    ``initial`` is the initial condition (see the module docstring).
     """
 
     def __init__(self, shape=(), initial: Callable | None = None):
@@ -323,7 +324,7 @@ class State:
 
 
 class Component:
-    """Provides quantities, and may own settings and state variables; see the module docstring."""
+    """Provides quantities and may own settings and state variables (see the module docstring)."""
 
     _setting_names: tuple[str, ...] = ()
 
@@ -452,7 +453,7 @@ def _positional_names(fn: Callable, label: str) -> tuple[bool, list[str]]:
 
 
 def _check_output(label: str, what: str, shape: tuple, names) -> None:
-    """A vector's function fills ``output``; a scalar's returns its value."""
+    """A vector's function fills ``output``, a scalar's returns its value."""
 
     if shape and OUTPUT not in names:
         raise TypeError(f"{label}: {what} of a vector takes {OUTPUT!r} and fills it")
@@ -503,7 +504,8 @@ def _providers(component: Component, states: Mapping[str, _State]) -> list[_Prov
             if attr in seen or attr.startswith("_"):
                 continue
             seen.add(attr)
-            # Every non-magic method is a provider, a staticmethod one without self.
+            # Every method not named with a leading underscore is a provider, a
+            # staticmethod one without self.
             if isinstance(member, staticmethod):
                 found.append(_Provider(component, attr, member.__func__, states))
             elif isinstance(member, types.FunctionType):
@@ -524,14 +526,13 @@ def _bound_function(
 ) -> Callable:
     """``fn`` compiled by ``jit`` with its globals resolved.
 
-    numba resolves a global at compile time, so the function is rebound to a
-    copy of its globals in which the device-name placeholders are the real
-    objects (``names``), ``math`` is whatever ``names["math"]`` says (``math``
-    itself on the device, ``jax.numpy`` when a quantity is evaluated on JAX
-    arrays), ``max`` and ``min`` are the array module's elementwise ones when
-    ``names`` says so, and the plain helpers it calls are bound the same way,
-    recursively. With an identity ``jit`` this is how a function runs on the
-    host.
+    numba resolves globals at compile time, so this rebinds ``fn`` to a copy
+    of its globals where the device-name placeholders are the real objects
+    (``names``), ``math`` is ``names["math"]`` (``math`` itself on the device,
+    ``jax.numpy`` on JAX arrays), ``max`` and ``min`` are the array module's
+    elementwise ones when ``names`` has them, and the plain helpers it calls
+    get the same treatment, recursively. With an identity ``jit`` this is how
+    a function runs on the host.
     """
 
     if fn in memo:
@@ -547,9 +548,8 @@ def _bound_function(
         elif isinstance(value, types.FunctionType) and value.__module__ != "builtins":
             rebound[name] = _bound_function(value, jit, names, memo)
         elif value is None and name in names:
-            rebound[name] = names[
-                name
-            ]  # a builtin the names override: max and min on arrays
+            # a builtin the names override, such as max and min on arrays
+            rebound[name] = names[name]
     fn_bound = types.FunctionType(
         fn.__code__, rebound, fn.__name__, fn.__defaults__, fn.__closure__
     )
@@ -568,8 +568,8 @@ class _HostValues:
 
     A name is a base value, a state (its initial value: zeros, or its
     ``initial`` filler), or a provider evaluated from the same pool. The
-    providers run as plain Python with ``names`` standing in for the device
-    names, so the values may be floats or JAX arrays alike.
+    providers run as plain Python with ``names`` in place of the device
+    names, so the values may be floats or JAX arrays.
     """
 
     def __init__(self, model, base, names, memo=None, batch_shape=()):
@@ -578,7 +578,7 @@ class _HostValues:
         self.providers, self.contributions = model._host_providers()
         self.resolving: list[str] = []
         # trailing axes of every state's value (the wave modes of a vectorised
-        # initial state), so that a vector state's filler writes rows of them
+        # initial state), so a vector state's filler writes rows of them
         self.batch_shape = tuple(batch_shape)
 
     def _call(self, fn, component, takes_self, args):
@@ -636,19 +636,19 @@ class _HostValues:
 
 
 class _Traced:
-    """A value standing in for a number while the providers are traced for the Jacobian pattern.
+    """A stand-in for a number while tracing the providers for the Jacobian pattern.
 
-    It carries ``on``, the set of state elements (flat indices) it depends on:
-    a state element carries its own index, an input nothing, and every
-    operation on traced values gives one carrying the union of its operands',
-    so a derivative's value ends up carrying exactly the columns of its row.
-    Indexing is a no-op (a state-free provider is not run, and the one value
-    standing in for its result may be indexed as the array it would have
-    been). A branch on a traced value and a conversion to a number are the
-    only ways a dependency could be lost, so both raise -- even on an input,
-    since the branches taken might read different states -- and the provider
-    is then taken to read every input for everything it writes
-    (:meth:`_TracedValues._call`).
+    It carries ``on``, the set of state elements (flat indices) it depends on.
+    A state element carries its own index, an input nothing, and every
+    operation on traced values returns one carrying the union of its
+    operands'. A derivative's value thus carries exactly the columns of its
+    row. Indexing is a no-op: a state-free provider does not run, and the one
+    value standing in for its result may be indexed like the array it would
+    have returned. A branch on a traced value and a conversion to a number are
+    the only ways to lose a dependency, so both raise, even on an input, since
+    the two branches might read different states.
+    :meth:`_TracedValues._call` then takes the provider to read every input
+    for everything it writes.
     """
 
     __slots__ = ("on",)
@@ -705,8 +705,9 @@ class _TracingMath:
     def __getattr__(self, name):
         attr = getattr(math, name)
         return (
+            # constants such as pi, e and inf stay numbers
             attr if not callable(attr) else _traced_call
-        )  # pi, e, inf, ... stay numbers
+        )
 
 
 def _traced_array(shape, first: int | None = None) -> np.ndarray:
@@ -743,14 +744,14 @@ _TRACING_NAMES = {
 class _TracedValues(_HostValues):
     """The pool of :meth:`Model.sparsity`: every quantity as the state elements it depends on.
 
-    The states are the base values, each element carrying its own index; a
+    The states are the base values, each element carrying its own index. A
     name nothing provides (the time, a parameter, a thermodynamic table) is an
-    input and carries nothing; a provider is resolved like any other. One
-    thing differs from a numeric evaluation: a provider none of whose inputs
-    depends on the state is not called, since its result cannot either -- so
-    a table lookup, a ``max`` against a floor or an ``int()`` of a tag never
-    sees a traced value. A provider that does branch on the state (RECFAST's
-    rates switch between regimes) depends on all of its inputs.
+    input and carries nothing. Providers resolve as usual, with one difference
+    from a numeric evaluation: a provider with no state-dependent input does
+    not run, since its result cannot depend on the state either. So a table
+    lookup, a ``max`` against a floor or an ``int()`` of a tag never sees a
+    traced value. A provider that does branch on the state (RECFAST's rates
+    switch between regimes) depends on all of its inputs.
     """
 
     def __init__(self, model):
@@ -780,9 +781,9 @@ class _TracedValues(_HostValues):
             return super()._call(fn, component, takes_self, args)
         except TypeError:
             # The provider branches on a traced value (an if, max or min, a
-            # conversion to a number), so the trace cannot tell which inputs
-            # each result reads: everything it writes depends on everything
-            # it reads. A superset of the pattern, never a miss.
+            # conversion to a number), so the trace can't tell which inputs
+            # each result reads. Make everything it writes depend on
+            # everything it reads: a superset of the pattern, never a miss.
             on = frozenset().union(*(_depends(a) for a in args))
             for a in args:
                 if isinstance(a, np.ndarray) and a.dtype == object and not _depends(a):
@@ -791,7 +792,7 @@ class _TracedValues(_HostValues):
 
 
 class Model:
-    """Components, their state in declaration order, and what is built from them."""
+    """Components, their state in declaration order, and the functions built from them."""
 
     def __init__(self, components: Iterable[Component], sums: Sequence[str] = ()):
         self.components = list(components)
@@ -845,19 +846,20 @@ class Model:
             self._host_provider_table = self._collect({}, set(), shadow=True)[:2]
         return self._host_provider_table
 
-    # -- the Jacobian's sparsity pattern ----------------------------------------------
+    # --- the Jacobian's sparsity pattern ---------------------------------------------
 
     def sparsity(self) -> np.ndarray:
         """The ``(nnz, 2)`` index array of the Jacobian's nonzeros, traced through the providers.
 
-        The same resolution as :meth:`evaluate`, on values that carry the set
-        of state elements they depend on instead of numbers
-        (:class:`_TracedValues`): each contribution to ``d_<state>`` comes back
-        carrying the columns of that row, a vector's element by element through
-        the ``output`` it fills. The pattern is exact up to data-dependent
-        branches, where a provider counts as reading all of its inputs, so it
-        is the superset a colouring needs and no more; the diagonal the Rosenbrock matrix ``I/(h gamma) - J``
-        adds is the solver's business, not the pattern's. Rows are sorted.
+        Runs the same resolution as :meth:`evaluate`, but on values that carry
+        the set of state elements they depend on instead of numbers
+        (:class:`_TracedValues`). Each contribution to ``d_<state>`` comes
+        back carrying the columns of that row, a vector's element by element
+        through the ``output`` it fills. The pattern is exact except at
+        data-dependent branches, where a provider counts as reading all of its
+        inputs. That gives the superset a colouring needs and no more. The
+        diagonal the Rosenbrock matrix ``I/(h gamma) - J`` adds belongs to the
+        solver, not the pattern. Rows come sorted.
         """
 
         values = _TracedValues(self)
@@ -869,9 +871,8 @@ class Model:
                     buffer = _traced_array(s.shape)
                     args = [buffer if n == OUTPUT else values[n] for n in p.signature]
                     values._call(p.fn, p.component, p.takes_self, args)
-                    rows = enumerate(
-                        buffer.reshape(-1)
-                    )  # row-major, the order of the elements
+                    # row-major, the order of the elements
+                    rows = enumerate(buffer.reshape(-1))
                 else:
                     rows = [
                         (
@@ -892,11 +893,11 @@ class Model:
         """Evaluate ``quantities`` on the host from the ``base`` values.
 
         A name resolves as a base value, a state's initial value, a sum over
-        the components, or a provider, with its dependencies resolved the same
+        the components, or a provider, whose dependencies resolve the same
         way. ``math`` is the module the providers' ``math.sqrt`` and friends
-        mean here: the standard library for floats, ``jax.numpy`` for JAX
-        arrays (so the background expansion rate is the model's own ``grho``
-        and ``adotoa``, traced under ``jit``). Returns one value or a tuple.
+        use: the standard library for floats, ``jax.numpy`` for JAX arrays.
+        That makes the background expansion rate the model's own ``grho`` and
+        ``adotoa``, traced under ``jit``. Returns one value or a tuple.
         """
 
         memo = self.__dict__.setdefault("_host_memo", {}).setdefault(id(math), {})
@@ -908,17 +909,17 @@ class Model:
         """The initial state, ``(n_k, nvar)``, from the states' initial conditions.
 
         ``base`` holds the quantities the initial conditions may name besides
-        ``k``: the time and the background parameters. A name is resolved as a
-        base quantity, a state (its own initial value), or a provider evaluated
-        on the host from the same pool.
+        ``k``: the time and the background parameters. A name resolves as a
+        base quantity, a state (its own initial value), or a provider
+        evaluated on the host from the same pool.
 
-        The pool is resolved once for all wave modes: ``k`` is the whole array,
-        ``numpy`` stands in for ``math`` so that the initial conditions' algebra
-        broadcasts over it, and a vector state's filler writes rows of
-        ``n_k`` values (``batch_shape`` of :class:`_HostValues`). Resolving the
-        pool once per mode instead cost 6 ms per cosmology at 144 modes (most
-        of it in the signature inspection of every initial condition at every
-        mode), 0.85 s of a batch of 128 cosmologies.
+        One resolution covers all wave modes: ``k`` is the whole array,
+        ``numpy`` stands in for ``math`` so the initial conditions' algebra
+        broadcasts over it, and a vector state's filler writes rows of ``n_k``
+        values (``batch_shape`` of :class:`_HostValues`). Resolving once per
+        mode cost 6 ms per cosmology at 144 modes, mostly in inspecting every
+        initial condition's signature at every mode: 0.85 s of a batch of 128
+        cosmologies.
         """
 
         k_values = np.asarray(k_values, dtype=np.float64)
@@ -935,15 +936,15 @@ class Model:
             y0[:, s.offset : s.offset + s.size] = value.reshape(s.size, n_k).T
         return y0
 
-    # -- compiled functions -----------------------------------------------------------
+    # --- compiled functions ----------------------------------------------------------
 
     def _collect(self, params, base, shadow=False):
         """Providers by quantity, contributions by sum, derivative providers by state.
 
         A provider of a quantity in ``base`` is an error for the right-hand
-        side, whose only base quantity is the time; with ``shadow`` (a
-        :meth:`build_function` input) the given value wins and the provider is
-        left out, which is how a kernel supplies a density directly.
+        side, whose only base quantity is the time. With ``shadow`` (a
+        :meth:`build_function` input) the given value wins and the provider
+        drops out. That is how a kernel supplies a density directly.
         """
 
         producers: dict[str, _Provider] = {}
@@ -1031,7 +1032,7 @@ class Model:
         return [s for s in self.states.values() if s.name in states]
 
     def _state_reads(self, states=None):
-        """Read the states of the flat ``y`` -- the model's, or the subset ``states`` packed in model order."""
+        """Lines reading the states from the flat ``y``: the model's, or the subset ``states`` packed in model order."""
 
         offset = 0
         for s in self._subset(states):
@@ -1092,9 +1093,9 @@ class Model:
 
         A vector state comes back with its components as the leading axis (a
         matrix with two), so a provider's ``theta[l]`` and ``psi[i, l]`` index
-        the component and broadcast over the rest, which is how
-        :meth:`evaluate` runs the model over a whole history on the host.
-        ``xp`` is ``numpy`` or ``jax.numpy``, whichever ``y`` is.
+        the component and broadcast over the rest. That lets :meth:`evaluate`
+        run the model over a whole history on the host. ``xp`` is ``numpy``
+        or ``jax.numpy``, matching ``y``.
         """
 
         values = {}
@@ -1123,18 +1124,18 @@ class Model:
         """Generate ``rhs(y, tau, p) -> tuple`` and return it as a plain Python function.
 
         ``params`` maps parameter names to their column in the row ``p``. By
-        default the providers are compiled with ``cuda.jit(device=True)`` and
-        see the CUDA ``cuda`` and ``float64``; a test may pass ``jit`` (an
-        identity for plain Python) and stand-ins for the two device names to
-        run the model on the host.
+        default the build compiles the providers with
+        ``cuda.jit(device=True)`` against the CUDA ``cuda`` and ``float64``.
+        A test may pass ``jit`` (an identity for plain Python) and stand-ins
+        for the two device names to run the model on the host.
 
         ``states`` restricts the function to a block of the model: ``y`` then
-        holds those states alone, packed in model order, and the rates
-        returned are theirs. ``quantities`` are names the function takes as
+        holds those states alone, packed in model order, and the function
+        returns their rates. ``quantities`` are names the function takes as
         given, in a tuple ``q`` after ``p`` (``rhs(y, tau, p, q)``), in place
-        of their providers -- what a block of a modax hierarchy reads of the
+        of their providers. A block of a modax hierarchy reads these from the
         blocks upstream of it. A block whose rates need a state outside it
-        fails to compile, which is the one-way coupling checked.
+        fails to compile, which checks that the coupling is one-way.
         """
 
         jit, names = self._device(jit, cuda, float64)
@@ -1219,14 +1220,13 @@ class Model:
         """Generate a device function returning the quantities ``outputs``.
 
         ``inputs`` are the base quantities it takes as positional arguments, in
-        that order; the name ``"y"`` among them stands for the flat state, read
-        into the states as :meth:`build` does (the states of the block
-        ``states`` alone when given, packed in model order). With ``params``
-        the function takes the parameter row ``p`` last. Everything else the
-        outputs need is provided by the components, so a kernel that needs the
-        expansion rate or the line-of-sight sources computes them from the
-        same equations as the right-hand side. Returns a scalar for one
-        output, a tuple otherwise.
+        that order. The name ``"y"`` among them stands for the flat state,
+        read into the states as :meth:`build` does (only the block ``states``
+        when given, packed in model order). With ``params`` the function takes
+        the parameter row ``p`` last. The components provide everything else
+        the outputs need, so a kernel that needs the expansion rate or the
+        line-of-sight sources computes them from the same equations as the
+        right-hand side. Returns a scalar for one output, a tuple otherwise.
         """
 
         jit, names = self._device(jit, cuda, float64)

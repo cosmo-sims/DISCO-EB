@@ -1,4 +1,4 @@
-"""The generalised Gauss-Laguerre rule the massive-neutrino momentum quadrature is built on."""
+"""The generalised Gauss-Laguerre rule behind the massive-neutrino momentum bins."""
 
 import jax
 import jax.numpy as jnp
@@ -7,15 +7,15 @@ import jax.scipy
 
 def generalized_gauss_laguerre_weights(n, alpha):
     """
-    Compute nodes and weights for n-point generalized Gauss-Laguerre quadrature,
-    which approximates integrals of the form
+    Return the nodes and weights of the n-point generalized Gauss-Laguerre
+    rule for integrals of the form
         ∫₀∞ x^α f(x) e^(-x) dx.
 
     Parameters:
         n : int
             Number of quadrature points.
         alpha : float
-            The parameter in the weight function x^α e^(-x).
+            The exponent in the weight function x^α e^(-x).
 
     Returns:
         nodes : ndarray
@@ -23,24 +23,24 @@ def generalized_gauss_laguerre_weights(n, alpha):
         weights : ndarray
             The quadrature weights.
     """
-    # Indices i = 1, 2, ..., n.
+    # i = 1, ..., n
     i = jnp.arange(1, n + 1)
 
-    # Diagonal entries: a_i = 2i - 1 + alpha.
+    # Diagonal: a_i = 2i - 1 + alpha
     a = 2 * i - 1 + alpha
 
-    # Off-diagonal entries for i = 1, ..., n-1: b_i = sqrt(i*(i+alpha))
+    # Off-diagonal for i = 1, ..., n-1: b_i = sqrt(i (i + alpha))
     i_off = jnp.arange(1, n)
     b = jnp.sqrt(i_off * (i_off + alpha))
 
-    # Construct the symmetric tridiagonal Jacobi matrix.
+    # Symmetric tridiagonal Jacobi matrix (Golub-Welsch)
     J = jnp.diag(a) + jnp.diag(b, 1) + jnp.diag(b, -1)
 
-    # Compute eigenvalues (nodes) and eigenvectors.
+    # The eigenvalues are the nodes
     nodes, V = jnp.linalg.eigh(J)
 
-    # The weights are given by the square of the first component of the eigenvectors,
-    # multiplied by the zeroth moment: Γ(α+1).
+    # Each weight is the squared first component of its eigenvector times the
+    # zeroth moment Γ(α+1).
     if isinstance(alpha, int):
         weights = (V[0, :] ** 2) * jax.scipy.special.factorial(alpha)
     else:

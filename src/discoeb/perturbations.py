@@ -39,16 +39,16 @@ class PerturbationLayout:
     Attributes
     ----------
     lmaxg, lmaxpol, lmaxr : int
-        Photon-temperature, E-mode-polarization, and massless-neutrino hierarchy
-        truncations.
+        Truncations of the photon temperature, E-mode polarization and
+        massless-neutrino hierarchies.
     nqmax : int
         Number of massive-neutrino momentum bins. ``0`` disables massive
-        neutrinos entirely (no state variables allocated).
+        neutrinos and allocates no states for them.
     lmaxnu : int
-        Massive-neutrino multipole-hierarchy truncation (used only when
+        Truncation of the massive-neutrino hierarchy (used only when
         ``nqmax > 0``).
     enable_dark_energy : bool
-        Whether the dynamical dark-energy fluid perturbations are evolved.
+        Evolve the dynamical dark-energy fluid perturbations.
     """
 
     lmaxg: int = 15
@@ -112,7 +112,7 @@ class PerturbationLayout:
 
     @property
     def ix_clxq(self) -> int:
-        """Index of the dark-energy density contrast (only if dark energy enabled)."""
+        """Index of the dark-energy density contrast (dark-energy layouts only)."""
         if not self.enable_dark_energy:
             raise AttributeError("dark energy is not enabled in this layout")
         return self._ix_after_massless
@@ -130,9 +130,9 @@ class PerturbationLayout:
     def ix_psi(self, ell: int, q: int) -> int:
         """Return the state index of massive-neutrino multipole ``psi_l`` of bin ``q``.
 
-        The bins follow the dark-energy block, **bin-major, multipole-minor**, so
-        that each bin's free-streaming tail ``psi_3 ... psi_lmaxnu`` is
-        contiguous and is one tridiagonal block of the sparsity pattern
+        The bins follow the dark-energy block, bin-major and multipole-minor. That
+        keeps each bin's free-streaming tail ``psi_3 ... psi_lmaxnu`` contiguous, one
+        tridiagonal block of the sparsity pattern
         (:func:`discoeb.eb_model.perturbation_sparsity`).
         """
         if self.nqmax == 0:
@@ -164,11 +164,11 @@ class PerturbationLayout:
         lmaxnu: int = 15,
         nqmax: int = 5,
     ) -> "PerturbationLayout":
-        """Return the trimmed layout implied by a cosmology's enabled components.
+        """Return the trimmed layout a cosmology's enabled components imply.
 
-        Dynamical dark energy is enabled when ``w_DE_0 != -1`` or ``w_DE_a != 0``;
-        massive neutrinos are enabled (with ``nqmax`` momentum bins) when
-        ``num_massive_neutrinos > 0``. Curvature does not affect the layout.
+        ``w_DE_0 != -1`` or ``w_DE_a != 0`` turns on dynamical dark energy.
+        ``num_massive_neutrinos > 0`` turns on massive neutrinos with ``nqmax``
+        momentum bins. Curvature does not change the layout.
         """
 
         enable_de = (cosmology.w_DE_0 != -1.0) or (cosmology.w_DE_a != 0.0)
@@ -184,7 +184,7 @@ class PerturbationLayout:
 
 
 class _ParamCosmology(NamedTuple):
-    """Hashable view of the historical DISCO-EB parameter dictionary."""
+    """Hashable form of the DISCO-EB parameter dictionary."""
 
     Omegam: float
     Omegab: float
@@ -224,7 +224,7 @@ class _ParamCosmology(NamedTuple):
 
 
 def _as_cosmology(cosmology):
-    """Normalize a legacy parameter dictionary for the accelerator path."""
+    """Return a parameter dictionary as a ``_ParamCosmology``, anything else as is."""
 
     if not isinstance(cosmology, dict):
         return cosmology
@@ -249,7 +249,7 @@ def _as_cosmology(cosmology):
 
 
 def _as_batch(cosmologies) -> tuple:
-    """A cosmology or a sequence of them, as a tuple (dictionaries kept as they are)."""
+    """Return a cosmology or a sequence of them as a tuple (dictionaries unchanged)."""
 
     if isinstance(cosmologies, dict) or hasattr(cosmologies, "Omegam"):
         return (cosmologies,)
@@ -260,9 +260,9 @@ def _as_batch(cosmologies) -> tuple:
 N_BACKGROUND_GRID = 4096
 MATTER_THERMO_WEIGHT = 0.1
 """Thermal error weight (:data:`discoeb.recombination.THERMO_ERROR_WEIGHT`) of the
-matter power spectrum solves: a recombination history ten times looser than the
-hierarchy's tolerance moves ``P(k)`` by 6e-4 at most against the weight of 1
-the CMB solves keep for the visibility, and takes 150 driver steps a
+matter power spectrum solves. A recombination history ten times looser than
+the hierarchy's tolerance moves ``P(k)`` by at most 6e-4 against the weight
+of 1 the CMB solves keep for the visibility. It takes 150 driver steps per
 trajectory instead of 225 (0.47 s against 0.62 s for 128 cosmologies x 128
 modes on an RTX 4070 SUPER)."""
 PERTURB_RTOL = 1.0e-4
@@ -271,23 +271,21 @@ PERTURB_FIRST_STEP = 1.0e-2
 PERTURB_MAX_STEPS = 20000
 TAU_START = 0.1
 
-# Packed-parameter row layout consumed by the device rhs/jac.
+# Columns of the packed parameter row the device right-hand side reads:
 #   p = (grhog, grhornomass, grhoc, grhob, grhov,
 #        tau_start, tau_end, k, cosmology_idx, save_index,
 #        w_DE_0, w_DE_a, cs2_DE, grhok, grhor_nu, n_mnu, amnu,
 #        YHe, Tcmb, H0, Omegab, z_re,
 #        eps, dir_grhog, dir_grhornomass, dir_grhoc, dir_grhob, dir_grhov, dir_YHe, dir_Tcmb, dir_H0, dir_Omegab)
-# grhok = grhom * Omega_k is the (constant) comoving curvature density
-# coefficient 8*pi*G*rho_K a^2; it is 0 for a flat cosmology. The five columns
-# after ``amnu`` are what the recombination rates and reionization read
-# (:data:`discoeb.recombination.THERMAL_PARAMETERS`). The inputs a derivative
-# may move -- the five densities and ``YHe``, ``Tcmb``, ``H0``, ``Omegab``
-# (:data:`DIRECTED_COLUMNS`) -- are read by the model as ``x_nominal + eps
-# dir_x``: ``eps`` is zero in every primal solve, so the trajectory is what it
-# always was, and its derivative with respect to ``eps`` alone is the
-# directional derivative along the row's ``dir`` vector. That is what lets a
-# trajectory carry a single sensitivity column for a direction of its own
-# (:func:`solve_eb`).
+# grhok = grhom * Omega_k is the constant comoving curvature density
+# coefficient 8 pi G rho_K a^2, zero for a flat cosmology. The recombination
+# rates and reionization read the five columns after ``amnu``
+# (:data:`discoeb.recombination.THERMAL_PARAMETERS`). The model reads each input
+# a derivative may move (:data:`DIRECTED_COLUMNS`: the five densities, ``YHe``,
+# ``Tcmb``, ``H0``, ``Omegab``) as ``x_nominal + eps dir_x``. ``eps`` is zero in
+# every primal solve, and the derivative in ``eps`` is the directional
+# derivative along the row's ``dir`` vector, so each trajectory carries a
+# single sensitivity column for its own direction (:func:`solve_eb`).
 IX_TAU_START = 5
 IX_TAU_END = 6
 IX_K = 7
@@ -360,7 +358,7 @@ BATCH_CACHE_SIZE = 8
 
 
 def _densities(cosmology) -> dict:
-    """:func:`discoeb.eb_model.density_parameters` of a cosmology, as floats, memoised."""
+    """Return :func:`discoeb.eb_model.density_parameters` of a cosmology as floats, memoised."""
 
     return _densities_of(_as_cosmology(cosmology))
 
@@ -372,7 +370,7 @@ def _densities_of(cosmology: _ParamCosmology) -> dict:
 
 
 def density_coefficients(cosmology) -> tuple[float, float, float, float, float]:
-    """``(grhog, grhornomass, grhoc, grhob, grhov)`` of :func:`discoeb.eb_model.density_parameters`."""
+    """Return ``(grhog, grhornomass, grhoc, grhob, grhov)`` of :func:`discoeb.eb_model.density_parameters`."""
 
     d = _densities(cosmology)
     return (d["grhog"], d["grhornomass"], d["grhoc"], d["grhob"], d["grhov"])
@@ -384,7 +382,7 @@ def density_coefficients(cosmology) -> tuple[float, float, float, float, float]:
 
 
 def _layout_for(cosmology) -> PerturbationLayout:
-    """The perturbation layout the module presets imply for a cosmology."""
+    """Return a cosmology's perturbation layout at the components' current truncations."""
 
     return PerturbationLayout.from_cosmology(
         cosmology,
@@ -397,13 +395,13 @@ def _layout_for(cosmology) -> PerturbationLayout:
 
 
 def joint_model(layout, extra=()):
-    """The hierarchy of ``layout`` with :class:`~discoeb.recombination.Recombination` appended.
+    """Return the hierarchy of ``layout`` with :class:`~discoeb.recombination.Recombination` appended.
 
-    The recombination states come *after* the hierarchy's, so the layout's
-    indices (:class:`PerturbationLayout`) hold and the thermal states are the last
-    five columns of every history: ``ln a``, ``x_H``, ``x_He``, ``T_m`` and
-    the optical depth, at ``model.index["lna"]`` and so on. ``extra`` are
-    component classes appended after it (the line-of-sight sources).
+    The recombination states come after the hierarchy's, so the
+    :class:`PerturbationLayout` indices still hold. The five thermal states
+    (``ln a``, ``x_H``, ``x_He``, ``T_m`` and the optical depth) are the last
+    columns of every history, at ``model.index["lna"]`` and so on. ``extra``
+    lists component classes to append after them (the line-of-sight sources).
     """
 
     return perturbation_model(
@@ -412,7 +410,7 @@ def joint_model(layout, extra=()):
 
 
 def thermal_indices(model) -> tuple[int, ...]:
-    """The flat indices of the five recombination states in ``model``."""
+    """Return the flat indices of the five recombination states in ``model``."""
 
     return tuple(
         model.index[n] for n in ("lna", "thermo_0", "thermo_1", "thermo_2", "kappa")
@@ -424,12 +422,12 @@ THERMAL_STATES = ("lna", "thermo", "kappa")
 
 THERMAL_QUANTITIES = ("a", "opacity", "cs2", "rhonu")
 """What the hierarchy reads of the recombination block: the scale factor, the
-opacity, the baryon sound speed and the massive-neutrino density ratio, published
-by the block and interpolated by modax between its own steps."""
+opacity, the baryon sound speed and the massive-neutrino density ratio. The
+block publishes them and modax interpolates them between the block's steps."""
 
 
 def _restrict(pattern: np.ndarray, indices) -> np.ndarray:
-    """The ``(nnz, 2)`` pattern's rows and columns ``indices``, renumbered."""
+    """Return the ``(nnz, 2)`` pattern's rows and columns ``indices``, renumbered."""
 
     position = {idx: k for k, idx in enumerate(indices)}
     kept = [
@@ -442,16 +440,16 @@ def _restrict(pattern: np.ndarray, indices) -> np.ndarray:
 
 @functools.lru_cache(maxsize=None)
 def joint_kernel(layout, extra=()):
-    """``(model, hierarchy)`` of the joint model, built once per layout and ``extra``.
+    """Return ``(model, hierarchy)`` of the joint model, cached per layout and ``extra``.
 
-    The model is split into a modax :class:`~modax.Hierarchy` of two blocks:
-    the recombination block (:data:`THERMAL_STATES`), which publishes
-    :data:`THERMAL_QUANTITIES`, and the perturbation hierarchy, whose
-    right-hand side takes them as given. modax integrates the recombination
-    block on steps of its own ahead of the hierarchy and hands the quantities
-    down as a quintic Hermite interpolant, so the hierarchy's Jacobian has no
-    thermal columns and the thermal providers run once per *recombination*
-    step. The state keeps the joint model's layout, the thermal states last.
+    The hierarchy is a modax :class:`~modax.Hierarchy` of two blocks. The
+    recombination block (:data:`THERMAL_STATES`) publishes
+    :data:`THERMAL_QUANTITIES`, and the perturbation block's right-hand side
+    takes them as given. modax steps the recombination block ahead of the
+    perturbations and hands the quantities down as a quintic Hermite
+    interpolant. So the perturbation Jacobian has no thermal columns, and the
+    thermal providers run once per recombination step. The state keeps the
+    joint model's order, thermal states last.
     """
 
     from modax import Block, Hierarchy
@@ -491,7 +489,7 @@ def joint_kernel(layout, extra=()):
 
 
 def _stack_background_params(cosmologies) -> dict:
-    """The cosmologies' background parameters stacked by name, one vmap lane each."""
+    """Stack the cosmologies' background parameters by name, one vmap lane each."""
 
     rows = [c.to_background_params() for c in cosmologies]
     return {
@@ -501,7 +499,7 @@ def _stack_background_params(cosmologies) -> dict:
 
 
 def _background_tau(d):
-    """``(a_grid, tau_grid)`` of the conformal-time quadrature for densities ``d`` (JAX)."""
+    """Return ``(a_grid, tau_grid)`` of the conformal-time quadrature for densities ``d`` (JAX)."""
 
     a_bg = jnp.geomspace(1.0e-9, 1.0, N_BACKGROUND_GRID)
     dt = jax.vmap(dtauda, in_axes=(0, None))(a_bg, d)
@@ -516,10 +514,10 @@ def _background_tau(d):
 
 
 def _reionization_redshift(a_bg, tau_bg, params, tau_reio):
-    """``z_re`` of CAMB's step, by bisection on the background grid, for ``tau_reio > 0``.
+    """Bisect for ``z_re`` of CAMB's step on the background grid.
 
-    The residual ionization of recombination is neglected (``xe_rec = 0``),
-    which moves ``tau_reio`` by 2e-4 of itself.
+    Returns 0 unless ``tau_reio > 0``. Neglects the residual ionization left by
+    recombination (``xe_rec = 0``), which shifts ``tau_reio`` by 2e-4 of itself.
     """
 
     dtau = jnp.gradient(tau_bg)
@@ -551,13 +549,13 @@ def _reionization_redshift(a_bg, tau_bg, params, tau_reio):
 
 @jax.jit
 def background_endpoints(stacked):
-    """``(tau0, lna_start, z_re)`` of stacked background parameters, one vmap lane each.
+    """Return ``(tau0, lna_start, z_re)`` of stacked background parameters, one vmap lane each.
 
-    The conformal age, where each trajectory stops; ``ln a`` at
-    :data:`TAU_START`, where it starts; and the reionization redshift that
-    gives ``tau_reio`` (0 without reionization), solved on the background with
-    the residual recombination ionization neglected, which moves ``tau_reio``
-    by 2e-4 of itself.
+    ``tau0`` is the conformal age, where each trajectory stops. ``lna_start`` is
+    ``ln a`` at :data:`TAU_START`, where it starts. ``z_re`` is the reionization
+    redshift that gives ``tau_reio`` (0 without reionization). The bisection for
+    it runs on the background and neglects the residual ionization left by
+    recombination, which shifts ``tau_reio`` by 2e-4 of itself.
     """
 
     def one(params):
@@ -582,12 +580,12 @@ class _PreparedSolve(NamedTuple):
 
 
 def _prepare_solve(cosmologies, extra=()) -> _PreparedSolve:
-    """The joint kernel and the endpoints of a batch of cosmologies, cached per batch.
+    """Return the joint kernel and endpoints of a batch of cosmologies, cached per batch.
 
     All cosmologies in a batch must share a perturbation layout. Nothing here
-    depends on the wave modes, the save times or the tolerances; the kernel
-    is compiled once per layout and the endpoints are a vmapped quadrature of
-    a few milliseconds.
+    depends on the wave modes, save times or tolerances. The kernel compiles
+    once per layout, and the endpoints cost a vmapped quadrature of a few
+    milliseconds.
     """
 
     return _prepared(
@@ -613,7 +611,7 @@ def _prepared(cosmologies, extra) -> _PreparedSolve:
 
 
 def _row(cosmology, tau_end: float, z_re: float) -> dict:
-    """The parameter row of one cosmology by name, without its wave number."""
+    """Return one cosmology's parameter row by name, without the wave number."""
 
     d = _densities(cosmology)
     return {
@@ -637,7 +635,7 @@ def _row(cosmology, tau_end: float, z_re: float) -> dict:
 
 
 def _row_vector(cosmology, tau_end: float, z_re: float) -> np.ndarray:
-    """:func:`_row` as the ``N_PARAM`` columns of :data:`PARAM_COLUMNS`, zero where it has no value."""
+    """Return :func:`_row` as the ``N_PARAM`` columns of :data:`PARAM_COLUMNS`, zero where it has no value."""
 
     row = _row(cosmology, tau_end, z_re)
     out = np.zeros(N_PARAM, dtype=np.float64)
@@ -647,9 +645,9 @@ def _row_vector(cosmology, tau_end: float, z_re: float) -> np.ndarray:
 
 
 def _initial_inputs(cosmologies, spread) -> dict:
-    """What :meth:`Model.initial_state` reads of the cosmologies, each through ``spread``.
+    """Return what :meth:`Model.initial_state` reads of the cosmologies.
 
-    ``spread`` takes one value per cosmology to the trajectories' values.
+    ``spread`` maps one value per cosmology to the trajectories' values.
     """
 
     densities = np.array([density_coefficients(c) for c in cosmologies]).T
@@ -664,7 +662,7 @@ def _initial_inputs(cosmologies, spread) -> dict:
 def make_params(
     cosmology, k_values: np.ndarray, tau_end: float, z_re: float = 0.0
 ) -> np.ndarray:
-    """Return per-mode packed parameters for the device rhs, one row per wave mode."""
+    """Return packed parameters for the device right-hand side, one row per wave mode."""
 
     params = np.tile(
         _row_vector(_as_cosmology(cosmology), tau_end, z_re), (len(k_values), 1)
@@ -676,11 +674,11 @@ def make_params(
 def make_initial_states(
     cosmology, k_values: np.ndarray, model, lna_start
 ) -> np.ndarray:
-    """Adiabatic initial states for every wave mode plus the fully ionized thermal state, ``(n_k, nvar)``.
+    """Return adiabatic initial states plus the fully ionized thermal state, ``(n_k, nvar)``.
 
-    ``cosmology`` may be one cosmology or a sequence of ``len(k_values)`` of
-    them, one per trajectory, and ``lna_start`` a number or one per trajectory:
-    the initial conditions' algebra broadcasts over the trajectories.
+    ``cosmology`` is one cosmology or a sequence of ``len(k_values)``, one per
+    trajectory. ``lna_start`` is a number or one per trajectory. The initial
+    conditions broadcast over the trajectories.
     """
 
     cosmologies = [_as_cosmology(c) for c in _as_batch(cosmology)]
@@ -708,7 +706,7 @@ def _packed(cosmologies, model, tau0, lna_start, z_re, k_bytes, tau_bytes):
     params[:, IX_COSMOLOGY] = np.tile(
         np.arange(n_cosmo, dtype=np.float64), len(k_sorted)
     )
-    # the per-cosmology inputs once, tiled over the wave modes (row = k_idx * n_cosmo + c)
+    # per-cosmology inputs, tiled over the wave modes (row = k_idx * n_cosmo + c)
 
     def tile(values):
         return np.tile(np.asarray(values, dtype=np.float64), len(k_sorted))
@@ -735,10 +733,10 @@ def _packed(cosmologies, model, tau0, lna_start, z_re, k_bytes, tau_bytes):
 def _pack_batch(prepared, k_values, tau_save=None):
     """Return (and cache) the packed ``(params, y0, t_span, order, k_sorted)`` of a batch.
 
-    Trajectories are packed as ``row = k_idx * n_cosmo + cosmology_idx``, so a
-    block of consecutive rows shares one wave mode; ``tau_save`` is the shared
-    grid of save times (default: the two endpoints), with every trajectory
-    stopping at its own ``tau0`` through ``IX_TAU_END``.
+    Rows go as ``row = k_idx * n_cosmo + cosmology_idx``, so consecutive rows
+    share a wave mode. ``tau_save`` is the shared grid of save times (default:
+    the two endpoints). Each trajectory stops at its own ``tau0`` through
+    ``IX_TAU_END``.
     """
 
     k_bytes = np.ascontiguousarray(np.asarray(k_values, dtype=np.float64)).tobytes()
@@ -762,15 +760,14 @@ def _pack_batch(prepared, k_values, tau_save=None):
 def error_weights_for(
     prepared, n_traj: int, base=None, thermo_weight: float = THERMO_ERROR_WEIGHT
 ):
-    """The solver's error weights ``(n_traj, nvar)``: ``base`` (or ones) for the hierarchy,
-    ``thermo_weight`` on the recombination block.
+    """Return the solver's error weights ``(n_traj, nvar)``.
 
-    The optical depth is weighted like the rest of the block: its error is
-    measured against ``rtol |kappa|``, so the block's own steps resolve its
-    increments where ``kappa`` is of order one, through recombination and
-    after, which is where ``exp(-kappa)`` reads them (an unweighted optical
-    depth integrated on the block's steps left the lensed TT 0.5 percent off
-    CLASS at ``l = 1500``).
+    ``base`` (or ones) weights the hierarchy and ``thermo_weight`` the
+    recombination block. The optical depth gets the block's weight too, so its
+    error counts against ``rtol |kappa|``. The block's steps then resolve its
+    increments where ``kappa`` is of order one, through recombination and after,
+    which is where ``exp(-kappa)`` reads them. Unweighted, it left the lensed TT
+    0.5 percent off CLASS at ``l = 1500``.
     """
 
     model = prepared.model
@@ -798,11 +795,12 @@ def _launch(
     max_registers=CUDA_MAX_REGISTERS,
     **extra,
 ):
-    """One modax Rodas5P launch of the prepared hierarchy over the packed trajectories.
+    """Run one modax Rodas5P launch of the prepared hierarchy over the packed trajectories.
 
-    The method carries the numerics: the LU's precision on the hierarchy and
-    the PI step controller's gains. The recombination block, which the
-    hierarchy reads, factorises in double regardless.
+    The method object carries the numerics: the hierarchy's LU precision and the
+    PI controller's gains. The recombination block, which the hierarchy reads,
+    always factorises in double. Each trajectory stops at its own ``tau0``
+    (``tf_index=IX_TAU_END``).
     """
 
     from modax import PIDGains, Rodas5P
@@ -842,12 +840,12 @@ def solve_perturbation_history_batch(
 ):
     """Solve a batch of cosmologies on a shared ``tau_save`` grid in one launch.
 
-    All ``n_cosmologies * n_k`` trajectories are integrated by a single modax
-    launch, the recombination block of each one on steps of its own ahead of
-    its hierarchy (:func:`joint_kernel`). Each trajectory stops at its *own* ``tau0``; save
-    times beyond it hold its frozen final state. Returns
-    ``(history, k_sorted, prepared)`` with ``history`` a device-resident
-    ``(n_k, n_cosmologies, len(tau_save), nvar)`` in ascending ``k``.
+    One modax launch integrates all ``n_cosmologies * n_k`` trajectories, each
+    with its recombination block stepping ahead of its hierarchy
+    (:func:`joint_kernel`). Each trajectory stops at its own ``tau0``, and later
+    save times hold its final state. Returns ``(history, k_sorted, prepared)``,
+    with ``history`` a device array ``(n_k, n_cosmologies, len(tau_save),
+    nvar)`` in ascending ``k``.
     """
 
     prepared = _prepare_solve(tuple(cosmologies))
@@ -875,7 +873,7 @@ def _primordial_power(ks, A_s, n_s, k_pivot):
 
 
 def _power_spectrum_from_final(y_final, k_sorted, cosmologies, k_values):
-    """``P(k)`` ``(n_cosmo, n_k)`` in the caller's order from final states ``(n_k, n_cosmo, nvar)``."""
+    """Return ``P(k)`` ``(n_cosmo, n_k)`` in the caller's order from final states ``(n_k, n_cosmo, nvar)``."""
 
     dens = np.array([density_coefficients(c) for c in cosmologies])
     grhoc, grhob = dens[:, 2][None, :], dens[:, 3][None, :]
@@ -935,7 +933,7 @@ def solve_matter_power_spectrum_batch(
 
 
 def _tau0_of(densities, d):
-    """The conformal age as a function of the five densities (JAX), the rest of the background from ``d``."""
+    """Return the conformal age as a JAX function of the five densities, the rest of the background from ``d``."""
 
     return _background_tau({**d, **dict(zip(DIRECTED_NAMES[:5], densities))})[1][-1]
 
@@ -952,20 +950,21 @@ def matter_power_spectrum_jax(
     max_steps: int = PERTURB_MAX_STEPS,
     thermo_weight: float = MATTER_THERMO_WEIGHT,
 ):
-    """``P(k)`` as a JAX array, differentiable in the densities and the thermal inputs.
+    """Return ``P(k)`` as a JAX array, differentiable in the densities and thermal inputs.
 
-    ``densities`` (the five of :data:`DIRECTED_NAMES`) and ``thermal``
-    (``YHe, Tcmb, H0, Omegab``) default to the cosmology's own. The derivative
-    is the total one: the densities enter the hierarchy, the recombination
-    rates (through the expansion rate), the matter weighting of ``delta_m``
-    and the conformal age at which the state is read, and all four paths are
-    differentiated -- the last through ``y(tau_0(d)) = y(tau_0^*) +
-    y'(tau_0^*) (tau_0(d) - tau_0^*)``, which is zero in value and carries
-    ``d tau_0 / d(densities)`` from the background quadrature. The value is
-    read at the conformal age of the densities given, so a finite difference
-    sees the same end-time dependence. What is held fixed is the initial state.
-    The solve is :func:`_kept_values`' hooked launch, keeping the contrasts
-    and the rates of the end-time term at ``tau_0``.
+    ``densities`` (the five of :data:`DIRECTED_NAMES`) and ``thermal`` (``YHe,
+    Tcmb, H0, Omegab``) default to the cosmology's own. The derivative is the
+    total one. The densities enter the hierarchy, the recombination rates
+    (through the expansion rate), the matter weighting of ``delta_m`` and the
+    conformal age at which the solve reads the state. The last path goes through
+    ``y(tau_0(d)) = y(tau_0^*) + y'(tau_0^*) (tau_0(d) - tau_0^*)``, which is
+    zero in value and carries ``d tau_0 / d(densities)`` from the background
+    quadrature. The solve reads the value at the conformal age of the given
+    densities, so a finite difference sees the same end-time dependence. Only
+    the initial state stays fixed.
+
+    The solve is the hooked launch of :func:`_kept_values`, keeping the
+    contrasts and the rates the end-time term needs at ``tau_0``.
     """
 
     cosmology = _as_cosmology(cosmology)
@@ -984,7 +983,7 @@ def matter_power_spectrum_jax(
     kept = _kept_values(
         prepared,
         k_values,
-        # one save past every conformal age: the state today
+        # a save past tau0 holds the state today
         np.array([TAU_START, 2.0 * float(prepared.tau0[0])]),
         ("clxc", "clxb", "z", "vb"),
         tau_end_of=lambda xs: jnp.stack([_tau0_of(xi[:5], d) for xi in xs]),
@@ -996,8 +995,8 @@ def matter_power_spectrum_jax(
     )
     clxc, clxb, z, vb = kept(x[None, :])[0, :, :, 0]
 
-    # The end-time term: the state's rate at tau0, from the equations the
-    # hook evaluates on the final state, times how tau0 moves with the densities.
+    # End-time term: the state's rate at tau0 (the equations the hook
+    # evaluates on the final state) times d tau0 / d densities.
     ks = jnp.asarray(np.asarray(k_values, dtype=np.float64))
     tau0 = _tau0_of(x[:5], d)
     dtau = tau0 - jax.lax.stop_gradient(tau0)
@@ -1013,7 +1012,7 @@ def matter_power_spectrum_jax(
 
 
 def background_history(cosmology):
-    """``(a, tau)`` of the background quadrature of one cosmology, host arrays ending at ``tau0``."""
+    """Return ``(a, tau)`` of one cosmology's background quadrature, host arrays ending at ``tau0``."""
 
     return _background_history(_as_cosmology(cosmology))
 
@@ -1033,12 +1032,12 @@ def _background_history(cosmology: _ParamCosmology):
 class EBSolution:
     """What :func:`solve_eb` kept: the selected quantities on the requested grid.
 
-    ``values`` is ``(n_cosmologies, len(names), n_k, n_tau)`` on the device,
-    with the wave modes and times in the caller's order, and ``solution[name]``
-    is that quantity's ``(n_cosmologies, n_k, n_tau)`` block. ``tau0`` is each
+    ``values`` is a device array ``(n_cosmologies, len(names), n_k, n_tau)``
+    with wave modes and times in the caller's order. ``solution[name]`` is that
+    quantity's ``(n_cosmologies, n_k, n_tau)`` block. ``tau0`` is each
     cosmology's conformal age, past which its column holds the state today.
-    ``values`` is differentiable with respect to the cosmological parameters
-    of :data:`DIFFERENTIABLE_PARAMETERS` given as JAX values.
+    ``values`` is differentiable in the parameters of
+    :data:`DIFFERENTIABLE_PARAMETERS` given as JAX values.
     """
 
     names: tuple[str, ...]
@@ -1055,12 +1054,12 @@ class EBSolution:
 
 
 def eps_sensitivity(nvar: int):
-    """The sensitivity spec of a joint launch along the parameter row's ``eps``.
+    """Return the sensitivity spec of a joint launch along the parameter row's ``eps``.
 
-    One column ``S = dy / d eps`` after the state, out of step control: the
-    directed inputs enter the model as ``x_nominal + eps dir_x``
+    It adds one column ``S = dy / d eps`` after the state, outside step control.
+    The model reads each directed input as ``x_nominal + eps dir_x``
     (:data:`DIRECTED_COLUMNS`), so ``S`` is the derivative along the row's
-    ``dir``, through the hierarchy and the recombination block alike.
+    ``dir``, through both the hierarchy and the recombination block.
     """
 
     from modax.rodas5P import SensitivitySpec
@@ -1076,28 +1075,27 @@ def eps_sensitivity(nvar: int):
 
 
 def build_keep_hook(model, names, *, tangent: bool = False):
-    """A modax save hook storing the quantities ``names`` of every save in the trajectory's row.
+    """Return a modax save hook that stores the quantities ``names`` at every save.
 
-    A name is a state element (``clxc``, ``theta_2``, ``psi_0_1``: the
-    :func:`~discoeb.eb_model.layout_state_names`, or ``lna``, ``thermo_0``
-    ... ``kappa`` of the recombination block), copied straight out of the
-    state, or any quantity the joint model provides (``R``, ``sigma``,
-    ``phi`` with the line-of-sight sources appended, ``opacity`` or ``cs2``
-    from the thermal states), compiled from the components' equations by
-    :meth:`~discoeb.component.Model.build_function` with the state, the time
-    and the parameter row as its inputs. The time the quantities see is
-    clamped to the trajectory's own ``tau_end``: a save past a cosmology's
-    ``tau0`` holds its frozen final state, which the background of ``tau0``
-    goes with. The generated device function of ``(y, tau, p)`` returning
-    them is ``hook._generated_source``; modax's
-    :func:`~modax.rodas5P.quantity_hook` makes it the hook.
+    A name is a state element or a quantity the joint model provides. State
+    elements (``clxc``, ``theta_2``, ``psi_0_1``: the
+    :func:`~discoeb.eb_model.layout_state_names`, or ``lna``, ``thermo_0`` ...
+    ``kappa`` of the recombination block) come straight from the state. Provided
+    quantities (``R``, ``sigma``, ``phi`` with the line-of-sight sources
+    appended, ``opacity`` or ``cs2`` from the thermal states) come from
+    :meth:`~discoeb.component.Model.build_function`, with the state, the time and
+    the parameter row as inputs. The hook clamps the time to the trajectory's
+    own ``tau_end``: a save past a cosmology's ``tau0`` holds its final state,
+    and the background at ``tau0`` goes with it. ``hook._generated_source``
+    holds the generated device function of ``(y, tau, p)``, which modax's
+    :func:`~modax.rodas5P.quantity_hook` turns into the hook.
 
-    With ``tangent`` the hook is for a joint launch carrying one sensitivity
-    column ``S = dy/d eps`` after the state (:func:`eps_sensitivity`): it
-    stores each quantity and, after the quantities of the save, its total
-    derivative along the column, ``dq/d eps = (dq/dy) S + dq/d eps``, which
-    modax forms by one Enzyme forward sweep of the quantities seeded with
-    ``(S, 0, e_eps)``, built for the kernel's own target.
+    With ``tangent``, the hook serves a joint launch that carries one
+    sensitivity column ``S = dy/d eps`` after the state
+    (:func:`eps_sensitivity`). It stores each quantity and, after the save's
+    quantities, each one's total derivative along the column, ``dq/d eps =
+    (dq/dy) S + dq/d eps``. modax forms these in one Enzyme forward sweep of the
+    quantities seeded with ``(S, 0, e_eps)``, built for the kernel's own target.
     """
 
     from modax.rodas5P import quantity_hook
@@ -1119,7 +1117,7 @@ def build_keep_hook(model, names, *, tangent: bool = False):
         "        t = tau",
     ]
     if provided:
-        # build_function returns a lone output bare; beside the time it is a tuple.
+        # build_function returns a lone output bare, so pair it with tau.
         outputs = provided if len(provided) > 1 else [*provided, "tau"]
         namespace["kept"] = model.build_function(
             outputs, inputs=("y", "tau"), params=PARAM_COLUMNS, name="kept"
@@ -1148,7 +1146,7 @@ def build_keep_hook(model, names, *, tangent: bool = False):
 
 @functools.lru_cache(maxsize=None)
 def _keep_hook(layout, extra, names, tangent):
-    """The compiled hook of a layout, extra components, names and tangent flag, built once."""
+    """Return the compiled hook for a layout, extra components, names and tangent flag (cached)."""
 
     return build_keep_hook(joint_model(layout, extra), names, tangent=tangent)
 
@@ -1157,18 +1155,18 @@ DIFFERENTIABLE_PARAMETERS = ("Omegam", "Omegab", "H0", "Tcmb", "Neff")
 """The cosmology-dictionary keys :func:`solve_eb` differentiates with respect to.
 
 They reach the solve through the five background densities and the
-recombination block's thermal inputs (:data:`DIRECTED_NAMES`),
-which the forward sensitivities carry through the hierarchy and the
-recombination history alike. Held fixed are the conformal age ``tau0`` at
-which a trajectory stops, the reionization redshift found for ``tau_reio``,
-and the initial state. The remaining keys enter as parameter columns the
-sensitivities do not carry (``Omegak``, ``Nmnu``, ``mnu``, ``w_DE_0``,
-``w_DE_a``, ``cs2_DE``, ``YHe``, ``tau_reio``) or not at all (``A_s``,
-``n_s``, ``k_p``), and must be given as plain numbers."""
+recombination block's thermal inputs (:data:`DIRECTED_NAMES`). The forward
+sensitivities carry them through both the hierarchy and the recombination
+history. The derivative holds fixed the conformal age ``tau0`` at which a
+trajectory stops, the reionization redshift found for ``tau_reio``, and the
+initial state. The other keys must be plain numbers. Some enter as parameter
+columns the sensitivities do not carry (``Omegak``, ``Nmnu``, ``mnu``,
+``w_DE_0``, ``w_DE_a``, ``cs2_DE``, ``YHe``, ``tau_reio``), the rest not at
+all (``A_s``, ``n_s``, ``k_p``)."""
 
 
 def _cosmology_dictionary(cosmology) -> dict:
-    """The parameter dictionary of a cosmology given as one or as a cosmology object."""
+    """Return a cosmology's parameter dictionary, given a dictionary or a cosmology object."""
 
     if isinstance(cosmology, dict):
         return dict(cosmology)
@@ -1178,12 +1176,12 @@ def _cosmology_dictionary(cosmology) -> dict:
 
 
 def _split_cosmologies(cosmologies):
-    """``(fixed, theta)``: each cosmology's plain parameters and its differentiable ones.
+    """Return ``(fixed, theta)``: each cosmology's plain and differentiable parameters.
 
     ``fixed`` holds one dictionary per cosmology of the keys outside
-    :data:`DIFFERENTIABLE_PARAMETERS` as floats, which is where a JAX tracer
-    given for one of those keys is refused; ``theta`` is the
-    ``(n_cosmologies, 5)`` array of the differentiable keys, traced or not.
+    :data:`DIFFERENTIABLE_PARAMETERS`, as floats. The float conversion raises
+    ``ValueError`` for a JAX tracer given for one of those keys. ``theta`` is
+    the ``(n_cosmologies, 5)`` array of the differentiable keys, traced or not.
     """
 
     fixed, rows = [], []
@@ -1213,7 +1211,7 @@ def _split_cosmologies(cosmologies):
 
 
 def _input_vector(fixed: dict, theta_row, xp=jnp) -> jax.Array:
-    """The directed inputs of :data:`DIRECTED_NAMES` from a cosmology's parameters, in JAX (or ``xp``)."""
+    """Return the inputs of :data:`DIRECTED_NAMES` from a cosmology's parameters, in JAX (or ``xp``)."""
 
     param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta_row))}
     d = density_parameters(param, xp=xp)
@@ -1233,13 +1231,13 @@ def _input_vector(fixed: dict, theta_row, xp=jnp) -> jax.Array:
 
 
 def _named_error_weights(weights, layout, k_launch):
-    """Solver error weights ``(n_traj, nvar)`` in launch order from ``{state name: weight}``.
+    """Turn ``{state name: weight}`` into solver error weights ``(n_traj, nvar)`` in launch order.
 
     Each weight is a number or a function of the trajectories' wave numbers
-    (``k_launch``, launch order) returning one per trajectory; the states not
-    named keep weight one. The names are the layout's
-    (:func:`~discoeb.eb_model.layout_state_names`), so a caller never needs
-    the state's index order or the launch's trajectory order.
+    (``k_launch``, launch order) that returns one per trajectory. Unnamed states
+    keep weight one. The names are the layout's
+    (:func:`~discoeb.eb_model.layout_state_names`), so a caller never needs the
+    state's index order or the launch's trajectory order.
     """
 
     names = layout_state_names(layout)
@@ -1269,24 +1267,25 @@ def _kept_values(
     max_steps: int = PERTURB_MAX_STEPS,
     thermo_weight: float = THERMO_ERROR_WEIGHT,
 ):
-    """The hooked launches of :func:`solve_eb` as a function of the batch's directed inputs.
+    """Return the hooked launches of :func:`solve_eb` as a function of the directed inputs.
 
-    Returns ``of_inputs(x)``, ``x`` the ``(n_cosmologies, 9)`` inputs of
-    :data:`DIRECTED_NAMES`, giving the kept quantities arranged
-    ``(n_cosmologies, len(names), n_k, n_tau)`` in the caller's wave-mode
-    order, as a ``jax.custom_jvp`` in ``x``: the plain hooked launch for the
-    value and, for the tangent, a forward-sensitivity launch -- every
-    trajectory replicated once per input, each replica carrying the single
-    column ``S = dy / d eps`` of its unit direction through ``IX_EPS`` and
-    ``IX_DIR`` -- with the tangent hook of :func:`build_keep_hook`, which
-    stores each kept quantity and its derivative along the column, so the
-    derivative too is formed in the kernel and no history is stored. The joint
-    launch uses the fp64 LU and keeps the sensitivities out of step control;
-    its primal agrees with the plain fp32-LU one to ~1e-6 of a quantity's
-    scale. The reionization redshift is that of ``prepared``, held fixed, and
-    so is ``tau0``, unless ``tau_end_of`` maps the inputs ``x`` to each
-    cosmology's conformal age: the trajectories then stop at the age of the
-    inputs given (its value; the derivative is still the one at fixed ``tau0``).
+    The result, ``of_inputs(x)``, takes ``x``, the ``(n_cosmologies, 9)``
+    inputs of :data:`DIRECTED_NAMES`, and returns the kept quantities as
+    ``(n_cosmologies, len(names), n_k, n_tau)`` in the caller's wave-mode order.
+    It is a ``jax.custom_jvp`` in ``x``. The plain hooked launch gives the
+    value. A forward-sensitivity launch gives the tangent: it replicates every
+    trajectory once per input, and each replica carries the single column
+    ``S = dy / d eps`` of its unit direction through ``IX_EPS`` and ``IX_DIR``.
+    Its hook is the tangent hook of :func:`build_keep_hook`, which stores each
+    kept quantity and its derivative along the column. So the kernel forms the
+    derivative too and stores no history.
+
+    The joint launch uses the fp64 LU and keeps the sensitivities out of step
+    control. Its primal agrees with the plain fp32-LU one to ~1e-6 of a
+    quantity's scale. The reionization redshift stays that of ``prepared``. So
+    does ``tau0``, unless ``tau_end_of`` maps ``x`` to each cosmology's
+    conformal age. The trajectories then stop at the age of the given inputs, in
+    value only: the derivative is still the one at fixed ``tau0``.
     """
 
     layout = prepared.layout
@@ -1323,9 +1322,9 @@ def _kept_values(
         return base
 
     def arrange(rows):
-        # Rows are packed k-major (row = k_idx * n_cosmo + cosmology_idx) and
-        # the hook row save-major, so this reshape is a view; the transpose to
-        # a cosmology-major layout copies only what was kept.
+        # Rows are k-major (row = k_idx * n_cosmo + cosmology_idx) and each
+        # hook row is save-major, so this reshape is a view. The transpose to
+        # cosmology-major copies only the kept values.
         values = rows.reshape(n_k, n_cosmo, n_grid, n_keep)
         values = jnp.transpose(values[:, :, first:, :], (1, 3, 0, 2))
         if np.any(order != np.arange(n_k)):
@@ -1351,7 +1350,7 @@ def _kept_values(
     def of_inputs_jvp(primals, tangents):
         (x,), (dx,) = primals, tangents
         # Replica j of trajectory i is row i * n_dir + j, along the unit
-        # direction e_j; each carries the single column S = dy / d eps.
+        # direction e_j. Each carries the single column S = dy / d eps.
         params_rep = np.repeat(params, n_dir, axis=0)
         params_rep[:, IX_DIR : IX_DIR + n_dir] = np.tile(
             np.eye(n_dir), (n_k * n_cosmo, 1)
@@ -1368,17 +1367,17 @@ def _kept_values(
             hook_size=2 * n_keep * n_grid,
             save_history=False,
             lu_precision="fp64",
-            # The joint system's thread-local memory, not its registers,
-            # bounds the occupancy: an uncapped register budget halves the
-            # resident threads the driver reserves local memory for.
+            # Thread-local memory, not registers, bounds the joint system's
+            # occupancy. An uncapped register budget halves the resident
+            # threads the driver reserves local memory for.
             max_registers=None,
             sensitivity=eps_sensitivity(nvar),
             **settings,
         )
         out = out.reshape(n_k * n_cosmo, n_dir, n_grid, 2, n_keep)
-        # Every replica integrates the same state; the first's primal serves.
+        # Every replica integrates the same state, so the first's primal serves.
         values = arrange(out[:, 0, :, 0, :])
-        # sens[i, j] = d q_i / d x_j at every save; the contraction with the
+        # sens[i, j] = d q_i / d x_j at every save. The contraction with the
         # input tangent is linear, so jax.grad transposes it.
         dx_rows = jnp.tile(dx, (n_k, 1))
         tangent = arrange(jnp.einsum("ijsq,ij->isq", out[:, :, :, 1, :], dx_rows))
@@ -1404,74 +1403,72 @@ def solve_eb(
 ) -> EBSolution:
     """Solve the Einstein-Boltzmann system of ``cosmologies`` and keep ``keep`` at ``tau``.
 
-    One modax Rodas5P launch over every (wave mode, cosmology) pair, as
-    :func:`solve_perturbation_history_batch`, but the launch records only the
-    quantities named in ``keep`` at the requested times, through modax's save
-    hook: the kernel evaluates them from the dense-output state at each save
-    and stores ``len(keep)`` numbers, so the device holds ``n_k *
-    n_cosmologies * len(tau) * len(keep)`` values and never the history. A
-    1000-time, 128-mode, 128-cosmology solve that keeps the comoving
-    curvature perturbation alone stores 130 MB instead of the 7 GB of the
-    55-variable history.
+    Like :func:`solve_perturbation_history_batch`, this runs one modax Rodas5P
+    launch over every (wave mode, cosmology) pair. Unlike it, the launch records
+    only the quantities named in ``keep`` at the requested times, through
+    modax's save hook. The kernel evaluates them from the dense-output state at
+    each save and stores ``len(keep)`` numbers, so the device holds ``n_k *
+    n_cosmologies * len(tau) * len(keep)`` values and never the history. Keeping
+    only the comoving curvature perturbation at 1000 times for 128 modes and 128
+    cosmologies stores 130 MB instead of the 7 GB of the 55-variable history.
 
     Parameters
     ----------
     cosmologies
         One cosmology (a parameter dictionary or a cosmology object) or a
-        sequence of them, all of one perturbation layout. The values of
-        :data:`DIFFERENTIABLE_PARAMETERS` may be JAX arrays, traced or not;
-        the others must be plain numbers.
+        sequence of them, all with one perturbation layout. The values of
+        :data:`DIFFERENTIABLE_PARAMETERS` may be JAX arrays, traced or not. The
+        others must be plain numbers.
     k_values
         Wave numbers in 1/Mpc, in any order.
     tau
-        Strictly increasing conformal times in Mpc, from ``TAU_START`` on, at
-        which to record (every launch starts at ``TAU_START``; a first time
-        equal to it records the initial state). A cosmology whose conformal age ``tau0`` is below a
-        time holds its state today there (its trajectory ends at ``tau0``), so
-        a last time past every ``tau0`` returns the present-day values of the
-        whole batch.
+        Strictly increasing conformal times in Mpc at which to record, starting
+        at or after ``TAU_START``. Every launch starts at ``TAU_START``, so a
+        first time equal to it records the initial state. A cosmology's
+        trajectory ends at its conformal age ``tau0``, and later times hold its
+        state today. A last time past every ``tau0`` therefore returns the
+        present-day values of the whole batch.
     keep
         Names of the quantities to record: state elements
         (:func:`~discoeb.eb_model.layout_state_names`, or the recombination
-        block's ``lna``, ``thermo_0``, ``thermo_1``, ``thermo_2``, ``kappa``)
-        or quantities the joint model provides, such as the comoving
-        curvature perturbation ``R``, the shear ``sigma``, the expansion rate
-        ``adotoa`` or the opacity. Default: every element of the perturbation
-        state, i.e. the hierarchy's full history.
+        block's ``lna``, ``thermo_0``, ``thermo_1``, ``thermo_2``, ``kappa``) or
+        quantities the joint model provides, such as the comoving curvature
+        perturbation ``R``, the shear ``sigma``, the expansion rate ``adotoa`` or
+        the opacity. Default: every element of the perturbation state, which
+        amounts to the hierarchy's full history.
     extra
-        Components appended to the model for the hook: stateless
-        :class:`~discoeb.component.Component` subclasses whose providers read
-        the model's quantities and add their own (the line-of-sight sources
-        of :mod:`discocmb.cmb`); told apart by class when the compiled hook is
-        cached.
+        Components to append to the model for the hook: stateless
+        :class:`~discoeb.component.Component` subclasses whose providers read the
+        model's quantities and add their own (the line-of-sight sources of
+        :mod:`discocmb.cmb`). The hook cache tells them apart by class.
     inputs
         The ``(n_cosmologies, 9)`` directed inputs of :data:`DIRECTED_NAMES`
-        -- the five background densities and ``YHe``, ``Tcmb``, ``H0``,
-        ``Omegab`` of the recombination block -- in place of those the
-        cosmologies imply (:func:`directed_inputs`), and differentiable in
-        their own right: the solution is then a function of them, at the
-        cosmologies' background endpoints held fixed.
+        (the five background densities and the recombination block's ``YHe``,
+        ``Tcmb``, ``H0``, ``Omegab``), replacing those the cosmologies imply
+        (:func:`directed_inputs`). They are differentiable in their own right:
+        the solution becomes a function of them, at fixed background endpoints
+        of the cosmologies.
     rtol, atol, first_step, max_steps, error_weights, thermo_weight
-        The solver settings of :func:`solve_perturbation_history_batch`.
-        ``error_weights`` is ``{state name: weight}``, each weight a number
-        or a function of the trajectories' wave numbers returning one per
-        trajectory (the states not named keep one), or modax's array
-        ``(n_k * n_cosmologies, nvar)`` in launch order (wave modes
-        ascending, cosmologies within).
+        Solver settings, as in :func:`solve_perturbation_history_batch`.
+        ``error_weights`` is either ``{state name: weight}`` or modax's array
+        ``(n_k * n_cosmologies, nvar)`` in launch order (wave modes ascending,
+        cosmologies within). In the dictionary, each weight is a number or a
+        function of the trajectories' wave numbers that returns one per
+        trajectory, and unnamed states keep weight one.
 
     Notes
     -----
-    The hook is compiled once per batch shape and set of names, like the
-    right-hand side. The returned ``values`` are differentiable with respect
-    to the cosmologies' ``Omegam``, ``Omegab``, ``H0``, ``Tcmb`` and ``Neff``
-    under ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad`` (not under ``jit``: the
-    background endpoints are found on the host from the concrete values). The
+    The hook compiles once per batch shape and set of names, like the
+    right-hand side. The returned ``values`` are differentiable in the
+    cosmologies' ``Omegam``, ``Omegab``, ``H0``, ``Tcmb`` and ``Neff`` under
+    ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad``. They are not under ``jit``,
+    since the host finds the background endpoints from the concrete values. The
     derivative runs through the five background densities and the
-    recombination block's ``Tcmb``, ``H0`` and ``Omegab``, which the
-    forward-sensitivity launch of :func:`_kept_values` carries with a hook
-    that stores each kept quantity's derivative beside it, so it too costs
-    one joint launch and no history; it is the derivative at fixed ``tau0``
-    and reionization redshift.
+    recombination block's ``Tcmb``, ``H0`` and ``Omegab``. The
+    forward-sensitivity launch of :func:`_kept_values` carries it, with a hook
+    that stores each kept quantity's derivative beside it, so it also costs one
+    joint launch and no history. It is the derivative at fixed ``tau0`` and
+    reionization redshift.
     """
 
     fixed, theta = _split_cosmologies(_as_batch(cosmologies))
@@ -1484,8 +1481,8 @@ def solve_eb(
         raise ValueError(
             f"tau must be strictly increasing and from TAU_START = {TAU_START} on"
         )
-    # The launch starts at TAU_START, so it is the first save; unless the
-    # caller asked for it, the hook records it too and the row is dropped.
+    # The launch starts at TAU_START, so the hook always records it. Drop
+    # that row unless the caller asked for it.
     drop_first = bool(tau[0] > TAU_START)
     tau_grid = np.concatenate(([TAU_START], tau)) if drop_first else tau
     settings: dict[str, Any] = dict(
@@ -1498,7 +1495,7 @@ def solve_eb(
     held = {}
 
     def prepare(theta):
-        """The prepared solve of the concrete parameters, and its kept-value function."""
+        """Prepare the solve of the concrete parameters and return its kept-value function."""
 
         concrete = np.asarray(theta, dtype=np.float64)
         cosmos = tuple(
@@ -1536,9 +1533,9 @@ def solve_eb(
             return jnp.stack(
                 [_input_vector(fixed[i], theta[i]) for i in range(n_cosmo)]
             )
-        # concrete parameters: the whole batch through one set of eager JAX
-        # operations, elementwise, so bit for bit what each cosmology alone
-        # gives (a last-bit difference in a density can move a step acceptance)
+        # Concrete parameters: one set of eager elementwise JAX operations for
+        # the whole batch matches each cosmology alone bit for bit. A last-bit
+        # difference in a density can move a step acceptance.
         columns = {
             k: jnp.asarray([f[k] for f in fixed], dtype=jnp.float64) for k in keys
         }
@@ -1555,7 +1552,7 @@ def solve_eb(
         )
 
     if inputs is not None:
-        # The given inputs are the solve's variables; the cosmologies set
+        # The given inputs are the solve's variables. The cosmologies set
         # everything else, the background endpoints included, as numbers.
         inputs = jnp.asarray(inputs, dtype=jnp.float64)
         if inputs.shape != (n_cosmo, len(DIRECTED_NAMES)):
@@ -1565,9 +1562,9 @@ def solve_eb(
         return solution(prepare(np.asarray(jax.lax.stop_gradient(theta)))(inputs))
 
     # The background endpoints need the parameters as numbers, which a custom
-    # rule's primals are under jax.grad and jax.jacfwd; the tangent chains
-    # the inputs' dependence on the parameters (JAX) into the inputs-level
-    # rule of _kept_values.
+    # rule's primals are under jax.grad and jax.jacfwd. The tangent chains the
+    # inputs' dependence on the parameters (JAX) into the inputs-level rule of
+    # _kept_values.
     @jax.custom_jvp
     def kept_of(theta):
         return prepare(theta)(inputs_of(theta))
@@ -1582,11 +1579,11 @@ def solve_eb(
 
 
 def directed_inputs(cosmologies) -> np.ndarray:
-    """The ``(n_cosmologies, 9)`` directed inputs of :data:`DIRECTED_NAMES` the cosmologies imply.
+    """Return the ``(n_cosmologies, 9)`` directed inputs of :data:`DIRECTED_NAMES` the cosmologies imply.
 
-    The five background densities and the recombination block's ``YHe``,
-    ``Tcmb``, ``H0`` and ``Omegab``: the variables :func:`solve_eb` takes as
-    ``inputs``, and differentiates with respect to.
+    These are the five background densities and the recombination block's
+    ``YHe``, ``Tcmb``, ``H0`` and ``Omegab``: the variables :func:`solve_eb`
+    takes as ``inputs`` and differentiates with respect to.
     """
 
     fixed, theta = _split_cosmologies(_as_batch(cosmologies))
@@ -1599,17 +1596,17 @@ def directed_inputs(cosmologies) -> np.ndarray:
 
 
 def conformal_ages(cosmologies) -> np.ndarray:
-    """Each cosmology's conformal age ``tau0`` (Mpc), where its trajectories stop.
+    """Return each cosmology's conformal age ``tau0`` (Mpc), where its trajectories stop.
 
-    From the same background endpoints :func:`solve_eb` uses (and caches), so
-    a solve of the same cosmologies right after costs nothing more for them.
+    Reads the same cached background endpoints as :func:`solve_eb`, so a solve
+    of the same cosmologies right after reuses them.
     """
 
     return np.asarray(_prepare_solve(_as_batch(cosmologies)).tau0, dtype=np.float64)
 
 
 def state_names(cosmology) -> tuple[str, ...]:
-    """The names of the perturbation states of a cosmology's layout, for ``keep`` and ``error_weights``."""
+    """Return the perturbation state names of a cosmology's layout, for ``keep`` and ``error_weights``."""
 
     return layout_state_names(_layout_for(_as_cosmology(cosmology)))
 
@@ -1617,4 +1614,4 @@ def state_names(cosmology) -> tuple[str, ...]:
 as_cosmology = _as_cosmology
 """Normalise a cosmology given as a parameter dictionary (``Omegam``, ``Omegab``,
 ``H0``, ``Tcmb``, ``YHe``, ``Neff``, ``A_s``, ``n_s``, ... ) to the solver's
-cosmology object; one already normalised is returned as it is."""
+cosmology object. Returns one already normalised as it is."""

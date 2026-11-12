@@ -26,27 +26,29 @@
 """The recombination history as states of each wave mode's trajectory.
 
 RECFAST's ``(x_H, x_He, T_m)``, ``ln a`` from the model's own Friedmann sum
-and the optical depth ``kappa = int kappa' dtau`` ride in front of the Einstein-Boltzmann hierarchy as
-five more states of the joint system, and :class:`Recombination` provides the
-hierarchy with ``a``, the Thomson opacity, ``c_s^2`` and the massive-neutrino
-density ratio from them. These states read nothing of the hierarchy, so the
-joint model is a modax hierarchy of two blocks (:func:`discoeb.perturbations.joint_kernel`):
-the recombination block steps on its own ahead of the hierarchy and publishes
-the four quantities, which modax hands over as quintic polynomials of time
-between its steps. Nothing is tabulated and no device buffer is refilled: the
-right-hand side is compiled once per layout and serves every batch.
+and the optical depth ``kappa = int kappa' dtau`` are five extra states in
+front of the Einstein-Boltzmann hierarchy. From them :class:`Recombination`
+provides the hierarchy with ``a``, the Thomson opacity, ``c_s^2`` and the
+massive-neutrino density ratio. These states read nothing of the hierarchy,
+so the joint model is a modax hierarchy of two blocks
+(:func:`discoeb.perturbations.joint_kernel`). The recombination block steps
+on its own ahead of the hierarchy and publishes the four quantities, which
+modax hands over as quintic polynomials of time between its steps. Nothing
+is tabulated and no device buffer is refilled: the right-hand side compiles
+once per layout and serves every batch.
 
-RECFAST's equations are unaltered. Two implementation choices sit beside them:
-``x_H`` is held to ``[0, 1]`` (a hierarchy-sized step can overshoot the
-Saha-to-rate handover at ``z = 1600``, after which the rate equation's
-denominator changes sign and drives ``x_H`` away), and the transcendental
-functions of the rates are evaluated in single precision by default
+RECFAST's equations are unaltered, with two implementation choices beside
+them. ``x_H`` is clamped to ``[0, 1]``: a hierarchy-sized step can overshoot
+the Saha-to-rate handover at ``z = 1600``, after which the rate equation's
+denominator changes sign and drives ``x_H`` away. And the rates'
+transcendental functions run in single precision by default
 (:data:`FP32_MATH`).
 
-Reionization is CAMB's: hydrogen and HeII reionize together in a tanh step of
-width 0.5 in ``y = (1+z)^{3/2}`` about ``z_re``, HeIII at ``z = 3.5``;
-``z_re`` is a parameter of the row, solved from the optical depth
-``tau_reio`` on the background by :func:`discoeb.perturbations.background_endpoints`.
+Reionization follows CAMB. Hydrogen and HeII reionize together in a tanh
+step of width 0.5 in ``y = (1+z)^{3/2}`` about ``z_re``, HeIII at
+``z = 3.5``. ``z_re`` is a column of the parameter row, which
+:func:`discoeb.perturbations.background_endpoints` solves from the optical
+depth ``tau_reio`` on the background.
 """
 
 from __future__ import annotations
@@ -63,23 +65,22 @@ const_me = 9.1093837015e-31  # Electron mass [kg], PDG 2023
 const_mHe_mH = 3.97146570884  # Helium / Hydrogen mass ratio
 const_c = 2.99792458e08  # Speed of light [m/s]
 const_h = 6.62607015e-34  # Planck's constant [Js], PDG 2023
-const_kB = 1.380649e-23  # Boltzman's constant [J/K], PDG 2023
+const_kB = 1.380649e-23  # Boltzmann's constant [J/K], PDG 2023
 const_sigma = 6.6524587321e-29  # Thomson scattering cross section [m^2], PDG 2023
 const_arad = 4 * 5.670374419e-8 / const_c  # Radiation constant [Ws/m^3/K^4], PDG 2023
 
-# bigH = 100.0e3/(1.0e6*3.0856775807e16)  # Ho in s-1
-bigH = 3.2407792902755102e-18  # Ho in s-1
+bigH = 3.2407792902755102e-18  # 100 km/s/Mpc in 1/s
 const_dens_fac = (
     11.223810928601939  # 3 bigH^2 / (8 pi G m_H), G = 6.67430e-11 m^3/kg/s^2
 )
 
 const_c_Mpc_s = 9.71561189e-15  # Mpc/s
 
-## COMMENTS FOR ALL CONSTANTS HAVE BEEN PRESERVED AS MUCH AS POSSIBLE AS THEY ARE IN THE ORIGINAL CODE
+# The comments on the constants below follow the original RECFAST code.
 
 const_EionHe12s = 6.314878282674e5  # HeII 1s ionization energy in [K]
 
-# 2 photon rates and atomic levels
+# Two-photon rates and atomic levels
 Lambda = 8.2245809  # H 2s-1s two photon rate
 Lambda_He = 51.3  # HeI 2s-1s two photon rate
 L_H_ion = 1.096787737e7  # level for H ionization in m^-1
@@ -97,11 +98,11 @@ L_He2St_ion = 3.8454693845e6  # level for 23S1-continuum in m^-1
 sigma_He_2Ps = 1.436289e-22  # H ionization x-section at HeI 21P1-11S0 freq. in m^2
 sigma_He_2Pt = 1.484872e-22  # H ionization x-section at HeI 23P1-11S0 freq. in m^2
 
-# Gaussian fits of the hydrogen fudge (Rubino-Martin et al. 2010), at the
-# RECFAST 1.5.2 values that CLASS (recfast_AGauss2, recfast_zGauss2) and CAMB
-# use, and with them the Planck 2018 analysis.  RECFAST 1.5.0's AGauss2 = 0.05,
-# zGauss2 = 6.75 and fudge 1.105 left x_e 1.8 percent above CLASS's after
-# recombination and the TT spectrum 0.14 percent low at l = 300-2000.
+# Gaussian corrections to the hydrogen fudge (Rubino-Martin et al. 2010) at
+# the RECFAST 1.5.2 values, as in CLASS (recfast_AGauss2, recfast_zGauss2),
+# CAMB and the Planck 2018 analysis. RECFAST 1.5.0's values (AGauss2 = 0.05,
+# zGauss2 = 6.75, fudge 1.105) put x_e 1.8 percent above CLASS after
+# recombination and TT 0.14 percent low at l = 300-2000.
 AGauss1 = -0.14  # amplitude of the 1st Gaussian for the H fudging
 AGauss2 = 0.079  # amplitude of the 2nd Gaussian for the H fudging
 zGauss1 = 7.28  # ln(1+z) central value of the 1st Gaussian
@@ -117,14 +118,14 @@ Lalpha_He = 1.0 / L_He_2p  # Helium I 2p-1s wavelength in SI units
 DeltaB = (
     const_h * const_c * (L_H_ion - L_H_alpha)
 )  # energy of first excited state from continuum = 3.4eV
-CDB = DeltaB / const_kB  # CDB=DeltaB/k_B			Constants derived from B1,B2,R
+CDB = DeltaB / const_kB  # DeltaB / k_B in K
 DeltaB_He = (
     const_h * const_c * (L_He1_ion - L_He_2s)
 )  # energy of first excited state from cont. for He = 3.4eV
-CDB_He = DeltaB_He / const_kB  # CDB_He=DeltaB_He/k_B n=2-infinity for He in Kelvin
+CDB_He = DeltaB_He / const_kB  # DeltaB_He / k_B (n = 2 to continuum) in K
 CB1 = (
     const_h * const_c * L_H_ion / const_kB
-)  # CDB*4.			Lalpha and sigma_Th, calculated
+)  # H ionization energy / k_B in K (13.6 eV, 4 CDB)
 CB1_He1 = const_h * const_c * L_He1_ion / const_kB  # CB1 for HeI ionization potential
 
 CR = 2.0 * math.pi * (const_me / const_h) * (const_kB / const_h)
@@ -137,32 +138,32 @@ Bfact = const_h * const_c * (L_He_2p - L_He_2s) / const_kB
 CL_PSt = const_h * const_c * (L_He_2Pt - L_He_2St) / const_kB
 const_h_c_L_He_2St_kB = const_h * const_c * L_He_2St / (const_kB)
 
-# Pequignot, Petitjean & Boisson fitting parameter for Hydrogen
+# Pequignot, Petitjean & Boisson fit parameters for hydrogen
 a_PPB = 4.309
 b_PPB = -0.6166
 c_PPB = 0.6703
 d_PPB = 0.5300
 
-# Verner and Ferland type fitting parameter for Helium
+# Verner & Ferland type fit parameters for helium
 a_VF = 10.0 ** (-16.744)
 b_VF = 0.711
 T_0 = 10 ** (0.477121)
 T_1 = 10 ** (5.114)
 
-# HeI triplet recombination rate fitting parameters
+# HeI triplet recombination rate fit parameters
 a_trip = 10.0 ** (-16.306)
 b_trip = 0.761
 
 NQ_NU_BACKGROUND = 8
-"""Momentum nodes of the massive-neutrino background density in the recombination block."""
+"""Number of momentum nodes for the massive-neutrino background density in the recombination block."""
 
 Z_H_SAHA_END = 1600.0
-"""Redshift below which hydrogen follows the rate equation instead of Saha equilibrium
-(CLASS's ``recfast_z_full_H_recombination``)."""
+"""Redshift below which hydrogen follows the rate equation instead of Saha
+equilibrium (CLASS's ``recfast_z_full_H_recombination``)."""
 
 DZ_H_SAHA_BLEND = 50.0
-"""Half-width in redshift of the blend from the Saha slope into the rate equation
-(CLASS's ``recfast_delta_z_full_H_recombination``)."""
+"""Half-width in redshift of the blend from the Saha slope into the rate
+equation (CLASS's ``recfast_delta_z_full_H_recombination``)."""
 
 THERMAL_PARAMETERS = (
     "YHe_nominal",
@@ -171,35 +172,37 @@ THERMAL_PARAMETERS = (
     "Omegab_nominal",
     "z_re",
 )
-"""What the recombination rates and reionization read of the cosmology, as
-columns of the parameter row after the hierarchy's own
-(:data:`discoeb.perturbations.PARAM_COLUMNS`). ``z_re = 0`` means no reionization."""
+"""The cosmology's inputs to the recombination rates and reionization. They
+are columns of the parameter row after the hierarchy's own
+(:data:`discoeb.perturbations.PARAM_COLUMNS`). ``z_re = 0`` means no
+reionization."""
 
 THERMO_ERROR_WEIGHT = float(os.environ.get("DISCO_THERMO_WEIGHT", "1.0"))
 """Weight of ``ln a`` and the three RECFAST states in the error norm of the
-recombination block's own steps (their error is held to ``rtol / weight``).
-The block steps ahead of the hierarchy on steps of its own, so the weight sets
-the thermal state's accuracy and the number of RECFAST evaluations, not the
-hierarchy's steps; ``P(k)`` is unchanged from 0.3 to 100, and 0 leaves the
-block's steps uncontrolled."""
+recombination block's steps, which keep their error below ``rtol / weight``.
+The block takes its own steps ahead of the hierarchy, so the weight sets the
+thermal state's accuracy and the number of RECFAST evaluations, not the
+hierarchy's steps. ``P(k)`` does not change between 0.3 and 100. A weight of
+0 leaves the block's steps uncontrolled."""
 
 AKTHOM_PER_OMEGAB_H0SQ = 2.3038921003709498e-9
-"""``n_H sigma_T c / (H_0 units)``: ``kappa' = x_e akthom / a^2`` with ``akthom = this (1 - Y_He) Omega_b H_0^2``."""
+"""``n_H sigma_T c / (H_0 units)``: ``kappa' = x_e akthom / a^2`` with
+``akthom = this (1 - Y_He) Omega_b H_0^2``."""
 
 FP32_MATH = os.environ.get("DISCO_THERMO_FP32_MATH", "1") == "1"
 """Evaluate the exponentials, fractional powers and logarithms of RECFAST's
-rates in single precision (on by default; ``DISCO_THERMO_FP32_MATH=0`` keeps
-them double): the same equations,
-with those functions good to 1e-7 instead of 1e-16, on a card whose fp64
-transcendentals run at 1/64 rate. Only where the argument range allows it:
+rates in single precision. On by default, ``DISCO_THERMO_FP32_MATH=0`` keeps
+them double. The equations stay the same, the functions are good to 1e-7
+instead of 1e-16, and they run on a card whose fp64 transcendentals run at
+1/64 rate. This applies only where the argument range allows it.
 ``(CR T)^{3/2}`` reaches 1e42 and the Boltzmann factor ``e^{680}``, so those
-stay double; the ``e^{-E/T}`` factors stay inside fp32's range wherever the
-term they weight matters. The scale factor the recombination block publishes
-to the hierarchy stays double: single precision rounds ``ln a`` and makes ``a``
-a staircase in the parameters whose quintic interpolant the hierarchy reads
-(:meth:`Recombination.a`). The powers of the reionization step are single
-precision: in double they cost 7 percent of a P(k) batch, and the step matters
-only where the opacity is too small for its rounding to show."""
+stay double. The ``e^{-E/T}`` factors stay inside fp32's range wherever the
+term they weight matters. The scale factor the block publishes to the
+hierarchy stays double: single precision rounds ``ln a`` and turns ``a`` into
+a staircase in the parameters, and the hierarchy reads its quintic
+interpolant (:meth:`Recombination.a`). The powers of the reionization step
+are single precision. In double they cost 7 percent of a P(k) batch, and the
+step matters only where the opacity is too small for its rounding to show."""
 
 if FP32_MATH:
 
@@ -227,9 +230,10 @@ else:
 def saha_slope(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
     """``d x / d z`` of the Saha ionization fraction at ``z`` (RECFAST's Saha equation).
 
-    One exit: numba-cuda-mlir gives a function returning from several branches
-    a result slot, and inlining it at two call sites of one caller merges the
-    two slots into a memref phi that LLVM's typed-pointer verifier rejects.
+    Has a single return on purpose. numba-cuda-mlir gives a function that
+    returns from several branches a result slot. Inlining it at two call
+    sites of one caller merges the two slots into a memref phi, which LLVM's
+    typed-pointer verifier rejects.
     """
 
     T = Tcmb * (1.0 + z)
@@ -256,11 +260,12 @@ def saha_slope(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
 
 
 def saha_fraction(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
-    """The Saha ionization fraction at ``z`` whose rate :func:`saha_slope` is.
+    """The Saha ionization fraction at ``z``, the integral of :func:`saha_slope`.
 
-    Fully ionized (``f_factor``) where :func:`saha_slope` is zero at high
-    temperature, ``2 beta / (sqrt(alpha^2 + 4 beta) + alpha)`` below; a state
-    integrated from full ionization with :func:`saha_slope` follows it. One exit.
+    Returns ``f_factor`` (fully ionized) at high temperature, where
+    :func:`saha_slope` is zero, and ``2 beta / (sqrt(alpha^2 + 4 beta) +
+    alpha)`` below. A state integrated from full ionization with
+    :func:`saha_slope` follows it. Single return, as in :func:`saha_slope`.
     """
 
     T = Tcmb * (1.0 + z)
@@ -311,17 +316,17 @@ def helium_rate(x_H, x_He, xe, Tmat, z, a, n_H, Hz, Tcmb, Nnow, fHe):
     """``d x_He / d z``: both Saha stages while their fraction exceeds 0.9, the singlet and triplet rates below.
 
     The switch is RECFAST's ``x_He > 0.9``, tested on the Saha fraction at
-    ``z`` rather than on the state. While the Saha slope drives it the state
-    is that fraction, so the switch falls at the same redshift; but a state
-    test can switch back, and a lane whose step landed just below 0.9 was
-    pulled back across it and crept along ``x_He = 0.9`` for a couple of
-    hundred tiny steps (a few lanes of most warps, at 40 percent of the
-    recombination block's cost). On the fraction it is a function of ``z``
-    alone, the treatment hydrogen's switch has (CLASS 3 does the same).
+    ``z`` instead of the state. While the Saha slope drives the state, the
+    state equals that fraction, so the switch falls at the same redshift. A
+    test on the state can switch back, though. A lane whose step landed just
+    below 0.9 got pulled back across and crept along ``x_He = 0.9`` for a
+    couple of hundred tiny steps (a few lanes of most warps, 40 percent of
+    the recombination block's cost). Tested on the fraction, the switch
+    depends on ``z`` alone, like hydrogen's (CLASS 3 does the same).
 
-    The rate equation is called from one place only: a helper inlined at two
-    call sites, or a local assigned in several branches, gives numba-cuda-mlir
-    a memref phi that LLVM rejects.
+    Only one place calls the rate equation. A helper inlined at two call
+    sites, or a local assigned in several branches, gives numba-cuda-mlir a
+    memref phi that LLVM rejects.
     """
 
     saha = (
@@ -468,20 +473,20 @@ def matter_temperature_rate(Tmat, xe, fHe, zred, Hz, H0, Tcmb):
 def logistic(x):
     """``(1 + tanh x) / 2 = 1 / (1 + e^{-2x})``, a smooth step.
 
-    Through ``exp`` (Enzyme has no forward rule for libdevice's ``tanh``) in
-    single precision where the rates' transcendentals are. The argument is
-    capped at 30: the step is then ``1e-13`` instead of ``0`` where it is off,
-    and the exponential's derivatives, which the sensitivity sweeps multiply by
-    tangents of order a thousand in single precision, stay finite (capped at
-    80, ``e^80 = 5e34`` sat at the edge of single precision and the
-    second-order sweep overflowed it to infinity and the optical depth's
-    sensitivity to NaN).
+    Goes through ``exp`` because Enzyme has no forward rule for libdevice's
+    ``tanh``, and runs in single precision when the rates' transcendentals
+    do. The exponent is capped at 30, so the step reads ``1e-13`` instead of
+    ``0`` where it is off. The cap keeps the exponential's derivatives finite,
+    which the sensitivity sweeps multiply by tangents of order a thousand in
+    single precision. A cap of 80 (``e^80 = 5e34``) sat at the edge of single
+    precision: the second-order sweep overflowed it to infinity and turned the
+    optical depth's sensitivity into NaN.
     """
 
     return 1.0 / (1.0 + exp_(min(-2.0 * x, 30.0)))
 
 
-# --- the component ------------------------------------------------------------------
+# The component
 
 
 def _thermo_initial(lna_start, Tcmb, output):
@@ -495,12 +500,13 @@ def _thermo_initial(lna_start, Tcmb, output):
 class Recombination(Component):
     """``ln a``, RECFAST's ``(x_H, x_He, T_m)`` and the optical depth as driver states.
 
-    ``lna`` is integrated from the model's conformal Hubble rate
-    (``d ln a / d tau = adotoa``); ``thermo`` holds RECFAST's three states,
-    whose rates in ``z`` are converted with ``dz/dtau = -adotoa / a``;
-    ``kappa`` is ``int_{tau_start}^tau kappa' dtau``, from which the hook of
-    :mod:`discocmb.cmb` forms the visibility as ``kappa'(tau) exp(-(kappa(tau_0) -
-    kappa(tau)))``. The quantities the hierarchy reads: ``a``, ``opacity``
+    ``lna`` integrates the model's conformal Hubble rate
+    (``d ln a / d tau = adotoa``). ``thermo`` holds RECFAST's three states,
+    whose rates in ``z`` convert with ``dz/dtau = -adotoa / a``. ``kappa`` is
+    ``int_{tau_start}^tau kappa' dtau``, from which the hook of
+    :mod:`discocmb.cmb` forms the visibility
+    ``kappa'(tau) exp(-(kappa(tau_0) - kappa(tau)))``. The hierarchy reads
+    ``a``, ``opacity``
     (``kappa' = x_e n_H sigma_T a``, with reionization), ``cs2`` (from ``T_m``
     and its own rate, no spline derivative) and ``rhonu`` (the
     :data:`NQ_NU_BACKGROUND`-node quadrature).
@@ -516,23 +522,23 @@ class Recombination(Component):
         self.nu_q = tuple(float(x) for x in q)
         self.nu_w = tuple(float(x) for x in w)
 
-    # -- what the hierarchy reads -----------------------------------------------------
+    # What the hierarchy reads
 
     def a(self, lna):
-        """``exp(ln a)`` in double precision: what the hierarchy reads must be smooth in the parameters.
+        """``exp(ln a)`` in double precision, since the hierarchy needs it smooth in the parameters.
 
-        In single precision ``ln a`` itself is rounded first, so ``a`` is a
-        staircase of relative steps 5e-7 while its derivative (Enzyme's,
-        through the cast) is smooth; the hierarchy reads the published value
-        and rates as one quintic, and the staircase made the spectra jump by
-        1e-5 between neighbouring parameter values whatever the tolerance.
-        Published once per recombination step, the double-precision ``exp``
-        costs nothing measurable.
+        Single precision rounds ``ln a`` first, so ``a`` becomes a staircase
+        of relative steps 5e-7 while its derivative (Enzyme's, through the
+        cast) stays smooth. The hierarchy reads the published value and rates
+        as one quintic, and the staircase made the spectra jump by 1e-5
+        between neighbouring parameter values at any tolerance. The block
+        publishes ``a`` once per recombination step, so the double-precision
+        ``exp`` costs nothing measurable.
         """
         return math.exp(lna)
 
     def rhonu(self, a, amnu):
-        """``rho_nu / rho_nu(massless)`` of one flavour, 1 when massless."""
+        """``rho_nu / rho_nu(massless)`` of one flavour, 1 if massless."""
         total = 1.0
         if amnu > 0.0:
             total = 0.0
@@ -541,7 +547,7 @@ class Recombination(Component):
         return total
 
     def pnu(self, a, amnu):
-        """``p_nu / rho_nu(massless)`` of one flavour: ``(rhonu - d rhonu / d ln a) / 3``, 1/3 when massless."""
+        """``p_nu / rho_nu(massless)`` of one flavour: ``(rhonu - d rhonu / d ln a) / 3``, 1/3 if massless."""
         total = 1.0 / 3.0
         if amnu > 0.0:
             total = 0.0
@@ -550,10 +556,9 @@ class Recombination(Component):
             total *= 1.0 / 3.0
         return total
 
-    # The inputs a derivative may move are read through the trajectory's
-    # direction, ``x = x_nominal + eps dir_x`` (:data:`discoeb.perturbations.IX_EPS`):
-    # ``eps`` is zero in every primal solve, and ``d/d eps`` is the derivative
-    # along ``dir``.
+    # Each input a derivative can move is ``x = x_nominal + eps dir_x``
+    # (:data:`discoeb.perturbations.IX_EPS`). Every primal solve has
+    # ``eps = 0``, and ``d/d eps`` gives the derivative along ``dir``.
 
     def YHe(self, YHe_nominal, eps, dir_YHe):
         return YHe_nominal + eps * dir_YHe
@@ -584,9 +589,10 @@ class Recombination(Component):
         return x_H + fHe * x_He
 
     def xe_reio(self, inv_a, xe_rec, fHe, z_re):
-        """CAMB's reionization step, zero when ``z_re = 0``."""
+        """CAMB's reionization step, zero if ``z_re = 0``."""
         z = inv_a - 1.0
-        # double precision, as for ``a``: the opacity is published to the hierarchy
+        # fp32 under FP32_MATH, unlike ``a``. The step matters only where the
+        # opacity is too small for the rounding to show.
         y = pow_(1.0 + z, 1.5)
         y_re = pow_(1.0 + z_re, 1.5)
         delta_y = 0.75 * pow_(1.0 + z_re, 0.5)
@@ -613,7 +619,7 @@ class Recombination(Component):
             0.0,
         )
 
-    # -- the rates ----------------------------------------------------------------------
+    # The rates
 
     def zred(self, inv_a):
         return inv_a - 1.0
@@ -678,9 +684,9 @@ _ALONE: list = []
 def recombination_model():
     """:class:`Recombination` as a model of its own, for evaluating its providers on the host.
 
-    The reionization fraction, the opacity and the sound speed are then one
-    piece of code wherever they are needed: the device kernel, the background
-    solve for ``z_re`` and the diagnostics' thermal histories.
+    This way the device kernel, the background solve for ``z_re`` and the
+    diagnostics' thermal histories all share one piece of code for the
+    reionization fraction, the opacity and the sound speed.
     """
 
     from .component import Model
