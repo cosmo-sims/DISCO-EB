@@ -27,7 +27,7 @@ uv sync --extra cuda13  # or --extra cuda12
 uv run pytest tests -rs
 uv run pytest "tests/test_perturbations.py::test_matter_power_spectrum_matches_class[N128]" -v
 
-# The command-line entry point: P(k) of flat LCDM
+# The entry point: P(k) of Planck 2018 flat LCDM, one jitted function
 uv run python examples/flat_lcdm_power_spectrum.py
 
 # Run with coverage, as CI does
@@ -351,7 +351,7 @@ The codebase is organized into modular components in `src/discoeb/`:
     it adds the end-time term (`clxc' = -k z`, `clxb' = -k (z + vb)` times
     `d tau0 / dp`) through `_age_shift`, a `custom_jvp` that is zero in value
     and integrates the background only in its tangent.
-    `examples/flat_lcdm_power_spectrum.py` is the command-line entry point
+    `examples/flat_lcdm_power_spectrum.py` is the entry point
 
 11. **Jacobian sparsity** (`CosmologyModel.sparsity`; its test is
     `tests/test_eb_sparsity.py`)
