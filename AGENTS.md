@@ -111,9 +111,11 @@ it (`tests/test_boundary.py`). The contract is `solve_eb(LCDM(cosmologies), k,
 tau, keep=names, extra=components)`: named quantities evaluated in the kernel at the
 save times, the CMB's sources being a `LineOfSightSources` component passed as
 `extra`; error weights by state name; differentiable in
-`DIFFERENTIABLE_PARAMETERS` or in the model's directed inputs (the nine
-`DIRECTED_NAMES` for a built-in model) passed as
-`inputs=` (`directed_inputs` gives a cosmology's). Grids read
+`DIFFERENTIABLE_PARAMETERS` (those `differentiable_parameters(model)` keeps)
+or in the model's directed inputs passed as `inputs=`: all of them, the
+15-wide `DIRECTED_NAMES` superset `directed_inputs` gives a dictionary, or
+the first nine every built-in model shares (`N_COMMON_DIRECTED`), which
+DISCO-CMB's `compute_cl` passes. Grids read
 `background_history`, `density_coefficients` and `conformal_ages`. A CMB
 change that seems to need a private name should add to `__init__.py` instead;
 changing `__init__.py` means running DISCO-CMB's tests too.
@@ -281,10 +283,11 @@ The codebase is organized into modular components in `src/discoeb/`:
    `DIFFERENTIABLE_PARAMETERS`. `_columns(cosmologies, keys=model.parameter_keys())`
    stacks a batch into JAX columns `(n_cosmo,)` by key, values traced or
    not, plus any key another component declares that a cosmology gives
-   (`w_DE_0` in an LCDM dict); a key the solve
-   reads but does not differentiate (`w_DE_*`, `Omegak`, `Nmnu`, `mnu`,
-   `YHe`, `tau_reio`, `cs2_DE`) passes through `_not_differentiable`, a
-   `custom_jvp` whose rule raises, so a derivative is never a silent zero.
+   (`w_DE_0` in an LCDM dict); a key the solve reads but the model does not
+   differentiate (outside `differentiable` = `differentiable_parameters(model)`:
+   `Nmnu`, `YHe`, `cs2_DE`, `tau_reio`, `w_DE_*` without `DarkEnergy`,
+   `mnu` without `MassiveNeutrinos`) passes through `_not_differentiable`, a `custom_jvp`
+   whose rule raises, so a derivative is never a silent zero.
    A dictionary may leave out a key whose declaration has a default (`w_DE_0`,
    `Omegak`, `Nmnu`, `k_p`, ...). `_ParamCosmology.extra` holds declared
    keys beyond its fixed fields. `CosmologyModel.check` skips traced values
@@ -342,7 +345,10 @@ The codebase is organized into modular components in `src/discoeb/`:
      per resolved model) is `(x_nominal of each directed parameter,
      SOLVER_COLUMNS = tau_start, tau_end, k, cosmology_tag, save_index, z_re,
      the other column parameters, eps, dir_x of each directed)`, the directed
-     ones in `DIRECTED_NAMES` order and then component order. `_rows` and the
+     ones in `DIRECTED_NAMES` order, then component order. `grhok`, `w_DE_*`, `cs2_DE`,
+     `grhor_nu` and `amnu` are directed (2026-11-13); `amnu` is one
+     declaration `MassiveNeutrinos` and `Recombination` share, and
+     `Model._collect` lets two components bring the same generated provider. `_rows` and the
      initial state iterate over the declarations. `PARAM_COLUMNS`, `N_PARAM`,
      `DIRECTED_COLUMNS` are `W0WACDM_MNU`'s row (`DEFAULT_LAYOUT`), a superset
      of every built-in model's, for host tests and `make_params`
@@ -352,14 +358,22 @@ The codebase is organized into modular components in `src/discoeb/`:
      model and set of names (`_keep_hook`)
 
 8. **sensitivities.py** - `_kept_values`: the hooked launch as a
-   `jax.custom_jvp` in the layout's directed inputs (`DIRECTED_NAMES`). Its rule replicates
-   every trajectory once per input and runs `jax.jvp` of the launch in the
-   parameter row's `eps` column, split into a leaf of its own (`(head, eps,
+   `jax.custom_jvp` in a pytree of variables that `to_inputs` maps to the
+   layout's directed inputs (`solve_eb` passes the cosmology columns and
+   `z_re`). Its rule (`symbolic_zeros=True`) replicates every trajectory once
+   per *differentiated* variable, with direction `d inputs / d variable`
+   from `jax.jvp` of `to_inputs`, so the cost is the number of parameters
+   differentiated (5 for the densities' five), not of directed inputs, and
+   an undifferentiated input costs nothing. It runs `jax.jvp` of the launch
+   in the parameter row's `eps` column, split into a leaf of its own (`(head, eps,
    tail)`), with `sens_error_control=False`: modax integrates one sensitivity
    column per replica and keeps each quantity's derivative beside it. fp64
    LU; the joint path's primal agrees with the plain fp32-LU one to ~1e-6 of
    scale. At *fixed tau0*: `matter_power_spectrum` adds the end-time
-   term `d tau0 / dp` itself. The rows, initial state and save times are
+   term `d tau0 / dp` itself. `z_re` stays fixed too: a directed `z_re`
+   with the implicit function theorem on the bisection was tried
+   (2026-11-13) and missed central differences of `P(k)` in `tau_reio` by
+   1.8 percent, so `tau_reio` is held. The rows, initial state and save times are
    explicit arguments of the `custom_jvp`, never closed over, and the rule
    closes over no JAX array: JAX traces it lazily, after the enclosing
    `jit` trace, so a captured tracer breaks `jit(grad(jit(f)))`
@@ -371,15 +385,22 @@ The codebase is organized into modular components in `src/discoeb/`:
    n_tau)` in the caller's order, `solution.model` the model); a time past a
    cosmology's `tau0` holds its state today. Traces under `jit` with every
    cosmology key traced (only k and the names static); `EBSolution` is a
-   pytree. `values` is differentiable in `DIFFERENTIABLE_PARAMETERS`
-   (`Omegam`, `Omegab`, `H0`, `Tcmb`, `Neff`): plain JAX from them to the
-   directed inputs (`_directed_inputs`), then the `custom_jvp` of
-   `_kept_values`. `jax.jvp`, `jacfwd`, `grad` all cost one joint launch,
+   pytree. `values` is differentiable in `differentiable_parameters(model)`
+   of `DIFFERENTIABLE_PARAMETERS` (`Omegam`, `Omegab`, `H0`, `Tcmb`, `Neff`,
+   `Omegak`, and `mnu`, `w_DE_0`, `w_DE_a` where the model has the
+   component): plain JAX from them to the directed inputs
+   (`_directed_inputs`), then the `custom_jvp` of `_kept_values`. `jax.jvp`, `jacfwd`, `grad` all cost one joint launch,
    with or without `jit` (`test_matter_power_spectrum_under_jit`). `test_solve_eb_derivatives` gates the densities-level rule
-   against central differences. The thermal inputs' (`YHe`, `Tcmb`,
-   `Omegab`) derivatives are biased by 0.5 to 2 percent against central
-   differences of the joint solve (fp32 or fp64 rate math alike; measured
-   2026-11-13), the densities' agree to 1e-4. Also `solve_perturbation_history_batch`,
+   against central differences, `test_more_parameters_*` each added
+   parameter's `solve_eb` values and `P(k)`. The solve is not smooth in the
+   parameters below ~1e-6 of a value even at rtol 1e-7, so central
+   differences carry noise falling as 1 / step: for `YHe` the apparent
+   bias in `solve_eb` values went 0.2, 0.01, 0.002 at steps 2.5e-4, 2.5e-3,
+   1e-2 (fp32 or fp64 rate math alike). The 0.5 to 2 percent thermal bias
+   recorded before for `YHe`, `Tcmb`, `Omegab` was measured at small steps
+   and may be mostly that noise (`Tcmb` and `Omegab` not re-measured).
+   `dP/dYHe`, `dP/dcs2_DE` and `dP/dtau_reio` stay 0.8, 1 and 1.8 percent
+   off at every step tried, so those three are held. Also `solve_perturbation_history_batch`,
    `directed_inputs`, `conformal_ages`, `state_names(model)`
 
 10. **power_spectrum.py** - `matter_power_spectrum(k, *, clxc, clxb,
