@@ -25,9 +25,8 @@ from .kernel import (
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
     PERTURB_RTOL,
-    _launch,
-    _pack_batch,
     _prepare_solve,
+    _solve_batch,
 )
 from .models import CosmologyBatch, CosmologyModel, _batch_of
 from .recombination import THERMO_ERROR_WEIGHT
@@ -57,20 +56,18 @@ def solve_perturbation_history_batch(
     """
 
     batch = _batch_of(cosmologies)
-    prepared = _prepare_solve(batch.model, batch.cosmologies)
-    params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_save)
-    sol = _launch(
-        prepared,
-        params,
-        y0,
-        t_span,
+    sol, prepared, k_sorted = _solve_batch(
+        batch.model,
+        batch.cosmologies,
+        k_values,
+        tau_save,
         rtol=rtol,
         atol=atol,
         first_step=first_step,
         max_steps=max_steps,
     )
     hist = jnp.asarray(sol).reshape(
-        len(k_sorted), len(prepared.cosmologies), len(t_span), prepared.model.nvar
+        len(k_sorted), len(prepared.cosmologies), -1, prepared.model.nvar
     )
     return hist, k_sorted, prepared
 

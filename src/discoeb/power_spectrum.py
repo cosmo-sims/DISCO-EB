@@ -12,9 +12,8 @@ from .kernel import (
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
     PERTURB_RTOL,
-    _launch,
-    _pack_batch,
     _prepare_solve,
+    _solve_batch,
 )
 from .models import CosmologyBatch, _batch_of
 from .sensitivities import _kept_values
@@ -78,13 +77,10 @@ def solve_matter_power_spectrum(
     """
 
     batch = _batch_of(cosmologies)
-    prepared = _prepare_solve(batch.model, batch.cosmologies)
-    params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values)
-    sol = _launch(
-        prepared,
-        params,
-        y0,
-        t_span,
+    sol, prepared, k_sorted = _solve_batch(
+        batch.model,
+        batch.cosmologies,
+        k_values,
         rtol=rtol,
         atol=atol,
         first_step=first_step,

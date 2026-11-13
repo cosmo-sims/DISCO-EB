@@ -490,6 +490,43 @@ def _launch(
     )
 
 
+def _solve_batch(
+    model: CosmologyModel,
+    cosmologies,
+    k_values,
+    tau_save=None,
+    *,
+    rtol: float = PERTURB_RTOL,
+    atol: float = PERTURB_ATOL,
+    first_step: float = PERTURB_FIRST_STEP,
+    max_steps: int = PERTURB_MAX_STEPS,
+    **options,
+):
+    """Solve a batch of cosmologies at ``k_values`` in one launch.
+
+    Prepares the batch (:func:`_prepare_solve`), packs its trajectories
+    (:func:`_pack_batch`) and launches them (:func:`_launch`, which takes
+    ``options``). Returns ``(solution, prepared, k_sorted)``. ``solution`` is
+    whatever modax returns, with rows in ``k_idx * n_cosmo + cosmology_idx``
+    order over the ascending ``k_sorted``.
+    """
+
+    prepared = _prepare_solve(model, cosmologies)
+    params, y0, t_span, _, k_sorted = _pack_batch(prepared, k_values, tau_save)
+    solution = _launch(
+        prepared,
+        params,
+        y0,
+        t_span,
+        rtol=rtol,
+        atol=atol,
+        first_step=first_step,
+        max_steps=max_steps,
+        **options,
+    )
+    return solution, prepared, k_sorted
+
+
 def build_keep_hook(model, names):
     """Return a modax save hook ``(y, tau, p) -> tuple`` of the quantities ``names``.
 
