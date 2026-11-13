@@ -64,7 +64,7 @@ from .models import (
     CosmologyBatch,
     CosmologyModel,
 )
-from .power_spectrum import matter_power_spectrum_jax, solve_matter_power_spectrum_batch
+from .power_spectrum import matter_power_spectrum_jax, solve_matter_power_spectrum
 from .recombination import THERMO_ERROR_WEIGHT
 from .solver import (
     EBSolution,
@@ -98,7 +98,7 @@ __all__ = [
     "directed_inputs",
     "joint_model",
     "matter_power_spectrum_jax",
-    "solve_matter_power_spectrum_batch",
+    "solve_matter_power_spectrum",
     "solve_eb",
     "state_names",
 ]

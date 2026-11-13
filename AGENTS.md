@@ -324,7 +324,7 @@ The codebase is organized into modular components in `src/discoeb/`:
    against central differences. Also `solve_perturbation_history_batch`,
    `directed_inputs`, `conformal_ages`, `state_names(model)`
 
-10. **power_spectrum.py** - `solve_matter_power_spectrum_batch(k,
+10. **power_spectrum.py** - `solve_matter_power_spectrum(k,
     LCDM(cosmologies))` and `matter_power_spectrum_jax(k, LCDM(cosmology),
     ...)` (a batch of one) for derivatives. `examples/flat_lcdm_power_spectrum.py` is the
     command-line entry point
@@ -427,7 +427,7 @@ See `notebooks/` directory:
 - `nb_minimal_example.ipynb` - Start here: compute matter power spectrum and derivatives
 
 The notebooks still call the removed diffrax `evolve_perturbations*` functions;
-they need porting to `solve_matter_power_spectrum_batch(k, LCDM(cosmologies))`. The CMB notebook moved
+they need porting to `solve_matter_power_spectrum(k, LCDM(cosmologies))`. The CMB notebook moved
 to DISCO-CMB.
 
 ## Contributing

@@ -259,7 +259,7 @@ class CosmologyModel:
 class CosmologyBatch:
     """A model with the cosmologies to solve it for, as ``LCDM([params, ...])`` returns.
 
-    Every solve takes one: ``solve_matter_power_spectrum_batch(k, LCDM(params))``.
+    Every solve takes one: ``solve_matter_power_spectrum(k, LCDM(params))``.
     ``model`` is the :class:`CosmologyModel`, on which the compiled kernel is
     cached, and ``cosmologies`` the tuple of cosmologies as given. Indexing
     gives a batch of the same model: ``batch[0]`` holds the first cosmology,

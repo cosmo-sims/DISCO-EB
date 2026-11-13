@@ -99,11 +99,11 @@ def test_matter_power_spectrum_matches_class(n_cosmologies, benchmark):
     """Check and time one GPU launch over nearby flat LCDM cosmologies."""
 
     from discoeb.models import LCDM
-    from discoeb.power_spectrum import solve_matter_power_spectrum_batch
+    from discoeb.power_spectrum import solve_matter_power_spectrum
 
     cosmologies = _perturbed_cosmologies(n_cosmologies)
     pk_ours = benchmark.pedantic(
-        solve_matter_power_spectrum_batch,
+        solve_matter_power_spectrum,
         args=(MATTER_POWER_K, LCDM(cosmologies)),
         rounds=1,
         warmup_rounds=1,
@@ -199,7 +199,7 @@ def test_solve_eb_keeps_what_the_history_holds():
     from discoeb.background import TAU_START, density_coefficients
     from discoeb.kernel import PARAM_COLUMNS, make_params
     from discoeb.models import LCDM
-    from discoeb.power_spectrum import solve_matter_power_spectrum_batch
+    from discoeb.power_spectrum import solve_matter_power_spectrum
     from discoeb.recombination import THERMO_ERROR_WEIGHT
     from discoeb.solver import solve_eb, solve_perturbation_history_batch
 
@@ -242,7 +242,7 @@ def test_solve_eb_keeps_what_the_history_holds():
             np.testing.assert_allclose(kept[ci, j], expected, rtol=2e-6, atol=1e-12)
 
     # the same thermal error weight as solve_eb's launch, so the two solves agree bit for bit
-    pk_batch = solve_matter_power_spectrum_batch(
+    pk_batch = solve_matter_power_spectrum(
         SOLVE_EB_K, LCDM(cosmologies), thermo_weight=THERMO_ERROR_WEIGHT
     )
     for ci, cosmology in enumerate(prepared.cosmologies):

@@ -25,7 +25,7 @@ jax.config.update("jax_enable_x64", True)
 
 import numpy as np
 
-from discoeb import LCDM, solve_matter_power_spectrum_batch
+from discoeb import LCDM, solve_matter_power_spectrum
 
 
 def flat_lcdm(omega_b: float, omega_c: float, h: float, A_s: float, n_s: float):
@@ -62,7 +62,7 @@ def main(argv=None):
     k = np.geomspace(args.k_min, args.k_max, args.n_k)
 
     # One GPU launch over every wave mode; a list of cosmologies batches them.
-    (pk,) = solve_matter_power_spectrum_batch(k, LCDM([cosmology]))
+    (pk,) = solve_matter_power_spectrum(k, LCDM([cosmology]))
 
     print(f"{'k [1/Mpc]':>12}  {'P(k) [Mpc^3]':>14}")
     for kv, pv in zip(k[:: max(1, len(k) // 16)], pk[:: max(1, len(k) // 16)]):

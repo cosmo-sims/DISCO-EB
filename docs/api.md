@@ -24,7 +24,7 @@
 .. autodata:: discoeb.W0WACDM_MNU
    :no-value:
 
-.. autofunction:: discoeb.solve_matter_power_spectrum_batch
+.. autofunction:: discoeb.solve_matter_power_spectrum
 
 .. autofunction:: discoeb.matter_power_spectrum_jax
 

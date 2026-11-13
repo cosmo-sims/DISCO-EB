@@ -60,7 +60,7 @@ def _power_spectrum_from_final(y_final, k_sorted, cosmologies, k_values, index):
     return pk
 
 
-def solve_matter_power_spectrum_batch(
+def solve_matter_power_spectrum(
     k_values,
     cosmologies: CosmologyBatch,
     *,
