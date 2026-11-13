@@ -101,20 +101,26 @@ def _matter_power(k_values, batch, tau_today=None, **options):
     batch's oldest, which needs the parameters as numbers.
     """
 
+    import jax.numpy as jnp
+
     from discoeb.power_spectrum import (
-        MATTER_POWER_QUANTITIES,
-        MATTER_THERMO_WEIGHT,
-        compute_matter_power_spectrum,
+        matter_power_spectrum,
     )
     from discoeb.solver import conformal_ages, solve_eb
 
+    tau0 = conformal_ages(batch)
     if tau_today is None:
-        tau_today = conformal_ages(batch).max()
-    options.setdefault("thermo_weight", MATTER_THERMO_WEIGHT)
+        tau_today = tau0.max()
+    options.setdefault("thermo_weight", 0.1)
     solution = solve_eb(
-        batch, k_values, [tau_today], keep=MATTER_POWER_QUANTITIES, **options
+        batch, k_values, [tau_today], keep=("clxc", "clxb", "z", "vb"), **options
     )
-    return compute_matter_power_spectrum(solution, batch)
+    today = {name: solution[name][..., -1] for name in solution.names}
+    params = {
+        key: jnp.stack([jnp.asarray(c[key]) for c in batch.cosmologies])
+        for key in ("Omegam", "Omegab", "A_s", "n_s", "k_p")
+    }
+    return matter_power_spectrum(k_values, **today, tau0=tau0, **params)
 
 
 @pytest.mark.parametrize("n_cosmologies", BATCH_SIZE_CASES)
@@ -214,7 +220,7 @@ def test_matter_power_spectrum_derivatives(benchmark):
 
 
 def test_matter_power_spectrum_under_jit():
-    """``solve_eb`` and ``compute_matter_power_spectrum`` trace under ``jit``, every key traced.
+    """``solve_eb`` and ``matter_power_spectrum`` trace under ``jit``, every key traced.
 
     One trace serves every cosmology of the same keys, the values agree with
     the eager solve, the gradient under ``jit`` with the eager one, and a key
@@ -227,9 +233,7 @@ def test_matter_power_spectrum_under_jit():
     from discoeb.cosmology import DIFFERENTIABLE_PARAMETERS
     from discoeb.models import LCDM
     from discoeb.power_spectrum import (
-        MATTER_POWER_QUANTITIES,
-        MATTER_THERMO_WEIGHT,
-        compute_matter_power_spectrum,
+        matter_power_spectrum,
     )
     from discoeb.solver import conformal_ages, solve_eb
 
@@ -238,14 +242,19 @@ def test_matter_power_spectrum_under_jit():
     def power(cosmology):
         traces.append(cosmology)
         batch = LCDM([cosmology])
+        tau0 = conformal_ages(batch)[0]
         solution = solve_eb(
             batch,
             SOLVE_EB_K,
-            conformal_ages(batch).max()[None],
-            keep=MATTER_POWER_QUANTITIES,
-            thermo_weight=MATTER_THERMO_WEIGHT,
+            tau0[None],
+            keep=("clxc", "clxb", "z", "vb"),
+            thermo_weight=0.1,
         )
-        return compute_matter_power_spectrum(solution, batch)[0]
+        today = {name: solution[name][0, :, -1] for name in solution.names}
+        params = {
+            key: cosmology[key] for key in ("Omegam", "Omegab", "A_s", "n_s", "k_p")
+        }
+        return matter_power_spectrum(SOLVE_EB_K, **today, tau0=tau0, **params)
 
     jitted = jax.jit(power)
     for cosmology in _perturbed_cosmologies(2):

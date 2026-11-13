@@ -45,14 +45,25 @@ import jax
 @jax.jit
 def power_spectrum(cosmology):
     batch = LCDM([cosmology])
+    tau0 = conformal_ages(batch)[0]
     solution = solve_eb(
         batch,
         k,
-        conformal_ages(batch).max()[None],
-        keep=MATTER_POWER_QUANTITIES,
-        thermo_weight=MATTER_THERMO_WEIGHT,
+        tau0[None],
+        keep=("clxc", "clxb", "z", "vb"),
+        thermo_weight=0.1,  # a looser recombination history suffices for P(k)
     )
-    return compute_matter_power_spectrum(solution, batch)[0]
+    today = {name: solution[name][0, :, -1] for name in solution.names}
+    return matter_power_spectrum(
+        k,
+        **today,
+        tau0=tau0,
+        Omegam=cosmology["Omegam"],
+        Omegab=cosmology["Omegab"],
+        A_s=cosmology["A_s"],
+        n_s=cosmology["n_s"],
+        k_p=cosmology["k_p"],
+    )
 ```
 
 Under `jit` a model can't check its cosmologies (for instance `w_DE_0 = -1` under `W0WACDM`), since their values aren't known yet.

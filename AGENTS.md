@@ -318,7 +318,7 @@ The codebase is organized into modular components in `src/discoeb/`:
    tail)`), with `sens_error_control=False`: modax integrates one sensitivity
    column per replica and keeps each quantity's derivative beside it. fp64
    LU; the joint path's primal agrees with the plain fp32-LU one to ~1e-6 of
-   scale. At *fixed tau0*: `compute_matter_power_spectrum` adds the end-time
+   scale. At *fixed tau0*: `matter_power_spectrum` adds the end-time
    term `d tau0 / dp` itself. The rows, initial state and save times are
    explicit arguments of the `custom_jvp`, never closed over, and the rule
    closes over no JAX array: JAX traces it lazily, after the enclosing
@@ -342,16 +342,17 @@ The codebase is organized into modular components in `src/discoeb/`:
    2026-11-13), the densities' agree to 1e-4. Also `solve_perturbation_history_batch`,
    `directed_inputs`, `conformal_ages`, `state_names(model)`
 
-10. **power_spectrum.py** - `compute_matter_power_spectrum(solution,
-    LCDM(cosmologies))`, JAX only, turns a `solve_eb` solution into `P(k)`
-    `(n_cosmo, n_k)`. The solve must keep `MATTER_POWER_QUANTITIES` (`clxc`,
-    `clxb`, `z`, `vb`) at a last time at or past every `tau0`
-    (`conformal_ages(batch).max()`, traceable), with
-    `thermo_weight=MATTER_THERMO_WEIGHT`. Differentiable like `solve_eb`;
-    it adds the end-time term (`clxc' = -k z`, `clxb' = -k (z + vb)` times
-    `d tau0 / dp`) through `_age_shift`, a `custom_jvp` that is zero in value
-    and integrates the background only in its tangent.
-    `examples/flat_lcdm_power_spectrum.py` is the entry point
+10. **power_spectrum.py** - `matter_power_spectrum(k, *, clxc, clxb,
+    z, vb, tau0, Omegam, Omegab, A_s, n_s, k_p)`, JAX only, takes arrays and
+    no solution or batch: the four quantities today `(..., n_k)` from a
+    `solve_eb(..., keep=("clxc", "clxb", "z", "vb"),
+    thermo_weight=0.1)` at a last time at or past every
+    `tau0`, and the parameters `(...)`. Differentiable like `solve_eb`; it
+    adds the end-time term (`clxc' = -k z`, `clxb' = -k (z + vb)` times
+    `tau0 - stop_gradient(tau0)`), so `tau0` must come from
+    `conformal_ages(batch)`: `solution.tau0` is under `stop_gradient` and
+    drops the term silently. `examples/flat_lcdm_power_spectrum.py` is the
+    entry point
 
 11. **Jacobian sparsity** (`CosmologyModel.sparsity`; its test is
     `tests/test_eb_sparsity.py`)
@@ -410,7 +411,7 @@ The typical computation flow is:
    - Initial conditions from the components' `State(initial=...)`
    - One modax launch over every (wave mode, cosmology) pair, keeping named
      quantities through the save hook (`solver.solve_eb`), which
-     `power_spectrum.compute_matter_power_spectrum` turns into `P(k)`
+     `power_spectrum.matter_power_spectrum` turns into `P(k)`
 
 5. **CMB spectrum**: DISCO-CMB, through `eb.solve_eb(LCDM(cosmologies), ...)`
 
@@ -451,7 +452,7 @@ See `notebooks/` directory:
 - `nb_minimal_example.ipynb` - Start here: compute matter power spectrum and derivatives
 
 The notebooks still call the removed diffrax `evolve_perturbations*` functions;
-they need porting to `solve_eb` and `compute_matter_power_spectrum`. The CMB notebook moved
+they need porting to `solve_eb` and `matter_power_spectrum`. The CMB notebook moved
 to DISCO-CMB.
 
 ## Contributing

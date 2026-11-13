@@ -30,6 +30,7 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 import time
 
 import jax
+import jax.numpy as jnp
 
 jax.config.update("jax_enable_x64", True)
 
@@ -37,10 +38,8 @@ import numpy as np
 
 from discoeb import (
     LCDM,
-    MATTER_POWER_QUANTITIES,
-    MATTER_THERMO_WEIGHT,
-    compute_matter_power_spectrum,
     conformal_ages,
+    matter_power_spectrum,
     solve_eb,
 )
 
@@ -76,14 +75,23 @@ def cosmologies(n, offset):
 
 def matter_power(k, batch):
     """``P(k)`` of a batch: one ``solve_eb`` launch, then the spectrum from what it kept."""
+    tau0 = conformal_ages(batch)
     solution = solve_eb(
         batch,
         k,
-        [conformal_ages(batch).max()],  # today: each trajectory stops at its own age
-        keep=MATTER_POWER_QUANTITIES,
-        thermo_weight=MATTER_THERMO_WEIGHT,
+        tau0.max()[None],  # today: each trajectory stops at its own age
+        keep=("clxc", "clxb", "z", "vb"),
+        # recombination ten times looser than the hierarchy: moves P(k) by
+        # under 6e-4 and takes 150 steps per trajectory instead of 225
+        thermo_weight=0.1,
     )
-    return jax.block_until_ready(compute_matter_power_spectrum(solution, batch))
+    today = {name: solution[name][..., -1] for name in solution.names}
+    params = {
+        key: jnp.asarray([c[key] for c in batch.cosmologies])
+        for key in ("Omegam", "Omegab", "A_s", "n_s", "k_p")
+    }
+    pk = matter_power_spectrum(k, **today, tau0=tau0, **params)
+    return jax.block_until_ready(pk)
 
 
 k = np.geomspace(1.0e-4, 1.0, 128)  # 1/Mpc

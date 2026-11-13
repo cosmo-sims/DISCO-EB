@@ -24,11 +24,7 @@
 .. autodata:: discoeb.W0WACDM_MNU
    :no-value:
 
-.. autofunction:: discoeb.compute_matter_power_spectrum
-
-.. autodata:: discoeb.MATTER_POWER_QUANTITIES
-
-.. autodata:: discoeb.MATTER_THERMO_WEIGHT
+.. autofunction:: discoeb.matter_power_spectrum
 
 .. autoclass:: discoeb.EBSolution
    :no-members:

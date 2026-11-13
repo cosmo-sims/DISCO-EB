@@ -2,7 +2,7 @@
 
 An entry point to DISCO-EB: apply a model to a parameter dictionary, solve the
 Einstein-Boltzmann system with ``solve_eb`` and turn what it kept into ``P(k)``
-with ``compute_matter_power_spectrum``, all in one ``jax.jit``-ed function that
+with ``matter_power_spectrum``, all in one ``jax.jit``-ed function that
 runs on the GPU. Every parameter is traced, so a new cosmology reuses the
 compiled function. The first run compiles the GPU kernel (about 35 s); modax
 caches it on disk, so later runs start in seconds.
@@ -26,10 +26,8 @@ import numpy as np
 
 from discoeb import (
     LCDM,
-    MATTER_POWER_QUANTITIES,
-    MATTER_THERMO_WEIGHT,
-    compute_matter_power_spectrum,
     conformal_ages,
+    matter_power_spectrum,
     solve_eb,
 )
 
@@ -54,14 +52,27 @@ def solve_matter_power_spectrum(cosmology: dict) -> jax.Array:
     """``P(k)`` in Mpc^3 of one cosmology today, at the wave numbers ``K``."""
 
     batch = LCDM([cosmology])
+    tau0 = conformal_ages(batch)[0]
     solution = solve_eb(
         batch,
         K,
-        conformal_ages(batch).max()[None],
-        keep=MATTER_POWER_QUANTITIES,
-        thermo_weight=MATTER_THERMO_WEIGHT,
+        tau0[None],
+        keep=("clxc", "clxb", "z", "vb"),
+        # recombination ten times looser than the hierarchy: moves P(k) by
+        # under 6e-4 and takes 150 steps per trajectory instead of 225
+        thermo_weight=0.1,
     )
-    return compute_matter_power_spectrum(solution, batch)[0]
+    today = {name: solution[name][0, :, -1] for name in solution.names}
+    return matter_power_spectrum(
+        K,
+        **today,
+        tau0=tau0,
+        Omegam=cosmology["Omegam"],
+        Omegab=cosmology["Omegab"],
+        A_s=cosmology["A_s"],
+        n_s=cosmology["n_s"],
+        k_p=cosmology["k_p"],
+    )
 
 
 pk = np.asarray(solve_matter_power_spectrum(COSMOLOGY))

@@ -65,9 +65,7 @@ from .models import (
     CosmologyModel,
 )
 from .power_spectrum import (
-    MATTER_POWER_QUANTITIES,
-    MATTER_THERMO_WEIGHT,
-    compute_matter_power_spectrum,
+    matter_power_spectrum,
 )
 from .recombination import THERMO_ERROR_WEIGHT
 from .solver import (
@@ -84,8 +82,6 @@ __all__ = [
     "CosmologyModel",
     "DIFFERENTIABLE_PARAMETERS",
     "DIRECTED_NAMES",
-    "MATTER_POWER_QUANTITIES",
-    "MATTER_THERMO_WEIGHT",
     "EBSolution",
     "PERTURB_ATOL",
     "PERTURB_FIRST_STEP",
@@ -103,7 +99,7 @@ __all__ = [
     "density_coefficients",
     "directed_inputs",
     "joint_model",
-    "compute_matter_power_spectrum",
+    "matter_power_spectrum",
     "solve_eb",
     "state_names",
 ]
