@@ -55,8 +55,8 @@ uv run --no-sync sphinx-build -W docs docs/_build/html   # as CI builds it
 ```
 
 Requires Python >= 3.10 (`.python-version` pins 3.13). modax-solvers and
-numba-enzyme-cuda come from PyPI. The code targets modax after 0.3.0 (commit
-93e79ab, not yet on PyPI): `modax.solve` takes the Rodas5P numerics on the
+numba-enzyme-cuda come from PyPI. The code needs modax 0.4.0 or later:
+`modax.solve` is its only entry point and takes the Rodas5P numerics on the
 method object (`kernel._launch` passes `method=Rodas5P(lu_precision=...,
 gains=PIDGains(pcoeff=0.3, icoeff=0.4))`), a save hook is a plain `(y, t, p)
 -> tuple` function whose values come back as `(N, n_save, n_out)`, and
