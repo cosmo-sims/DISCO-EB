@@ -34,11 +34,12 @@ state history:
   right-hand side.
 * Error weights go by state name (``{"theta_2": f(k)}``), so the caller
   needs neither the state's index order nor the launch order.
-* Differentiation: pass :data:`DIFFERENTIABLE_PARAMETERS` as JAX values, or
-  the nine :data:`DIRECTED_NAMES` inputs (:func:`directed_inputs`) as
-  ``inputs``, and ``values`` becomes differentiable (``jax.jvp``,
-  ``jax.grad``) through forward sensitivities the kernel computes. The
-  derivatives hold ``tau0`` and the reionization redshift fixed.
+* Differentiation: pass :data:`DIFFERENTIABLE_PARAMETERS` as JAX values
+  (those of :func:`differentiable_parameters` for the model), or the
+  :data:`DIRECTED_NAMES` inputs (:func:`directed_inputs`, the model's, the
+  superset or the first nine) as ``inputs``, and ``values`` becomes
+  differentiable (``jax.jvp``, ``jax.grad``) through forward sensitivities
+  the kernel computes. The derivatives hold ``tau0`` fixed.
 
 :func:`background_history`, :func:`density_coefficients` and
 :func:`conformal_ages` give the background for building grids. A cosmology
@@ -71,6 +72,7 @@ from .recombination import THERMO_ERROR_WEIGHT
 from .solver import (
     EBSolution,
     conformal_ages,
+    differentiable_parameters,
     directed_inputs,
     solve_eb,
     state_names,
@@ -97,6 +99,7 @@ __all__ = [
     "background_history",
     "conformal_ages",
     "density_coefficients",
+    "differentiable_parameters",
     "directed_inputs",
     "joint_model",
     "matter_power_spectrum",

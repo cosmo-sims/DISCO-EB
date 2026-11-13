@@ -109,7 +109,7 @@ class Curvature(Species):
     """Spatial curvature: a density ``grhok = 8 pi G rho_K a^2`` and the metric factors."""
 
     Omegak = Parameter(0.0)
-    grhok = Parameter(value=lambda grhom, Omegak: grhom * Omegak, column=True)
+    grhok = Parameter(value=lambda grhom, Omegak: grhom * Omegak, directed=True)
 
     def grho(self, grhok):
         return grhok

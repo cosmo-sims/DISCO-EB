@@ -64,15 +64,19 @@ def _split(cosmology, omega_x=OMEGA_X):
 
 
 def test_the_parameter_reaches_the_dictionary_the_row_and_the_inputs():
-    from discoeb.kernel import DIRECTED_NAMES, parameter_layout
+    from discoeb.kernel import parameter_layout
 
     assert LCDM_X.parameter_keys()["Omega_x"] == 0.0
     assert "Omega_x" not in LCDM.parameter_keys()
     layout = parameter_layout(LCDM_X)
-    assert layout.directed == (*DIRECTED_NAMES, "grhox")
+    # in component order after the shared nine
+    own = parameter_layout(LCDM).directed
+    assert layout.directed[:9] == own[:9]
+    assert sorted(layout.directed) == sorted((*own, "grhox"))
     assert {"grhox_nominal", "dir_grhox"} <= set(layout.columns)
-    assert layout.columns["dir_grhox"] == layout.n - 1
-    assert layout.directed_columns[-1] == layout.columns["grhox_nominal"]
+    i = layout.directed.index("grhox")
+    assert layout.columns["dir_grhox"] == layout.ix_dir + i
+    assert layout.directed_columns[i] == layout.columns["grhox_nominal"]
     # The built-in models' rows have no trace of it.
     assert "grhox_nominal" not in parameter_layout(LCDM).columns
 
@@ -175,14 +179,18 @@ def test_splitting_the_dark_matter_leaves_the_solve_unchanged():
         a, b = np.asarray(split[name]), np.asarray(plain[name])
         assert np.abs(a - b).max() < 1e-3 * np.abs(b).max(), name
 
+    from discoeb.kernel import parameter_layout
+
+    directed = parameter_layout(LCDM_X).directed
     x = directed_inputs(batch)
-    assert x.shape == (1, 10)
+    assert x.shape == (1, len(directed))
 
     def kept(inputs):
         return solve_eb(batch, SOLVE_K, SOLVE_TAU, keep=names, inputs=inputs).values
 
     jac = np.asarray(jax.jacfwd(kept)(jnp.asarray(x)))[..., 0, :]
     assert np.isfinite(jac).all()
-    along_c, along_x = jac[..., 2], jac[..., 9]
+    along_c = jac[..., directed.index("grhoc")]
+    along_x = jac[..., directed.index("grhox")]
     scale = np.abs(along_c).max(axis=(-2, -1), keepdims=True)
     assert np.abs(along_x - along_c).max() < 1e-3 * scale.max()

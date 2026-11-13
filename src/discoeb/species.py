@@ -366,9 +366,9 @@ class MassiveNeutrinos(Species):
 
     Nmnu = Parameter(0.0)  # flavours
     mnu = Parameter(0.0)  # eV, each
-    grhor_nu = Parameter(value=lambda Tcmb: GRHOR_PER_TCMB4 * Tcmb**4, column=True)
+    grhor_nu = Parameter(value=lambda Tcmb: GRHOR_PER_TCMB4 * Tcmb**4, directed=True)
     n_mnu = Parameter(value=lambda Nmnu: Nmnu, column=True)
-    amnu = Parameter(value=lambda mnu, Tcmb: mnu * C2OK / Tcmb, column=True)
+    amnu = Parameter(value=lambda mnu, Tcmb: mnu * C2OK / Tcmb, directed=True)
 
     def __init__(self, **settings):
         super().__init__(**settings)
@@ -460,9 +460,9 @@ class DarkEnergy(_DarkEnergyDensity):
     clxq = State(initial=lambda w_DE_0, clxc: (1.0 + w_DE_0) * clxc)
     thetaq = State()
 
-    w_DE_0 = Parameter(-1.0, column=True)
-    w_DE_a = Parameter(0.0, column=True)
-    cs2_DE = Parameter(1.0, column=True)
+    w_DE_0 = Parameter(-1.0, directed=True)
+    w_DE_a = Parameter(0.0, directed=True)
+    cs2_DE = Parameter(1.0, directed=True)
 
     @classmethod
     def check(cls, w_DE_0, w_DE_a):

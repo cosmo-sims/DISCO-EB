@@ -5,6 +5,7 @@ over every (wave mode, cosmology) pair and records only the named quantities,
 differentiable in :data:`~discoeb.cosmology.DIFFERENTIABLE_PARAMETERS`.
 """
 
+import functools
 from dataclasses import dataclass
 
 import jax
@@ -12,8 +13,16 @@ import jax.numpy as jnp
 import numpy as np
 
 from .background import TAU_START, background_endpoints
-from .cosmology import _as_batch, _columns, _is_concrete
+from .cosmology import (
+    DIFFERENTIABLE_PARAMETERS,
+    UNUSED_BY_THE_SOLVE,
+    _as_batch,
+    _columns,
+    _is_concrete,
+)
 from .kernel import (
+    DIRECTED_NAMES,
+    N_COMMON_DIRECTED,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
@@ -25,6 +34,7 @@ from .kernel import (
 from .models import W0WACDM_MNU, CosmologyBatch, CosmologyModel, _batch_of
 from .recombination import THERMO_ERROR_WEIGHT
 from .sensitivities import _directed_inputs, _kept_values
+from .species import MassiveNeutrinos
 
 
 def solve_perturbation_history_batch(
@@ -167,12 +177,14 @@ def solve_eb(
         :mod:`discocmb.cmb`). The hook cache tells them apart by class.
     inputs
         The ``(n_cosmologies, n_directed)`` directed inputs of the model
-        (:data:`DIRECTED_NAMES` for a built-in one: the five background
-        densities and the recombination block's ``YHe``, ``Tcmb``, ``H0``,
-        ``Omegab``), replacing those the cosmologies imply
-        (:func:`directed_inputs`). They are differentiable in their own right:
-        the solution becomes a function of them, at fixed background endpoints
-        of the cosmologies.
+        (:func:`directed_inputs`, in the order of its
+        :func:`~discoeb.kernel.parameter_layout`), or only the first nine
+        every built-in model shares (the five background densities and the
+        recombination block's ``YHe``, ``Tcmb``, ``H0``, ``Omegab``),
+        replacing those the cosmologies imply. They are differentiable in
+        their own right: the solution becomes a function of them, at fixed
+        background endpoints of the cosmologies. Given nine, the rest come
+        from the cosmologies.
     rtol, atol, first_step, max_steps, error_weights, thermo_weight
         Solver settings, as in :func:`solve_perturbation_history_batch`.
         ``error_weights`` is either ``{state name: weight}`` or modax's array
@@ -190,14 +202,16 @@ def solve_eb(
     the whole solve then runs on the device. Under ``jit`` the cosmologies are
     not checked against the model, since their ``w_DE_*`` and ``Nmnu`` have no
     values yet. The returned ``values`` are differentiable in the
-    cosmologies' ``Omegam``, ``Omegab``, ``H0``, ``Tcmb`` and ``Neff`` under
-    ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad``, with or without ``jit``. The
-    derivative runs through the five background densities and the
-    recombination block's ``Tcmb``, ``H0`` and ``Omegab``. The
+    cosmologies' :func:`differentiable_parameters` of the model under
+    ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad``, with or without ``jit``.
+    The derivative runs through the model's directed inputs: the background
+    densities, the thermal inputs, the curvature, the massive neutrinos and
+    the dark-energy parameters. The
     forward-sensitivity launch of :func:`_kept_values` carries it, with a hook
-    that stores each kept quantity's derivative beside it, so it also costs one
-    joint launch and no history. It is the derivative at fixed ``tau0`` and
-    reionization redshift.
+    that stores each kept quantity's derivative beside it, so it also costs
+    one joint launch and no history, with one replica of every trajectory per
+    differentiated parameter. It is the derivative at fixed ``tau0``,
+    reionization redshift, ``ln a`` at the start and initial state.
     """
 
     batch = _batch_of(cosmologies)
@@ -225,26 +239,58 @@ def solve_eb(
         drop_first = True  # traced times must lie after TAU_START
     tau_grid = jnp.concatenate((jnp.asarray([TAU_START]), tau)) if drop_first else tau
 
-    columns = _columns(batch.cosmologies, keys=model.parameter_keys())
+    columns = _columns(
+        batch.cosmologies,
+        keys=model.parameter_keys(),
+        differentiable=differentiable_parameters(model),
+    )
     prepared = _prepare_solve(model, batch.cosmologies, k_values, extra, columns)
-    if inputs is None:
-        # JAX arithmetic: the derivative in the parameters chains through
-        # the densities into the inputs-level rule of _kept_values
-        x = _directed_inputs(columns, model, extra)
-    else:
+    # The variables of the derivative. JAX arithmetic maps them to the
+    # directed inputs (_directed_inputs), and the rule of _kept_values
+    # launches one sensitivity replica per variable actually differentiated.
+    variables = {
+        # The primordial keys the solve never reads carry no tangent, and so
+        # no replica, when P(k) differentiates them.
+        "columns": {
+            k: jax.lax.stop_gradient(v) if k in UNUSED_BY_THE_SOLVE else v
+            for k, v in columns.items()
+        },
+    }
+    to_inputs = functools.partial(_inputs_of, model, tuple(extra), 0)
+    if inputs is not None:
         # The given inputs are the solve's variables. The cosmologies set
-        # everything else, the background endpoints included.
+        # everything else, the background endpoints included, and the
+        # directed inputs after the first nine when only those are given.
         x = jnp.asarray(inputs, dtype=jnp.float64)
-        n_directed = len(parameter_layout(model, extra).directed)
-        if x.shape != (n_cosmo, n_directed):
-            raise ValueError(
-                f"inputs must be (n_cosmologies, {n_directed}), got {x.shape}"
+        directed = parameter_layout(model, extra).directed
+        if (
+            x.ndim == 2
+            and x.shape[1] == len(DIRECTED_NAMES) != len(directed)
+            and set(directed) <= set(DIRECTED_NAMES)
+        ):
+            # the superset directed_inputs gives a dictionary: take the model's
+            x = x[:, [DIRECTED_NAMES.index(name) for name in directed]]
+        if (
+            x.ndim != 2
+            or x.shape[0] != n_cosmo
+            or x.shape[1]
+            not in (
+                N_COMMON_DIRECTED,
+                len(directed),
             )
-    of_inputs = _kept_values(
+        ):
+            raise ValueError(
+                f"inputs must be (n_cosmologies, {len(directed)}) or "
+                f"(n_cosmologies, {N_COMMON_DIRECTED}), got {x.shape}"
+            )
+        variables["inputs"] = x
+        to_inputs = functools.partial(_inputs_of, model, tuple(extra), x.shape[1])
+    of_variables = _kept_values(
         prepared,
         tau_grid,
         names,
         extra,
+        to_inputs=to_inputs,
         drop_first=drop_first,
         error_weights=error_weights,
         rtol=rtol,
@@ -258,8 +304,40 @@ def solve_eb(
         k=np.asarray(k_values, dtype=np.float64).reshape(-1),
         tau=tau,
         tau0=prepared.tau0,
-        values=of_inputs(x),
+        values=of_variables(variables),
         model=model,
+    )
+
+
+def _inputs_of(model, extra, given, variables) -> jax.Array:
+    """The directed inputs of the variables of :func:`solve_eb`.
+
+    The cosmologies' columns imply them, and ``variables["inputs"]`` replaces
+    the first ``given`` of them.
+    """
+
+    implied = _directed_inputs(variables["columns"], model, extra)
+    if not given:
+        return implied
+    return jnp.concatenate([variables["inputs"], implied[:, given:]], axis=1)
+
+
+def differentiable_parameters(model: CosmologyModel) -> tuple[str, ...]:
+    """Return the keys of :data:`DIFFERENTIABLE_PARAMETERS` a solve of ``model`` differentiates.
+
+    Those the model's components declare (:meth:`CosmologyModel.parameter_keys
+    <discoeb.models.CosmologyModel.parameter_keys>`): ``w_DE_0`` and
+    ``w_DE_a`` need :class:`~discoeb.species.DarkEnergy`. ``mnu`` needs
+    :class:`~discoeb.species.MassiveNeutrinos`, though the recombination
+    block declares it for every model's background. Differentiating another
+    key raises.
+    """
+
+    keys = model.parameter_keys()
+    return tuple(
+        key
+        for key in DIFFERENTIABLE_PARAMETERS
+        if key in keys and (key != "mnu" or model.has(MassiveNeutrinos))
     )
 
 
@@ -267,12 +345,14 @@ def directed_inputs(cosmologies) -> jax.Array:
     """Return the ``(n_cosmologies, n_directed)`` directed inputs the cosmologies imply.
 
     ``cosmologies`` is a :class:`~discoeb.models.CosmologyBatch`, or one
-    cosmology or a sequence of them for the built-in models' inputs
-    (:data:`DIRECTED_NAMES`). These are the model's directed parameters: for
-    a built-in model the five background densities and the recombination block's
-    ``YHe``, ``Tcmb``, ``H0`` and ``Omegab``: the variables :func:`solve_eb`
-    takes as ``inputs`` and differentiates with respect to. A JAX array,
-    traceable under ``jit``.
+    cosmology or a sequence of them for :data:`DIRECTED_NAMES`, the superset
+    of the built-in models' inputs. These are the model's directed
+    parameters: the five background densities and the recombination block's
+    ``YHe``, ``Tcmb``, ``H0`` and ``Omegab``, then those of the model's other
+    components (curvature, dark energy, massive neutrinos): the variables
+    :func:`solve_eb` takes as
+    ``inputs`` and differentiates with respect to. A JAX array, traceable
+    under ``jit``.
     """
 
     model = _model_of(cosmologies)

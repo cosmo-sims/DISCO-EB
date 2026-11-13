@@ -136,10 +136,16 @@ PARAM_COLUMNS = DEFAULT_LAYOUT.columns
 """The default row's columns by the names the providers take them under."""
 N_PARAM = DEFAULT_LAYOUT.n
 DIRECTED_NAMES = DEFAULT_LAYOUT.directed
-"""The inputs a trajectory's sensitivity direction may move in every built-in
-model: the five background densities and the recombination rates' ``YHe``,
-``Tcmb``, ``H0`` and ``Omegab``. A model whose components declare more
-directed parameters appends them (:func:`parameter_layout`)."""
+"""The inputs a trajectory's sensitivity direction may move in
+:data:`~discoeb.models.W0WACDM_MNU`, a superset of every built-in model's.
+The first nine, every model's, are the five background densities and the
+recombination rates' ``YHe``, ``Tcmb``, ``H0`` and ``Omegab``
+(:data:`N_COMMON_DIRECTED`). The others are the curvature density, the
+dark-energy parameters and the massive neutrinos' density and mass; each
+model has those of its components (:func:`parameter_layout`)."""
+N_COMMON_DIRECTED = len(_BUILT_IN_DIRECTED)
+"""The directed inputs every built-in model leads with, which ``solve_eb``
+also takes alone as ``inputs``."""
 DIRECTED_COLUMNS = DEFAULT_LAYOUT.directed_columns
 """The nominal columns of :data:`DIRECTED_NAMES` in the default row."""
 

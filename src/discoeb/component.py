@@ -1221,6 +1221,8 @@ class Model:
                 derivatives[provider.written.name].append(provider)
             elif q in self.sums:
                 contributions[q].append(provider)
+            elif q in producers and producers[q].fn is provider.fn:
+                continue  # one directed parameter two components declare
             elif q in producers:
                 raise ValueError(
                     f"{provider.label} and {producers[q].label} both provide {q!r}"

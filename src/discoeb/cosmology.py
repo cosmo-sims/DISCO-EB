@@ -145,18 +145,34 @@ def _as_batch(cosmologies) -> tuple:
     return tuple(cosmologies)
 
 
-DIFFERENTIABLE_PARAMETERS = ("Omegam", "Omegab", "H0", "Tcmb", "Neff")
+DIFFERENTIABLE_PARAMETERS = (
+    "Omegam",
+    "Omegab",
+    "H0",
+    "Tcmb",
+    "Neff",
+    "Omegak",
+    "mnu",
+    "w_DE_0",
+    "w_DE_a",
+)
 """The cosmology-dictionary keys :func:`solve_eb` differentiates with respect to.
 
-They reach the solve through the five background densities and the
-recombination block's thermal inputs (:data:`DIRECTED_NAMES`). The forward
-sensitivities carry them through both the hierarchy and the recombination
-history. The derivative holds fixed the conformal age ``tau0`` at which a
-trajectory stops, the reionization redshift found for ``tau_reio``, and the
-initial state. Every key may be traced under ``jit``. Those the solve reads
-as parameter columns the sensitivities do not carry (``Omegak``, ``Nmnu``,
-``mnu``, ``w_DE_0``, ``w_DE_a``, ``cs2_DE``, ``YHe``, ``tau_reio``) raise if
-differentiated. The solve never reads ``A_s``, ``n_s`` and ``k_p``."""
+They reach the solve through the directed inputs (:data:`DIRECTED_NAMES`):
+the background densities, the recombination block's thermal inputs, the
+curvature density, the massive neutrinos' density and mass and the
+dark-energy equation of state. The forward sensitivities carry them through
+both the hierarchy and the recombination history. A model differentiates
+those its components declare (:func:`~discoeb.solver.differentiable_parameters`):
+``mnu`` needs :class:`~discoeb.species.MassiveNeutrinos` and ``w_DE_0`` and
+``w_DE_a`` :class:`~discoeb.species.DarkEnergy`. The derivative holds fixed
+the conformal age ``tau0`` at which a trajectory stops
+(:func:`matter_power_spectrum` adds its term), the reionization redshift
+found for ``tau_reio``, ``ln a`` at the start and the initial state. Every
+key may be traced under ``jit``. These raise if differentiated: ``Nmnu``, a
+count, and ``YHe``, ``cs2_DE`` and ``tau_reio``, whose derivatives of
+``P(k)`` miss central differences by 0.8, 1 and 1.8 percent. The solve never
+reads ``A_s``, ``n_s`` and ``k_p``."""
 
 
 def _cosmology_dictionary(cosmology) -> dict:
@@ -183,12 +199,15 @@ def _not_differentiable(value, name):
 @_not_differentiable.defjvp
 def _not_differentiable_jvp(name, primals, tangents):
     raise ValueError(
-        f"{name!r} cannot be differentiated through solve_eb: the differentiable "
-        f"parameters are {DIFFERENTIABLE_PARAMETERS}"
+        f"{name!r} cannot be differentiated through solve_eb of this model: the "
+        f"differentiable parameters are those of {DIFFERENTIABLE_PARAMETERS} "
+        "the model's components declare (differentiable_parameters)"
     )
 
 
-def _columns(cosmologies, held: bool = True, keys=None) -> dict:
+def _columns(
+    cosmologies, held: bool = True, keys=None, differentiable=DIFFERENTIABLE_PARAMETERS
+) -> dict:
     """Return a batch's parameters as JAX columns ``(n_cosmologies,)`` by key.
 
     ``keys`` maps the keys a model declares to their defaults
@@ -199,8 +218,8 @@ def _columns(cosmologies, held: bool = True, keys=None) -> dict:
     that differentiating one raises, and keys no component declares are
     dropped. The cosmologies are dictionaries or cosmology objects, their
     values numbers or JAX values, traced or not. With ``held``, a key the
-    solve reads but does not differentiate (outside
-    :data:`DIFFERENTIABLE_PARAMETERS` and :data:`UNUSED_BY_THE_SOLVE`) raises
+    solve reads but does not differentiate (outside ``differentiable``, by
+    default :data:`DIFFERENTIABLE_PARAMETERS`, and :data:`UNUSED_BY_THE_SOLVE`) raises
     if differentiated: its derivative would otherwise come back as a silent
     zero.
     """
@@ -229,7 +248,7 @@ def _columns(cosmologies, held: bool = True, keys=None) -> dict:
             column = jnp.stack([jnp.asarray(v, dtype=jnp.float64) for v in values])
         else:
             column = jnp.asarray(np.asarray(values, dtype=np.float64))
-        if held and key not in DIFFERENTIABLE_PARAMETERS + UNUSED_BY_THE_SOLVE:
+        if held and key not in (*differentiable, *UNUSED_BY_THE_SOLVE):
             column = _not_differentiable(column, key)
         columns[key] = column
     return columns

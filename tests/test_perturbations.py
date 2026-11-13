@@ -168,6 +168,9 @@ FD_STEP = 1.0e-2
 # percent off. A known gap of the recombination block's sensitivities, gated
 # loosely here so it cannot grow unnoticed.
 DERIV_GATES = {"Tcmb": 5.0e-2}
+# The parameters of the densities, which the derivative tests below have
+# always covered. The others have a test each (test_more_parameters_*).
+DENSITY_PARAMETERS = ("Omegam", "Omegab", "H0", "Tcmb", "Neff")
 
 
 def test_matter_power_spectrum_derivatives(benchmark):
@@ -185,10 +188,10 @@ def test_matter_power_spectrum_derivatives(benchmark):
     import jax
     import jax.numpy as jnp
 
-    from discoeb.cosmology import DIFFERENTIABLE_PARAMETERS
     from discoeb.models import LCDM
     from discoeb.solver import conformal_ages
 
+    DIFFERENTIABLE_PARAMETERS = DENSITY_PARAMETERS
     cosmology = _perturbed_cosmologies(1)[0]
     theta = jnp.asarray([cosmology[name] for name in DIFFERENTIABLE_PARAMETERS])
     # past the age of every shifted cosmology; the parameters are traced
@@ -230,13 +233,13 @@ def test_matter_power_spectrum_under_jit():
     import jax
     import jax.numpy as jnp
 
-    from discoeb.cosmology import DIFFERENTIABLE_PARAMETERS
     from discoeb.models import LCDM
     from discoeb.power_spectrum import (
         matter_power_spectrum,
     )
     from discoeb.solver import conformal_ages, solve_eb
 
+    DIFFERENTIABLE_PARAMETERS = DENSITY_PARAMETERS
     traces = []
 
     def power(cosmology):
@@ -410,12 +413,13 @@ def test_solve_eb_derivatives():
     import jax.numpy as jnp
 
     from discoeb.background import TAU_START
-    from discoeb.cosmology import DIFFERENTIABLE_PARAMETERS, _columns
-    from discoeb.kernel import DIRECTED_COLUMNS, DIRECTED_NAMES, _prepare_solve
+    from discoeb.cosmology import _columns
+    from discoeb.kernel import _prepare_solve, parameter_layout
     from discoeb.models import LCDM
     from discoeb.sensitivities import _directed_inputs, _kept_values
     from discoeb.solver import solve_eb
 
+    DIFFERENTIABLE_PARAMETERS = DENSITY_PARAMETERS
     cosmology = _perturbed_cosmologies(1)[0]
     # the inputs exactly as solve_eb forms them: a last-bit difference moves a
     # step-acceptance and with it a value by ~1e-6
@@ -424,7 +428,7 @@ def test_solve_eb_derivatives():
 
     def inputs_of(theta):
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
-        return _directed_inputs(_columns([param]))
+        return _directed_inputs(_columns([param]), LCDM)
 
     densities = inputs_of(theta)
     tau = np.geomspace(10.0, 2.0e4, 12)
@@ -458,9 +462,12 @@ def test_solve_eb_derivatives():
     )
 
     jac = np.asarray(jax.jacfwd(kept)(densities))[..., 0, :]
-    assert jac.shape == base.shape + (len(DIRECTED_COLUMNS),)
+    DIRECTED_NAMES = parameter_layout(LCDM).directed
+    assert jac.shape == base.shape + (len(DIRECTED_NAMES),)
     assert np.isfinite(jac).all()
     for j, dn in enumerate(DIRECTED_NAMES):
+        if densities[0, j] == 0.0:  # grhok, amnu and z_re of a flat LCDM
+            continue
         step = 1.0e-3 * float(densities[0, j])
         unit = jnp.zeros_like(densities).at[0, j].set(1.0)
         finite = (
@@ -497,14 +504,19 @@ def test_solve_eb_derivatives():
 
     jac_theta = np.asarray(jax.jacfwd(of_parameters)(theta))
     d_densities = np.asarray(jax.jacfwd(lambda t: inputs_of(t)[0])(theta))
-    # Omegab's column is the near-cancelling difference of the CDM and
-    # baryon columns, so the contraction itself carries ~1e-9 of roundoff.
-    np.testing.assert_allclose(
-        jac_theta,
-        np.einsum("cqktj,jp->cqktp", jac, d_densities),
-        rtol=1e-6,
-        atol=1e-9 * np.abs(jac_theta).max(),
-    )
+    # The two are separate launches, one replica per parameter along
+    # d inputs / d theta against one per input, so they differ by the
+    # solve's noise: checked like the central differences above, as the
+    # change each predicts over a 0.1 percent step in units of the
+    # quantity's scale.
+    chained = np.einsum("cqktj,jp->cqktp", jac, d_densities)
+    for p, key in enumerate(DIFFERENTIABLE_PARAMETERS):
+        step = 1.0e-3 * float(theta[p])
+        err = np.abs(jac_theta[..., p] - chained[..., p]) * step / scale
+        for q, name in enumerate(names):
+            assert err[0, q].max() < noise[name], (
+                f"d{name}/d{key}: {err[0, q].max():.3g} against the chain rule"
+            )
     grad_theta = np.asarray(
         jax.grad(lambda t: jnp.sum(of_parameters(t) * weights))(theta)
     )
@@ -513,11 +525,133 @@ def test_solve_eb_derivatives():
     )
     assert np.all(grad_theta != 0.0)
 
-    with pytest.raises(ValueError, match="cannot be differentiated"):
-        jax.grad(
-            lambda m: jnp.sum(
-                solve_eb(
-                    LCDM({**cosmology, "mnu": m}), SOLVE_EB_K, tau, keep=names
-                ).values
-            )
-        )(0.0)
+    # mnu needs MassiveNeutrinos, cs2_DE DarkEnergy. The sensitivities in
+    # YHe, cs2_DE and tau_reio miss central differences of P(k) by 0.8, 1
+    # and 1.8 percent (2026-11-13), so they stay held.
+    for key, value in (("mnu", 0.0), ("YHe", 0.245), ("tau_reio", 0.054)):
+        with pytest.raises(ValueError, match="cannot be differentiated"):
+            jax.grad(
+                lambda v, key=key: jnp.sum(
+                    solve_eb(
+                        LCDM({**cosmology, key: v}), SOLVE_EB_K, tau, keep=names
+                    ).values
+                )
+            )(value)
+
+
+# The parameters beyond the densities': (model, fiducial changes, P(k) step).
+# Both comparisons difference converged solves (rtol = atol = 1e-6): the
+# solve is not smooth in the parameters below ~1e-6 of a value, so the
+# differences' noise falls as 1 / step (measured for YHe, 2026-11-13).
+MORE_PARAMETERS = {
+    "w_DE_0": ("W0WACDM", {"w_DE_0": -0.9, "w_DE_a": 0.1}, 9.0e-3),
+    "w_DE_a": ("W0WACDM", {"w_DE_0": -0.9, "w_DE_a": 0.1}, 4.0e-3),
+    "Omegak": ("LCDM", {"Omegak": 0.02}, 2.0e-3),
+    "mnu": ("LCDM_MNU", {"Nmnu": 1.0, "mnu": 0.1, "Neff": 2.0328}, 4.0e-3),
+}
+# Measured |sensitivity - central difference| / max |central difference|
+# (2026-11-13, RTX 4070 SUPER), largest over R and clxb: w_DE_0 1.6e-4,
+# w_DE_a 3.4e-4, Omegak 2.7e-4, mnu 9.8e-4 (dR/dmnu). Of sum P(k): w_DE_0
+# 6.9e-5, w_DE_a 1.3e-6, Omegak 1.5e-5, mnu 7.2e-5. The gate is 1e-3, 2e-3
+# for mnu's solve. YHe, cs2_DE and tau_reio missed P(k) by 0.8, 1 and 1.8
+# percent at every step tried and stay held.
+MORE_SOLVE_GATES = {"mnu": 2.0e-3}
+MORE_PK_GATES: dict = {}
+MORE_NAMES = ("R", "clxb", "kappa")
+
+
+def _more_parameter_case(name):
+    import discoeb.models as models
+
+    model_name, changes, step = MORE_PARAMETERS[name]
+    cosmology = {**REFERENCE_COSMOLOGY, **changes}
+    return getattr(models, model_name), cosmology, step
+
+
+@pytest.mark.parametrize("name", list(MORE_PARAMETERS))
+def test_more_parameters_solve_eb(name):
+    """``solve_eb``'s ``jax.jvp`` in each parameter beyond the densities' against central differences.
+
+    The differences come from converged solves (rtol = atol = 1e-6), the
+    sensitivity from one at the default tolerance, as in
+    :func:`test_solve_eb_derivatives`. ``kappa``, the optical depth, carries
+    the thermal parameters and the reionization redshift directly.
+    """
+
+    import jax
+    import jax.numpy as jnp
+
+    from discoeb.solver import solve_eb
+
+    model, cosmology, step = _more_parameter_case(name)
+    tau = np.geomspace(10.0, 1.2e4, 12)  # before every shifted tau0
+
+    def values(p, **options):
+        batch = model({**cosmology, name: p})
+        return solve_eb(batch, SOLVE_EB_K, tau, keep=MORE_NAMES, **options).values
+
+    p0 = jnp.asarray(float(cosmology[name]))
+    _, tangent = jax.jvp(values, (p0,), (jnp.ones_like(p0),))
+    tangent = np.asarray(tangent)
+    converged = dict(rtol=1.0e-6, atol=1.0e-6, max_steps=200_000)
+    finite = (
+        np.asarray(values(p0 + step, **converged))
+        - np.asarray(values(p0 - step, **converged))
+    ) / (2.0 * step)
+    assert np.isfinite(tangent).all()
+    value = np.abs(np.asarray(values(p0)))
+    for q, quantity in enumerate(MORE_NAMES):
+        scale = np.abs(value[0, q]).max()
+        err = np.abs(tangent[0, q] - finite[0, q]).max()
+        signal = np.abs(finite[0, q]).max()
+        print(
+            f"d{quantity}/d{name}: {err / signal:.3g} of the largest difference, "
+            f"which moves the quantity by {signal * step / scale:.3g} of its scale"
+        )
+        if signal * step < 1.0e-4 * scale:
+            # A change the solve's noise swamps: the sensitivity must predict
+            # one as small.
+            assert err * step < 1.0e-5 * scale, f"d{quantity}/d{name}"
+            continue
+        assert err < MORE_SOLVE_GATES.get(name, 1.0e-3) * signal, (
+            f"d{quantity}/d{name}: {err / signal:.3g} of its largest central difference"
+        )
+
+
+@pytest.mark.parametrize("name", list(MORE_PARAMETERS))
+def test_more_parameters_matter_power(name):
+    """``jax.grad`` of ``sum P(k)`` in each parameter beyond the densities' against central differences.
+
+    The total derivative: ``compute_matter_power_spectrum`` adds the
+    end-time term of the conformal age, which ``w_DE_*``, ``Omegak`` and
+    ``mnu`` move. Central differences at the default tolerance, as in
+    :func:`test_matter_power_spectrum_derivatives`.
+    """
+
+    import jax
+    import jax.numpy as jnp
+
+    from discoeb.solver import conformal_ages
+
+    model, cosmology, step = _more_parameter_case(name)
+    tau_today = 2.0 * conformal_ages(cosmology).max()
+
+    def total_power(p, **options):
+        batch = model({**cosmology, name: p})
+        return jnp.sum(_matter_power(MATTER_POWER_K, batch, tau_today, **options))
+
+    p0 = jnp.asarray(float(cosmology[name]))
+    grad = float(jax.grad(total_power)(p0))
+    # Converged differences: some of these parameters move P(k) by 1e-5 of
+    # itself over the step, the noise of a default-tolerance solve.
+    converged = dict(rtol=1.0e-6, atol=1.0e-6, max_steps=200_000)
+    finite = (
+        float(total_power(p0 + step, **converged))
+        - float(total_power(p0 - step, **converged))
+    ) / (2.0 * step)
+    rel = abs(grad - finite) / abs(finite)
+    print(f"d(sum P)/d{name}: {grad:.8e} against {finite:.8e}, relative {rel:.3g}")
+    assert rel < MORE_PK_GATES.get(name, 1.0e-3), (
+        f"d(sum P)/d{name}: sensitivity {grad:.8e} against central "
+        f"difference {finite:.8e}, relative {rel:.3g}"
+    )
