@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .component import Component, Model
-from .cosmology import _as_batch
+from .cosmology import _as_batch, _is_concrete
 from .gravity import SUMS, AdiabaticMode, Background, Curvature, Metric
 from .interactions import ThomsonScattering
 from .species import (
@@ -225,17 +225,20 @@ class CosmologyModel:
         (:func:`~discoeb.cosmology.as_cosmology`). A model without the
         dark-energy fluid needs ``w_DE_0 = -1`` and ``w_DE_a = 0``, and one with
         it needs ``w != -1``, where the fluid equations divide by ``1 + w``. A
-        model without massive neutrinos needs ``Nmnu = 0``. Only these plain
-        parameters are read, so the differentiable ones may be traced.
+        model without massive neutrinos needs ``Nmnu = 0``. Under ``jit``,
+        where these are traced, there is nothing to check.
         """
 
         if isinstance(cosmology, dict):
-            w0 = float(cosmology.get("w_DE_0", -1.0))
-            wa = float(cosmology.get("w_DE_a", 0.0))
-            n_mnu = float(cosmology.get("Nmnu", 0.0))
+            w0 = cosmology.get("w_DE_0", -1.0)
+            wa = cosmology.get("w_DE_a", 0.0)
+            n_mnu = cosmology.get("Nmnu", 0.0)
         else:
             w0, wa = cosmology.w_DE_0, cosmology.w_DE_a
             n_mnu = cosmology.num_massive_neutrinos
+        if not all(map(_is_concrete, (w0, wa, n_mnu))):
+            return  # traced under jit: nothing to compare yet
+        w0, wa, n_mnu = float(w0), float(wa), float(n_mnu)
         constant = w0 == -1.0 and wa == 0.0
         if self.has(DarkEnergy) and constant:
             raise ValueError(
@@ -259,7 +262,7 @@ class CosmologyModel:
 class CosmologyBatch:
     """A model with the cosmologies to solve it for, as ``LCDM([params, ...])`` returns.
 
-    Every solve takes one: ``solve_matter_power_spectrum(k, LCDM(params))``.
+    Every solve takes one: ``solve_eb(LCDM(params), k, tau)``.
     ``model`` is the :class:`CosmologyModel`, on which the compiled kernel is
     cached, and ``cosmologies`` the tuple of cosmologies as given. Indexing
     gives a batch of the same model: ``batch[0]`` holds the first cosmology,

@@ -240,14 +240,21 @@ The codebase is organized into modular components in `src/discoeb/`:
      density `neutrino_density_ratio`, summed directly over the
      `NQ_NEUTRINO_TABLE` = 100 momentum nodes. The conformal-time quadrature
      `_background_tau`; `background_endpoints` vmaps it over a batch for
-     `tau0`, `ln a` at `TAU_START` and `z_re`; `endpoints(cosmologies)` caches
-     it per batch (`conformal_ages` reads it, no model needed)
+     `tau0`, `ln a` at `TAU_START` and `z_re` (`conformal_ages` reads it, no
+     model needed). Nothing is cached per batch: the whole preparation is JAX
+     and traces under `jit`
    - The momentum bins (`neutrino_momentum_bins`, cached) live in `util.py`
      beside the Gauss-Laguerre rule
 
 5. **cosmology.py** - The parameter dictionary, its hashable form
    `_ParamCosmology` (`as_cosmology`), batches, and
-   `DIFFERENTIABLE_PARAMETERS` with `_split_cosmologies`
+   `DIFFERENTIABLE_PARAMETERS`. `_columns(cosmologies)` stacks a batch into
+   JAX columns `(n_cosmo,)` by key, values traced or not; a key the solve
+   reads but does not differentiate (`w_DE_*`, `Omegak`, `Nmnu`, `mnu`,
+   `YHe`, `tau_reio`, `cs2_DE`) passes through `_not_differentiable`, a
+   `custom_jvp` whose rule raises, so a derivative is never a silent zero.
+   A dictionary may leave out the keys of `OPTIONAL_DEFAULTS` (`w_DE_0`,
+   `Omegak`, `Nmnu`, `k_p`, ...). `CosmologyModel.check` skips traced values
 
 6. **recombination.py** - Recombination history, inside the joint kernel
    - RECFAST's `(x_H, x_He, T_m)`, `ln a` and the optical depth `kappa` are
@@ -285,9 +292,14 @@ The codebase is organized into modular components in `src/discoeb/`:
      modax `Hierarchy` (recombination block ahead of the perturbations) once
      per resolved model (`lru_cache`, modax's `cache=True` keeps it across
      processes); nothing per batch is compiled or copied, since the thermal
-     history is part of the state. `_prepare_solve(model, cosmologies)` checks
-     the cosmologies against the model and caches a batch's endpoints
-     (`BATCH_CACHE_SIZE` batches)
+     history is part of the state. `_prepare_solve(model, cosmologies, k)`
+     checks the cosmologies against the model (when concrete) and packs the
+     batch with `_pack`, one `jax.jit` per (model, k grid, batch size), about
+     1.2 s to compile and 3 to 11 ms a call: the background endpoints, the
+     parameter rows (`_rows`) and the initial state
+     (`Model.initial_state(xp=jnp)`, whose fillers write into a recording
+     `_Filled` buffer, nothing in place). k must be concrete: it sets the
+     launch's shape and order
    - The GPU right-hand side is the model's components plus `Recombination`,
      built by `component.Model.build`: a driver with the tuple-return
      signature modax and Enzyme need, calling one device function per
@@ -306,28 +318,40 @@ The codebase is organized into modular components in `src/discoeb/`:
    tail)`), with `sens_error_control=False`: modax integrates one sensitivity
    column per replica and keeps each quantity's derivative beside it. fp64
    LU; the joint path's primal agrees with the plain fp32-LU one to ~1e-6 of
-   scale. At *fixed tau0* unless `tau_end_of` is given, as
-   `matter_power_spectrum_jax` does (an explicit end-time term carries
-   `d tau0 / d densities`)
+   scale. At *fixed tau0*: `compute_matter_power_spectrum` adds the end-time
+   term `d tau0 / dp` itself. The rows, initial state and save times are
+   explicit arguments of the `custom_jvp`, never closed over, and the rule
+   closes over no JAX array: JAX traces it lazily, after the enclosing
+   `jit` trace, so a captured tracer breaks `jit(grad(jit(f)))`
 
 9. **solver.py** - `solve_eb(LCDM(cosmologies), k, tau, *, keep=...)` solves
    a batch and records only the named quantities at the given times, so the
    device holds `n_k * n_cosmo * n_tau * len(keep)` numbers and never the
    history. Returns an `EBSolution` (`solution["R"]` is `(n_cosmo, n_k,
    n_tau)` in the caller's order, `solution.model` the model); a time past a
-   cosmology's `tau0` holds its state today. `values` is differentiable in
-   `DIFFERENTIABLE_PARAMETERS` (`Omegam`, `Omegab`, `H0`, `Tcmb`, `Neff`,
-   given as JAX values; the other keys must be plain numbers): a
-   `custom_jvp` whose rule chains `density_parameters` (JAX) into
-   `_kept_values`. `jax.jvp`, `jacfwd`, `grad` all cost one joint launch; not
-   under `jit`. `test_solve_eb_derivatives` gates the densities-level rule
-   against central differences. Also `solve_perturbation_history_batch`,
+   cosmology's `tau0` holds its state today. Traces under `jit` with every
+   cosmology key traced (only k and the names static); `EBSolution` is a
+   pytree. `values` is differentiable in `DIFFERENTIABLE_PARAMETERS`
+   (`Omegam`, `Omegab`, `H0`, `Tcmb`, `Neff`): plain JAX from them to the
+   directed inputs (`_directed_inputs`), then the `custom_jvp` of
+   `_kept_values`. `jax.jvp`, `jacfwd`, `grad` all cost one joint launch,
+   with or without `jit` (`test_matter_power_spectrum_under_jit`). `test_solve_eb_derivatives` gates the densities-level rule
+   against central differences. The thermal inputs' (`YHe`, `Tcmb`,
+   `Omegab`) derivatives are biased by 0.5 to 2 percent against central
+   differences of the joint solve (fp32 or fp64 rate math alike; measured
+   2026-11-13), the densities' agree to 1e-4. Also `solve_perturbation_history_batch`,
    `directed_inputs`, `conformal_ages`, `state_names(model)`
 
-10. **power_spectrum.py** - `solve_matter_power_spectrum(k,
-    LCDM(cosmologies))` and `matter_power_spectrum_jax(k, LCDM(cosmology),
-    ...)` (a batch of one) for derivatives. `examples/flat_lcdm_power_spectrum.py` is the
-    command-line entry point
+10. **power_spectrum.py** - `compute_matter_power_spectrum(solution,
+    LCDM(cosmologies))`, JAX only, turns a `solve_eb` solution into `P(k)`
+    `(n_cosmo, n_k)`. The solve must keep `MATTER_POWER_QUANTITIES` (`clxc`,
+    `clxb`, `z`, `vb`) at a last time at or past every `tau0`
+    (`conformal_ages(batch).max()`, traceable), with
+    `thermo_weight=MATTER_THERMO_WEIGHT`. Differentiable like `solve_eb`;
+    it adds the end-time term (`clxc' = -k z`, `clxb' = -k (z + vb)` times
+    `d tau0 / dp`) through `_age_shift`, a `custom_jvp` that is zero in value
+    and integrates the background only in its tangent.
+    `examples/flat_lcdm_power_spectrum.py` is the command-line entry point
 
 11. **Jacobian sparsity** (`CosmologyModel.sparsity`; its test is
     `tests/test_eb_sparsity.py`)
@@ -385,8 +409,8 @@ The typical computation flow is:
 4. **Perturbation evolution** (`kernel.py`, the model's components)
    - Initial conditions from the components' `State(initial=...)`
    - One modax launch over every (wave mode, cosmology) pair, keeping named
-     quantities through the save hook (`solver.solve_eb`) or the final state
-     (`power_spectrum`)
+     quantities through the save hook (`solver.solve_eb`), which
+     `power_spectrum.compute_matter_power_spectrum` turns into `P(k)`
 
 5. **CMB spectrum**: DISCO-CMB, through `eb.solve_eb(LCDM(cosmologies), ...)`
 
@@ -427,7 +451,7 @@ See `notebooks/` directory:
 - `nb_minimal_example.ipynb` - Start here: compute matter power spectrum and derivatives
 
 The notebooks still call the removed diffrax `evolve_perturbations*` functions;
-they need porting to `solve_matter_power_spectrum(k, LCDM(cosmologies))`. The CMB notebook moved
+they need porting to `solve_eb` and `compute_matter_power_spectrum`. The CMB notebook moved
 to DISCO-CMB.
 
 ## Contributing

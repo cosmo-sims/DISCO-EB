@@ -33,7 +33,29 @@ def R_today(omega_m):
 dR = jax.jacfwd(R_today)(jnp.asarray(cosmology["Omegam"]))  # (64,)
 ```
 
-The derivative holds the conformal age and the reionization redshift fixed. The other parameters must be plain numbers.
+The derivative holds the conformal age and the reionization redshift fixed. The other parameters can't be differentiated, and trying raises an error.
+
+## Under `jit`
+
+`solve_eb` traces under `jax.jit` with every parameter traced, so one compiled function serves every cosmology with the same keys. The wave numbers must be plain numbers, since they set the launch's shape:
+
+```python
+import jax
+
+@jax.jit
+def power_spectrum(cosmology):
+    batch = LCDM([cosmology])
+    solution = solve_eb(
+        batch,
+        k,
+        conformal_ages(batch).max()[None],
+        keep=MATTER_POWER_QUANTITIES,
+        thermo_weight=MATTER_THERMO_WEIGHT,
+    )
+    return compute_matter_power_spectrum(solution, batch)[0]
+```
+
+Under `jit` a model can't check its cosmologies (for instance `w_DE_0 = -1` under `W0WACDM`), since their values aren't known yet.
 
 ## Extending the model
 

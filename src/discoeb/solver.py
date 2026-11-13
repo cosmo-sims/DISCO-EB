@@ -6,19 +6,13 @@ differentiable in :data:`~discoeb.cosmology.DIFFERENTIABLE_PARAMETERS`.
 """
 
 from dataclasses import dataclass
-from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .background import TAU_START, endpoints
-from .cosmology import (
-    DIFFERENTIABLE_PARAMETERS,
-    _as_batch,
-    _as_cosmology,
-    _split_cosmologies,
-)
+from .background import TAU_START, background_endpoints
+from .cosmology import _as_batch, _columns, _is_concrete
 from .kernel import (
     DIRECTED_NAMES,
     PERTURB_ATOL,
@@ -30,7 +24,7 @@ from .kernel import (
 )
 from .models import CosmologyBatch, CosmologyModel, _batch_of
 from .recombination import THERMO_ERROR_WEIGHT
-from .sensitivities import _input_vector, _kept_values
+from .sensitivities import _directed_inputs, _kept_values
 
 
 def solve_perturbation_history_batch(
@@ -81,13 +75,15 @@ class EBSolution:
     quantity's ``(n_cosmologies, n_k, n_tau)`` block. ``tau0`` is each
     cosmology's conformal age, past which its column holds the state today.
     ``values`` is differentiable in the parameters of
-    :data:`DIFFERENTIABLE_PARAMETERS` given as JAX values.
+    :data:`DIFFERENTIABLE_PARAMETERS` given as JAX values. A solution is a JAX
+    pytree, so a jitted function may return one: ``values``, ``tau`` and
+    ``tau0`` are its leaves.
     """
 
     names: tuple[str, ...]
     k: np.ndarray
-    tau: np.ndarray
-    tau0: np.ndarray
+    tau: jax.Array
+    tau0: jax.Array
     values: jax.Array
     model: CosmologyModel
 
@@ -95,6 +91,20 @@ class EBSolution:
         if name not in self.names:
             raise KeyError(f"{name!r} was not kept; the solution holds {self.names}")
         return self.values[:, self.names.index(name)]
+
+
+jax.tree_util.register_pytree_node(
+    EBSolution,
+    lambda s: ((s.values, s.tau, s.tau0), (s.names, tuple(s.k.tolist()), s.model)),
+    lambda aux, leaves: EBSolution(
+        names=aux[0],
+        k=np.asarray(aux[1], dtype=np.float64),
+        tau=leaves[1],
+        tau0=leaves[2],
+        values=leaves[0],
+        model=aux[2],
+    ),
+)
 
 
 def solve_eb(
@@ -129,14 +139,15 @@ def solve_eb(
         A cosmological model applied to the cosmologies to solve,
         ``LCDM([params, ...])`` (:class:`~discoeb.models.CosmologyBatch`). The
         model says which species and interactions the solve evolves. Each
-        cosmology is a parameter dictionary or a cosmology object. The values
-        of :data:`DIFFERENTIABLE_PARAMETERS` may be JAX arrays, traced or not.
-        The others must be plain numbers.
+        cosmology is a parameter dictionary or a cosmology object. Every value
+        may be a JAX array, traced under ``jit`` or not. Only those of
+        :data:`DIFFERENTIABLE_PARAMETERS` may be differentiated.
     k_values
-        Wave numbers in 1/Mpc, in any order.
+        Wave numbers in 1/Mpc, in any order. They must be numbers, not
+        traced: they set the launch's shape.
     tau
         Strictly increasing conformal times in Mpc at which to record, starting
-        at or after ``TAU_START``. Every launch starts at ``TAU_START``, so a
+        at or after ``TAU_START``. Traced times must start after it. Every launch starts at ``TAU_START``, so a
         first time equal to it records the initial state. A cosmology's
         trajectory ends at its conformal age ``tau0``, and later times hold its
         state today. A last time past every ``tau0`` therefore returns the
@@ -172,10 +183,14 @@ def solve_eb(
     Notes
     -----
     The hook compiles once per batch shape and set of names, like the
-    right-hand side. The returned ``values`` are differentiable in the
+    right-hand side. Everything before the launch is JAX: the background
+    endpoints, the parameter rows and the initial states
+    (:func:`~discoeb.kernel._pack`), so ``solve_eb`` traces under ``jit``, and
+    the whole solve then runs on the device. Under ``jit`` the cosmologies are
+    not checked against the model, since their ``w_DE_*`` and ``Nmnu`` have no
+    values yet. The returned ``values`` are differentiable in the
     cosmologies' ``Omegam``, ``Omegab``, ``H0``, ``Tcmb`` and ``Neff`` under
-    ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad``. They are not under ``jit``,
-    since the host finds the background endpoints from the concrete values. The
+    ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad``, with or without ``jit``. The
     derivative runs through the five background densities and the
     recombination block's ``Tcmb``, ``H0`` and ``Omegab``. The
     forward-sensitivity launch of :func:`_kept_values` carries it, with a hook
@@ -186,142 +201,91 @@ def solve_eb(
 
     batch = _batch_of(cosmologies)
     model = batch.model
-    fixed, theta = _split_cosmologies(batch.cosmologies)
-    n_cosmo = len(fixed)
+    n_cosmo = len(batch)
+    names = tuple(model.state_names() if keep is None else keep)
+    if len(set(names)) != len(names):
+        raise ValueError(f"keep names a quantity twice: {names}")
 
-    tau = np.asarray(tau, dtype=np.float64).reshape(-1)
-    if tau.size == 0 or not np.all(np.isfinite(tau)):
-        raise ValueError("tau must be a non-empty array of finite conformal times")
-    if tau[0] < TAU_START or np.any(np.diff(tau) <= 0.0):
-        raise ValueError(
-            f"tau must be strictly increasing and from TAU_START = {TAU_START} on"
-        )
-    # The launch starts at TAU_START, so the hook always records it. Drop
-    # that row unless the caller asked for it.
-    drop_first = bool(tau[0] > TAU_START)
-    tau_grid = np.concatenate(([TAU_START], tau)) if drop_first else tau
-    settings: dict[str, Any] = dict(
+    tau = jnp.asarray(tau, dtype=jnp.float64).reshape(-1)
+    if tau.size == 0:
+        raise ValueError("tau must be a non-empty array of conformal times")
+    if _is_concrete(tau):
+        checked = np.asarray(tau)
+        if not np.all(np.isfinite(checked)):
+            raise ValueError("tau must be an array of finite conformal times")
+        if checked[0] < TAU_START or np.any(np.diff(checked) <= 0.0):
+            raise ValueError(
+                f"tau must be strictly increasing and from TAU_START = {TAU_START} on"
+            )
+        # The launch starts at TAU_START, so the hook always records it. Drop
+        # that row unless the caller asked for it.
+        drop_first = bool(checked[0] > TAU_START)
+    else:
+        drop_first = True  # traced times must lie after TAU_START
+    tau_grid = jnp.concatenate((jnp.asarray([TAU_START]), tau)) if drop_first else tau
+
+    columns = _columns(batch.cosmologies)
+    prepared = _prepare_solve(model, batch.cosmologies, k_values, extra, columns)
+    if inputs is None:
+        # JAX arithmetic: the derivative in the parameters chains through
+        # the densities into the inputs-level rule of _kept_values
+        x = _directed_inputs(columns)
+    else:
+        # The given inputs are the solve's variables. The cosmologies set
+        # everything else, the background endpoints included.
+        x = jnp.asarray(inputs, dtype=jnp.float64)
+        if x.shape != (n_cosmo, len(DIRECTED_NAMES)):
+            raise ValueError(
+                f"inputs must be (n_cosmologies, {len(DIRECTED_NAMES)}), got {x.shape}"
+            )
+    of_inputs = _kept_values(
+        prepared,
+        tau_grid,
+        names,
+        extra,
+        drop_first=drop_first,
+        error_weights=error_weights,
         rtol=rtol,
         atol=atol,
         first_step=first_step,
         max_steps=max_steps,
         thermo_weight=thermo_weight,
     )
-    held = {}
-
-    def prepare(theta):
-        """Prepare the solve of the concrete parameters and return its kept-value function."""
-
-        concrete = np.asarray(theta, dtype=np.float64)
-        cosmos = tuple(
-            _as_cosmology(
-                {**fixed[i], **dict(zip(DIFFERENTIABLE_PARAMETERS, concrete[i]))}
-            )
-            for i in range(n_cosmo)
-        )
-        prepared = held["prepared"] = _prepare_solve(model, cosmos)
-        names = tuple(model.state_names() if keep is None else keep)
-        if len(set(names)) != len(names):
-            raise ValueError(f"keep names a quantity twice: {names}")
-        held["names"] = names
-        return _kept_values(
-            prepared,
-            k_values,
-            tau_grid,
-            names,
-            extra,
-            drop_first=drop_first,
-            error_weights=error_weights,
-            **settings,
-        )
-
-    def inputs_of(theta):
-        # JAX arithmetic throughout, also for parameters given as plain numbers
-        theta = jnp.asarray(theta, dtype=jnp.float64)
-        keys = set(fixed[0])
-        if (
-            isinstance(theta, jax.core.Tracer)
-            or n_cosmo == 1
-            or any(set(f) != keys for f in fixed)
-        ):
-            return jnp.stack(
-                [_input_vector(fixed[i], theta[i]) for i in range(n_cosmo)]
-            )
-        # Concrete parameters: one set of eager elementwise JAX operations for
-        # the whole batch matches each cosmology alone bit for bit. A last-bit
-        # difference in a density can move a step acceptance.
-        columns = {
-            k: jnp.asarray([f[k] for f in fixed], dtype=jnp.float64) for k in keys
-        }
-        return _input_vector(columns, [theta[:, j] for j in range(theta.shape[1])]).T
-
-    def solution(values):
-        return EBSolution(
-            names=held["names"],
-            k=np.asarray(k_values, dtype=np.float64).reshape(-1),
-            tau=tau,
-            tau0=np.asarray(held["prepared"].tau0, dtype=np.float64),
-            values=values,
-            model=model,
-        )
-
-    if inputs is not None:
-        # The given inputs are the solve's variables. The cosmologies set
-        # everything else, the background endpoints included, as numbers.
-        inputs = jnp.asarray(inputs, dtype=jnp.float64)
-        if inputs.shape != (n_cosmo, len(DIRECTED_NAMES)):
-            raise ValueError(
-                f"inputs must be (n_cosmologies, {len(DIRECTED_NAMES)}), got {inputs.shape}"
-            )
-        return solution(prepare(np.asarray(jax.lax.stop_gradient(theta)))(inputs))
-
-    # The background endpoints need the parameters as numbers, which a custom
-    # rule's primals are under jax.grad and jax.jacfwd. The tangent chains the
-    # inputs' dependence on the parameters (JAX) into the inputs-level rule of
-    # _kept_values.
-    @jax.custom_jvp
-    def kept_of(theta):
-        return prepare(theta)(inputs_of(theta))
-
-    @kept_of.defjvp
-    def kept_of_jvp(primals, tangents):
-        (theta,), (dtheta,) = primals, tangents
-        of_inputs = prepare(theta)
-        return jax.jvp(lambda t: of_inputs(inputs_of(t)), (theta,), (dtheta,))
-
-    return solution(kept_of(theta))
+    return EBSolution(
+        names=names,
+        k=np.asarray(k_values, dtype=np.float64).reshape(-1),
+        tau=tau,
+        tau0=prepared.tau0,
+        values=of_inputs(x),
+        model=model,
+    )
 
 
-def directed_inputs(cosmologies) -> np.ndarray:
+def directed_inputs(cosmologies) -> jax.Array:
     """Return the ``(n_cosmologies, 9)`` directed inputs of :data:`DIRECTED_NAMES` the cosmologies imply.
 
     ``cosmologies`` is a :class:`~discoeb.models.CosmologyBatch`, one cosmology
     or a sequence of them: the inputs do not depend on the model. These are
     the five background densities and the recombination block's
     ``YHe``, ``Tcmb``, ``H0`` and ``Omegab``: the variables :func:`solve_eb`
-    takes as ``inputs`` and differentiates with respect to.
+    takes as ``inputs`` and differentiates with respect to. A JAX array,
+    traceable under ``jit``.
     """
 
-    fixed, theta = _split_cosmologies(_cosmologies_of(cosmologies))
-    return np.stack(
-        [
-            np.asarray(_input_vector(fixed[i], jnp.asarray(theta[i])))
-            for i in range(len(fixed))
-        ]
-    )
+    return _directed_inputs(_columns(_cosmologies_of(cosmologies), held=False))
 
 
-def conformal_ages(cosmologies) -> np.ndarray:
+def conformal_ages(cosmologies) -> jax.Array:
     """Return each cosmology's conformal age ``tau0`` (Mpc), where its trajectories stop.
 
-    Reads the same cached background endpoints as :func:`solve_eb`, so a solve
-    of the same cosmologies right after reuses them. The conformal age depends
-    on the background alone, so ``cosmologies`` may be a
-    :class:`~discoeb.models.CosmologyBatch`, one cosmology or a sequence of them.
+    The conformal age depends on the background alone, so ``cosmologies`` may
+    be a :class:`~discoeb.models.CosmologyBatch`, one cosmology or a sequence
+    of them. A JAX array, traceable under ``jit``: the same vmapped quadrature
+    :func:`solve_eb` runs.
     """
 
-    batch = tuple(_as_cosmology(c) for c in _cosmologies_of(cosmologies))
-    return np.asarray(endpoints(batch)[0], dtype=np.float64)
+    columns = _columns(_cosmologies_of(cosmologies), held=False)
+    return background_endpoints(columns)[0]
 
 
 def state_names(model: CosmologyModel) -> tuple[str, ...]:

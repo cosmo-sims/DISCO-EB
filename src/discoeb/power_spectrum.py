@@ -2,21 +2,11 @@
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 
-from .background import TAU_START, _background_tau, _densities, density_coefficients
-from .cosmology import _as_cosmology
-from .kernel import (
-    DIRECTED_NAMES,
-    PERTURB_ATOL,
-    PERTURB_FIRST_STEP,
-    PERTURB_MAX_STEPS,
-    PERTURB_RTOL,
-    _prepare_solve,
-    _solve_batch,
-)
+from .background import background_endpoints
+from .cosmology import _columns, _is_concrete
 from .models import CosmologyBatch, _batch_of
-from .sensitivities import _kept_values
+from .solver import EBSolution
 
 MATTER_THERMO_WEIGHT = 0.1
 """Thermal error weight (:data:`discoeb.recombination.THERMO_ERROR_WEIGHT`) of the
@@ -26,156 +16,93 @@ of 1 the CMB solves keep for the visibility. It takes 150 driver steps per
 trajectory instead of 225 (0.47 s against 0.62 s for 128 cosmologies x 128
 modes on an RTX 4070 SUPER)."""
 
-
-def _primordial_power(ks, A_s, n_s, k_pivot):
-    """``2 pi^2 / k^3`` times the primordial curvature spectrum: ``P(k) = this * delta_m^2``."""
-
-    return 2.0 * np.pi**2 / ks**3 * A_s * (ks / k_pivot) ** (n_s - 1.0)
+MATTER_POWER_QUANTITIES = ("clxc", "clxb", "z", "vb")
+"""What :func:`compute_matter_power_spectrum` reads of a solution: the CDM and
+baryon contrasts, and the metric ``z`` and baryon velocity of their rates."""
 
 
-def _power_spectrum_from_final(y_final, k_sorted, cosmologies, k_values, index):
-    """Return ``P(k)`` ``(n_cosmo, n_k)`` in the caller's order from final states ``(n_k, n_cosmo, nvar)``.
+@jax.custom_jvp
+def _age_shift(params):
+    """Return ``tau0(params) - tau0(params)``: zero in value, ``d tau0`` in its tangent.
 
-    ``index`` maps state names to their columns (the joint model's ``index``).
+    The value needs no quadrature. Only the tangent integrates the background.
     """
 
-    dens = np.array([density_coefficients(c) for c in cosmologies])
-    grhoc, grhob = dens[:, 2][None, :], dens[:, 3][None, :]
-    clxc, clxb = y_final[:, :, index["clxc"]], y_final[:, :, index["clxb"]]
-    delta_m = (grhoc * clxc + grhob * clxb) / (grhoc + grhob)
-    pk_sorted = (
-        _primordial_power(
-            k_sorted[:, None],
-            *(
-                np.array([getattr(c, a) for c in cosmologies])[None, :]
-                for a in ("A_s", "n_s", "k_pivot")
-            ),
+    return jnp.zeros_like(params["H0"])
+
+
+@_age_shift.defjvp
+def _age_shift_jvp(primals, tangents):
+    _, d_tau0 = jax.jvp(lambda p: background_endpoints(p)[0], primals, tangents)
+    return _age_shift(*primals), d_tau0
+
+
+def compute_matter_power_spectrum(
+    solution: EBSolution, cosmologies: CosmologyBatch
+) -> jax.Array:
+    """Return the linear ``P(k)`` today in Mpc^3, shape ``(n_cosmologies, n_k)``, from a solve.
+
+    ``solution`` is what :func:`~discoeb.solver.solve_eb` returns for
+    ``cosmologies``, the same :class:`~discoeb.models.CosmologyBatch`, with
+    :data:`MATTER_POWER_QUANTITIES` kept and a last time at or past every
+    cosmology's conformal age, so that it holds the state today::
+
+        batch = LCDM(cosmologies)
+        solution = solve_eb(
+            batch,
+            k,
+            [conformal_ages(batch).max()],
+            keep=MATTER_POWER_QUANTITIES,
+            thermo_weight=MATTER_THERMO_WEIGHT,
         )
-        * delta_m**2
-    )
-    order = np.argsort(np.asarray(k_values, dtype=np.float64), kind="stable")
-    pk = np.empty_like(pk_sorted.T)
-    pk[:, order] = pk_sorted.T
-    return pk
+        pk = compute_matter_power_spectrum(solution, batch)
 
+    ``P(k)`` is that of the cold dark matter and baryons,
 
-def solve_matter_power_spectrum(
-    k_values,
-    cosmologies: CosmologyBatch,
-    *,
-    rtol: float = PERTURB_RTOL,
-    atol: float = PERTURB_ATOL,
-    first_step: float = PERTURB_FIRST_STEP,
-    max_steps: int = PERTURB_MAX_STEPS,
-    thermo_weight: float = MATTER_THERMO_WEIGHT,
-) -> np.ndarray:
-    """Return ``P(k)`` in Mpc^3, shape ``(n_cosmologies, n_k)``, for a batch in one launch.
+    ``P(k) = 2 pi^2 / k^3 A_s (k / k_p)^(n_s - 1) delta_m(k, tau0)^2``,
 
-    ``cosmologies`` is a cosmological model applied to the batch's parameter
-    dictionaries, ``LCDM([params, ...])``
-    (:class:`~discoeb.models.CosmologyBatch`).
+    with ``delta_m`` their density-weighted contrast at unit initial
+    curvature, at the solution's wave numbers in their order.
+
+    Differentiable in :data:`DIFFERENTIABLE_PARAMETERS` given as JAX values in
+    the dictionaries, as the solution is. The derivative is the total one.
+    ``solve_eb``'s is at fixed conformal age, so this adds the end-time term:
+    ``y(tau0(p)) = y(tau0^*) + y'(tau0^*) (tau0(p) - tau0^*)``, zero in value,
+    which carries ``d tau0 / dp`` from the background quadrature. The rates
+    are ``clxc' = -k z`` and ``clxb' = -k (z + vb)``, hence ``z`` and ``vb``
+    among the kept quantities. The reionization redshift and the initial
+    state stay fixed.
     """
 
     batch = _batch_of(cosmologies)
-    sol, prepared, k_sorted = _solve_batch(
-        batch.model,
-        batch.cosmologies,
-        k_values,
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
-        thermo_weight=thermo_weight,
-    )
-    y_final = np.asarray(sol)[:, -1, :].reshape(
-        len(k_sorted), len(prepared.cosmologies), prepared.model.nvar
-    )
-    return _power_spectrum_from_final(
-        y_final, k_sorted, prepared.cosmologies, k_values, prepared.model.index
-    )
-
-
-def _tau0_of(densities, d):
-    """Return the conformal age as a JAX function of the five densities, the rest of the background from ``d``."""
-
-    return _background_tau({**d, **dict(zip(DIRECTED_NAMES[:5], densities))})[1][-1]
-
-
-def matter_power_spectrum_jax(
-    k_values,
-    cosmology: CosmologyBatch,
-    densities=None,
-    thermal=None,
-    *,
-    rtol: float = PERTURB_RTOL,
-    atol: float = PERTURB_ATOL,
-    first_step: float = PERTURB_FIRST_STEP,
-    max_steps: int = PERTURB_MAX_STEPS,
-    thermo_weight: float = MATTER_THERMO_WEIGHT,
-):
-    """Return ``P(k)`` as a JAX array, differentiable in the densities and thermal inputs.
-
-    ``cosmology`` is a cosmological model applied to one cosmology,
-    ``LCDM(params)``.
-    ``densities`` (the five of :data:`DIRECTED_NAMES`) and ``thermal`` (``YHe,
-    Tcmb, H0, Omegab``) default to the cosmology's own. The derivative is the
-    total one. The densities enter the hierarchy, the recombination rates
-    (through the expansion rate), the matter weighting of ``delta_m`` and the
-    conformal age at which the solve reads the state. The last path goes through
-    ``y(tau_0(d)) = y(tau_0^*) + y'(tau_0^*) (tau_0(d) - tau_0^*)``, which is
-    zero in value and carries ``d tau_0 / d(densities)`` from the background
-    quadrature. The solve reads the value at the conformal age of the given
-    densities, so a finite difference sees the same end-time dependence. Only
-    the initial state stays fixed.
-
-    The solve is the hooked launch of :func:`_kept_values`, keeping the
-    contrasts and the rates the end-time term needs at ``tau_0``.
-    """
-
-    batch = _batch_of(cosmology, "cosmology")
-    if len(batch) != 1:
+    missing = [name for name in MATTER_POWER_QUANTITIES if name not in solution.names]
+    if missing:
         raise ValueError(
-            f"matter_power_spectrum_jax takes one cosmology, got {len(batch)}"
+            f"the solution lacks {missing}: solve_eb must keep {MATTER_POWER_QUANTITIES}"
         )
-    cosmology = _as_cosmology(batch.cosmologies[0])
-    prepared = _prepare_solve(batch.model, (cosmology,))
-    d = _densities(cosmology)
-    if densities is None:
-        densities = [d[name] for name in DIRECTED_NAMES[:5]]
-    if thermal is None:
-        thermal = [cosmology.Y_He, cosmology.T_cmb, cosmology.H0, cosmology.Omegab]
-    x = jnp.concatenate(
-        [
-            jnp.asarray(densities, dtype=jnp.float64),
-            jnp.asarray(thermal, dtype=jnp.float64),
-        ]
-    )
-    kept = _kept_values(
-        prepared,
-        k_values,
-        # a save past tau0 holds the state today
-        np.array([TAU_START, 2.0 * float(prepared.tau0[0])]),
-        ("clxc", "clxb", "z", "vb"),
-        tau_end_of=lambda xs: jnp.stack([_tau0_of(xi[:5], d) for xi in xs]),
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
-        thermo_weight=thermo_weight,
-    )
-    clxc, clxb, z, vb = kept(x[None, :])[0, :, :, 0]
+    if len(solution.tau0) != len(batch):
+        raise ValueError(
+            f"the solution has {len(solution.tau0)} cosmologies, the batch {len(batch)}"
+        )
+    if _is_concrete(solution.tau) and _is_concrete(solution.tau0):
+        if solution.tau[-1] < solution.tau0.max():
+            raise ValueError(
+                f"the solution's last time {float(solution.tau[-1]):.6g} Mpc "
+                f"comes before the conformal age {float(solution.tau0.max()):.6g} "
+                "Mpc: P(k) needs today"
+            )
+    # each (n_cosmologies, n_k), wave modes in the solution's order
+    clxc, clxb, z, vb = (solution[name][..., -1] for name in MATTER_POWER_QUANTITIES)
+    params = _columns(batch.cosmologies, held=False)
 
-    # End-time term: the state's rate at tau0 (the equations the hook
-    # evaluates on the final state) times d tau0 / d densities.
-    ks = jnp.asarray(np.asarray(k_values, dtype=np.float64))
-    tau0 = _tau0_of(x[:5], d)
-    dtau = tau0 - jax.lax.stop_gradient(tau0)
+    # End-time term: the contrasts' rates at tau0 times d tau0 / dp.
+    ks = jnp.asarray(solution.k, dtype=jnp.float64)
+    dtau = _age_shift(params)[:, None]
     clxc = clxc - ks * z * dtau
     clxb = clxb - ks * (z + vb) * dtau
 
-    grhoc, grhob = x[2], x[3]
-    delta_m = (grhoc * clxc + grhob * clxb) / (grhoc + grhob)
-    return (
-        _primordial_power(ks, cosmology.A_s, cosmology.n_s, cosmology.k_pivot)
-        * delta_m**2
-    )
+    # density-weighted, grho_c : grho_b = (Omegam - Omegab) : Omegab
+    Omegam, Omegab = params["Omegam"][:, None], params["Omegab"][:, None]
+    delta_m = ((Omegam - Omegab) * clxc + Omegab * clxb) / Omegam
+    A_s, n_s, k_p = (params[key][:, None] for key in ("A_s", "n_s", "k_p"))
+    return 2.0 * jnp.pi**2 / ks**3 * A_s * (ks / k_p) ** (n_s - 1.0) * delta_m**2

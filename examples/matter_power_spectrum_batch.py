@@ -1,6 +1,6 @@
 """Time the matter power spectrum of 128 cosmologies at 128 wave numbers.
 
-``solve_matter_power_spectrum`` integrates every (cosmology, k) pair
+``solve_eb`` integrates every (cosmology, k) pair
 in one GPU launch. The recombination history is a block of its own that
 runs ahead of the perturbations on its own steps and hands down its opacity,
 sound speed and scale factor as interpolants. The first call compiles the
@@ -35,7 +35,14 @@ jax.config.update("jax_enable_x64", True)
 
 import numpy as np
 
-from discoeb import LCDM, solve_matter_power_spectrum
+from discoeb import (
+    LCDM,
+    MATTER_POWER_QUANTITIES,
+    MATTER_THERMO_WEIGHT,
+    compute_matter_power_spectrum,
+    conformal_ages,
+    solve_eb,
+)
 
 
 def cosmologies(n, offset):
@@ -67,16 +74,28 @@ def cosmologies(n, offset):
     return out
 
 
+def matter_power(k, batch):
+    """``P(k)`` of a batch: one ``solve_eb`` launch, then the spectrum from what it kept."""
+    solution = solve_eb(
+        batch,
+        k,
+        [conformal_ages(batch).max()],  # today: each trajectory stops at its own age
+        keep=MATTER_POWER_QUANTITIES,
+        thermo_weight=MATTER_THERMO_WEIGHT,
+    )
+    return jax.block_until_ready(compute_matter_power_spectrum(solution, batch))
+
+
 k = np.geomspace(1.0e-4, 1.0, 128)  # 1/Mpc
 
 t0 = time.perf_counter()
-solve_matter_power_spectrum(k, LCDM(cosmologies(128, offset=0.0)))
+matter_power(k, LCDM(cosmologies(128, offset=0.0)))
 compile_time = time.perf_counter() - t0
 print(f"compile and first call: {compile_time:.1f} s")
 
 batch = cosmologies(128, offset=0.001)
 t0 = time.perf_counter()
-pk = solve_matter_power_spectrum(k, LCDM(batch))
+pk = matter_power(k, LCDM(batch))
 elapsed = time.perf_counter() - t0
 
 print(f"P(k) for {pk.shape[0]} cosmologies x {pk.shape[1]} modes: {elapsed:.3f} s")

@@ -563,6 +563,44 @@ def _bound_function(
 _SOURCES = itertools.count(1)
 
 
+class _Filled:
+    """An initial condition's ``output``: records ``output[i] = value``, then stacks them.
+
+    A filler writes and reads single elements. Nothing is written in place, so
+    the values may be JAX arrays, traced under ``jit``, as well as floats or
+    NumPy arrays: :meth:`array` stacks them with ``xp``, zeros where nothing
+    was written, each broadcast to ``batch_shape``.
+    """
+
+    def __init__(self, shape, batch_shape, xp):
+        self.shape, self.batch_shape, self.xp = tuple(shape), tuple(batch_shape), xp
+        self.values: dict[tuple[int, ...], Any] = {}
+
+    def _key(self, index) -> tuple[int, ...]:
+        index = index if isinstance(index, tuple) else (index,)
+        if len(index) != len(self.shape):
+            raise IndexError(f"an initial condition indexes {self.shape} by {index}")
+        return tuple(int(i) % n for i, n in zip(index, self.shape))
+
+    def __setitem__(self, index, value):
+        self.values[self._key(index)] = value
+
+    def __getitem__(self, index):
+        return self.values.get(self._key(index), 0.0)
+
+    def array(self):
+        xp = self.xp
+        elements = [
+            xp.broadcast_to(
+                xp.asarray(self.values.get(i, 0.0), dtype=xp.float64), self.batch_shape
+            )
+            for i in np.ndindex(*self.shape)
+        ]
+        if not self.shape:
+            return elements[0]
+        return xp.stack(elements).reshape(self.shape + self.batch_shape)
+
+
 class _HostValues:
     """The value of every quantity, resolved on demand on the host.
 
@@ -572,8 +610,9 @@ class _HostValues:
     names, so the values may be floats or JAX arrays.
     """
 
-    def __init__(self, model, base, names, memo=None, batch_shape=()):
+    def __init__(self, model, base, names, memo=None, batch_shape=(), xp=np):
         self.model, self.values, self.names = model, dict(base), names
+        self.xp = xp
         self.memo = {} if memo is None else memo
         self.providers, self.contributions = model._host_providers()
         self.resolving: list[str] = []
@@ -596,20 +635,17 @@ class _HostValues:
         self.resolving.append(name)
         if name in self.model.states:
             s = self.model.states[name]
-            if s.shape or self.batch_shape:
-                result = np.zeros(s.shape + self.batch_shape)
-            else:
-                result = 0.0
+            output = _Filled(s.shape, self.batch_shape, self.xp)
+            result = output.array() if s.shape or self.batch_shape else 0.0
             fn = s.declared.initial_fn
             if fn is not None:
                 takes_self, params = _positional_names(fn, f"{name}.initial")
                 _check_output(
                     f"{name}.initial", "the initial condition", s.shape, params
                 )
-                args = [result if p == OUTPUT else self[p] for p in params]
+                args = [output if p == OUTPUT else self[p] for p in params]
                 filled = self._call(fn, s.component, takes_self, args)
-                if not s.shape:
-                    result = filled
+                result = output.array() if s.shape else filled
         elif name in self.model.sums:
             parts = [
                 self._call(p.fn, p.component, p.takes_self, [self[d] for d in p.params])
@@ -905,7 +941,7 @@ class Model:
         results = tuple(values[q] for q in quantities)
         return results[0] if len(quantities) == 1 else results
 
-    def initial_state(self, k_values, **base) -> np.ndarray:
+    def initial_state(self, k_values, xp=np, **base):
         """The initial state, ``(n_k, nvar)``, from the states' initial conditions.
 
         ``base`` holds the quantities the initial conditions may name besides
@@ -920,21 +956,33 @@ class Model:
         mode cost 6 ms per cosmology at 144 modes, mostly in inspecting every
         initial condition's signature at every mode: 0.85 s of a batch of 128
         cosmologies.
+
+        ``xp`` is the array module, ``numpy`` or ``jax.numpy``. With
+        ``jax.numpy`` the base values may be traced: nothing is written in
+        place, so the initial state traces under ``jit`` and stays on the
+        device.
         """
 
-        k_values = np.asarray(k_values, dtype=np.float64)
-        n_k = len(k_values)
-        memo = self.__dict__.setdefault("_host_memo", {}).setdefault(id(np), {})
+        k_values = xp.asarray(k_values, dtype=xp.float64)
+        n_k = k_values.shape[0]
+        memo = self.__dict__.setdefault("_host_memo", {}).setdefault(id(xp), {})
         values = _HostValues(
-            self, dict(base, k=k_values), _host_names(np), memo, batch_shape=(n_k,)
+            self,
+            dict(base, k=k_values),
+            _host_names(xp),
+            memo,
+            batch_shape=(n_k,),
+            xp=xp,
         )
-        y0 = np.zeros((n_k, self.nvar), dtype=np.float64)
-        for s in self.states.values():
-            value = np.broadcast_to(
-                np.asarray(values[s.name], dtype=np.float64), s.shape + (n_k,)
+        blocks = []
+        for s in sorted(self.states.values(), key=lambda s: s.offset):
+            if s.offset != sum(b.shape[1] for b in blocks):
+                raise ValueError(f"state {s.name!r} does not follow its predecessor")
+            value = xp.broadcast_to(
+                xp.asarray(values[s.name], dtype=xp.float64), s.shape + (n_k,)
             )
-            y0[:, s.offset : s.offset + s.size] = value.reshape(s.size, n_k).T
-        return y0
+            blocks.append(value.reshape(s.size, n_k).T)
+        return xp.concatenate(blocks, axis=1)
 
     # --- compiled functions ----------------------------------------------------------
 

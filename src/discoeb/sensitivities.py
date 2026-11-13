@@ -14,13 +14,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from .background import density_parameters
-from .cosmology import DIFFERENTIABLE_PARAMETERS
 from .kernel import (
     DIRECTED_COLUMNS,
     IX_DIR,
     IX_EPS,
-    IX_K,
-    IX_TAU_END,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
@@ -28,41 +25,38 @@ from .kernel import (
     _keep_hook,
     _launch,
     _named_error_weights,
-    _pack_batch,
 )
 from .recombination import THERMO_ERROR_WEIGHT
 
 
-def _input_vector(fixed: dict, theta_row, xp=jnp) -> jax.Array:
-    """Return the inputs of :data:`DIRECTED_NAMES` from a cosmology's parameters, in JAX (or ``xp``)."""
+def _directed_inputs(columns) -> jax.Array:
+    """Return the ``(n_cosmologies, 9)`` inputs of :data:`DIRECTED_NAMES` from a batch's columns, in JAX."""
 
-    param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta_row))}
-    d = density_parameters(param, xp=xp)
-    return xp.stack(
+    d = density_parameters(columns)
+    return jnp.stack(
         [
             d["grhog"],
             d["grhornomass"],
             d["grhoc"],
             d["grhob"],
             d["grhov"],
-            param["YHe"],
-            param["Tcmb"],
-            param["H0"],
-            param["Omegab"],
-        ]
+            columns["YHe"],
+            columns["Tcmb"],
+            columns["H0"],
+            columns["Omegab"],
+        ],
+        axis=1,
     )
 
 
 def _kept_values(
     prepared,
-    k_values,
     tau_grid,
     names,
     extra=(),
     *,
     drop_first: bool = True,
     error_weights=None,
-    tau_end_of=None,
     rtol: float = PERTURB_RTOL,
     atol: float = PERTURB_ATOL,
     first_step: float = PERTURB_FIRST_STEP,
@@ -71,6 +65,8 @@ def _kept_values(
 ):
     """Return the hooked launches of :func:`solve_eb` as a function of the directed inputs.
 
+    ``prepared`` is the batch :func:`~discoeb.kernel._prepare_solve` packed at
+    its wave modes, and ``tau_grid`` the save times, which may be traced.
     The result, ``of_inputs(x)``, takes ``x``, the ``(n_cosmologies, 9)``
     inputs of :data:`DIRECTED_NAMES`, and returns the kept quantities as
     ``(n_cosmologies, len(names), n_k, n_tau)`` in the caller's wave-mode order.
@@ -85,10 +81,8 @@ def _kept_values(
 
     The joint launch uses the fp64 LU and keeps the sensitivities out of step
     control. Its primal agrees with the plain fp32-LU one to ~1e-6 of a
-    quantity's scale. The reionization redshift stays that of ``prepared``. So
-    does ``tau0``, unless ``tau_end_of`` maps ``x`` to each cosmology's
-    conformal age. The trajectories then stop at the age of the given inputs, in
-    value only: the derivative is still the one at fixed ``tau0``.
+    quantity's scale. The reionization redshift and ``tau0`` stay those of
+    ``prepared``.
     """
 
     model = prepared.cosmology_model
@@ -103,25 +97,25 @@ def _kept_values(
         thermo_weight=thermo_weight,
     )
 
-    params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_grid)
+    order, k_sorted = prepared.order, prepared.k_sorted
     if isinstance(error_weights, dict):
-        error_weights = _named_error_weights(error_weights, model, params[:, IX_K])
+        error_weights = _named_error_weights(
+            error_weights, model, np.repeat(k_sorted, n_cosmo)
+        )
     n_k, n_grid, n_keep = len(k_sorted), len(tau_grid), len(names)
     first = 1 if drop_first else 0
-    columns = jnp.asarray(DIRECTED_COLUMNS)
+    columns = np.asarray(
+        DIRECTED_COLUMNS
+    )  # a constant: no tracer for the rule to close over
     n_dir = len(DIRECTED_COLUMNS)
-    t_span_j = jnp.asarray(t_span)
+    hook = _keep_hook(model, extra, names)
 
     def with_inputs(base, x, replicas=1):
         # Row k_idx * n_cosmo + ci (times replicas) takes cosmology ci's row of x.
         def per_row(v):
             return jnp.repeat(jnp.tile(v, (n_k, 1)), replicas, axis=0)
 
-        base = jnp.asarray(base).at[:, columns].set(per_row(x))
-        if tau_end_of is not None:
-            tau_end = jnp.asarray(tau_end_of(jax.lax.stop_gradient(x)))
-            base = base.at[:, IX_TAU_END].set(per_row(tau_end[:, None])[:, 0])
-        return base
+        return base.at[:, columns].set(per_row(x))
 
     def arrange(rows):
         # Rows are k-major (row = k_idx * n_cosmo + cosmology_idx) and each
@@ -133,28 +127,33 @@ def _kept_values(
             values = values[:, :, jnp.asarray(np.argsort(order)), :]
         return values
 
+    # The rows, the initial state and the save times are arguments, not
+    # closed over: under jit they are tracers, and a custom_jvp may not close
+    # over those. The derivative holds them fixed, so the rule drops their
+    # tangents.
     @jax.custom_jvp
-    def of_inputs(x):
+    def kept(x, params, y0, t_span):
         _, out = _launch(
             prepared,
             with_inputs(params, x),
-            jnp.asarray(y0),
-            t_span_j,
+            y0,
+            t_span,
             error_weights=error_weights,
-            save_hook=_keep_hook(model, extra, names),
+            save_hook=hook,
             save_history=False,
             **settings,
         )
         return arrange(out)
 
-    @of_inputs.defjvp
-    def of_inputs_jvp(primals, tangents):
-        (x,), (dx,) = primals, tangents
+    @kept.defjvp
+    def kept_jvp(primals, tangents):
+        x, params, y0, t_span = primals
+        dx = tangents[0]
         # Replica j of trajectory i is row i * n_dir + j, along the unit
         # direction e_j. Each carries the single column S = dy / d eps.
-        params_rep = np.repeat(params, n_dir, axis=0)
-        params_rep[:, IX_DIR : IX_DIR + n_dir] = np.tile(
-            np.eye(n_dir), (n_k * n_cosmo, 1)
+        params_rep = jnp.repeat(params, n_dir, axis=0)
+        params_rep = params_rep.at[:, IX_DIR : IX_DIR + n_dir].set(
+            jnp.tile(jnp.eye(n_dir), (n_k * n_cosmo, 1))
         )
         row = with_inputs(params_rep, x, n_dir)
         head, eps, tail = row[:, :IX_EPS], row[:, IX_EPS:IX_DIR], row[:, IX_DIR:]
@@ -165,12 +164,12 @@ def _kept_values(
             _, out = _launch(
                 prepared,
                 (head, e, tail),
-                jnp.asarray(np.repeat(y0, n_dir, axis=0)),
-                t_span_j,
+                jnp.repeat(y0, n_dir, axis=0),
+                t_span,
                 error_weights=None
                 if error_weights is None
                 else np.repeat(np.asarray(error_weights), n_dir, axis=0),
-                save_hook=_keep_hook(model, extra, names),
+                save_hook=hook,
                 save_history=False,
                 lu_precision="fp64",
                 # Thread-local memory, not registers, bounds the joint system's
@@ -192,5 +191,12 @@ def _kept_values(
         dx_rows = jnp.tile(dx, (n_k, 1))
         tangent = arrange(jnp.einsum("ijsq,ij->isq", d_out, dx_rows))
         return values, tangent
+
+    params = jax.lax.stop_gradient(prepared.params)
+    y0 = jax.lax.stop_gradient(prepared.y0)
+    t_span = jax.lax.stop_gradient(jnp.asarray(tau_grid, dtype=jnp.float64))
+
+    def of_inputs(x):
+        return kept(jnp.asarray(x, dtype=jnp.float64), params, y0, t_span)
 
     return of_inputs

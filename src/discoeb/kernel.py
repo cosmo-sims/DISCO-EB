@@ -16,9 +16,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .background import TAU_START, _densities, density_coefficients, endpoints
+from .background import TAU_START, background_endpoints, density_parameters
 from .component import Model, _compile
-from .cosmology import _as_batch, _as_cosmology
+from .cosmology import _as_batch, _columns
 from .models import CosmologyModel
 from .recombination import THERMAL_PARAMETERS, THERMO_ERROR_WEIGHT, Recombination
 
@@ -105,9 +105,6 @@ TRAJECTORIES_PER_BLOCK = 32
 
 CUDA_MAX_REGISTERS = int(os.environ.get("DISCO_CUDA_MAX_REGISTERS", "168"))
 """Per-thread register cap for that kernel: fewer registers, more resident warps."""
-
-BATCH_CACHE_SIZE = 8
-"""Batches whose prepared solve and packed initial states are kept."""
 
 
 def joint_model(model: CosmologyModel, extra=()) -> Model:
@@ -208,88 +205,154 @@ def _joint_kernel(cosmology_model: CosmologyModel, extra):
 
 
 class _PreparedSolve(NamedTuple):
-    """What a batch shares: the compiled joint model and each cosmology's endpoints."""
+    """A batch ready to launch: the compiled joint model, the endpoints, the rows and the initial state.
+
+    The arrays are JAX arrays, traced under ``jit``. Rows go as ``row = k_idx
+    * n_cosmo + cosmology_idx``, so consecutive rows share a wave mode, over
+    the ascending ``k_sorted``.
+    """
 
     cosmologies: tuple
     cosmology_model: CosmologyModel
     model: Model
     ode_fn: object  # the modax Hierarchy
-    tau0: np.ndarray  # (n_cosmologies,)
-    lna_start: np.ndarray
-    z_re: np.ndarray
+    tau0: jax.Array  # (n_cosmologies,)
+    lna_start: jax.Array
+    z_re: jax.Array
+    params: jax.Array  # (n_k * n_cosmologies, N_PARAM)
+    y0: jax.Array  # (n_k * n_cosmologies, nvar)
+    order: np.ndarray  # the caller's wave modes, sorted
+    k_sorted: np.ndarray
 
 
-def _prepare_solve(model: CosmologyModel, cosmologies, extra=()) -> _PreparedSolve:
-    """Return the joint kernel of ``model`` and the endpoints of a batch, cached per batch.
+def _prepare_solve(
+    model: CosmologyModel, cosmologies, k_values, extra=(), columns=None
+) -> _PreparedSolve:
+    """Return a batch packed for launch at ``k_values``: endpoints, parameter rows and initial states.
 
-    Every cosmology must suit the model (:meth:`CosmologyModel.check
-    <discoeb.models.CosmologyModel.check>`). Nothing here depends on the wave
-    modes, save times or tolerances. The kernel compiles once per model, and
-    the endpoints cost a vmapped quadrature of a few milliseconds.
+    The cosmologies' values may be traced under ``jit``. ``k_values`` must be
+    numbers: they set the launch's shape and order. ``columns`` are the
+    cosmologies' :func:`~discoeb.cosmology._columns` if already at hand. Every
+    cosmology must suit
+    the model (:meth:`CosmologyModel.check
+    <discoeb.models.CosmologyModel.check>`), checked when its values are
+    numbers. The kernel compiles once per model, and :func:`_pack` once per
+    model, wave-mode grid and batch size.
+
+    The derivative holds the endpoints, the parameter rows and the initial
+    state fixed: :func:`~discoeb.sensitivities._kept_values` sets the directed
+    columns from its own inputs.
     """
 
-    return _prepared(
-        model.resolved(),
-        tuple(_as_cosmology(cosmology) for cosmology in cosmologies),
-        tuple(extra),
+    resolved = model.resolved()
+    cosmologies = tuple(cosmologies)
+    for cosmology in cosmologies:
+        resolved.check(cosmology)
+    joint, hierarchy = joint_kernel(resolved, extra)
+    k = np.asarray(k_values, dtype=np.float64).reshape(-1)
+    order = np.argsort(k, kind="stable")
+    k_sorted = k[order]
+    if columns is None:
+        columns = _columns(cosmologies)
+    columns = jax.lax.stop_gradient(columns)
+    tau0, lna_start, z_re, params, y0 = _pack(
+        resolved, tuple(extra), tuple(k_sorted.tolist()), columns
+    )
+    return _PreparedSolve(
+        cosmologies,
+        resolved,
+        joint,
+        hierarchy,
+        tau0,
+        lna_start,
+        z_re,
+        params,
+        y0,
+        order,
+        k_sorted,
     )
 
 
-@functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
-def _prepared(model: CosmologyModel, cosmologies, extra) -> _PreparedSolve:
-    for cosmology in cosmologies:
-        model.check(cosmology)
-    joint, hierarchy = joint_kernel(model, extra)
-    tau0, lna_start, z_re = endpoints(cosmologies)
-    return _PreparedSolve(cosmologies, model, joint, hierarchy, tau0, lna_start, z_re)
+@functools.partial(jax.jit, static_argnums=(0, 1, 2))
+def _pack(model: CosmologyModel, extra, k_sorted, columns):
+    """Return ``(tau0, lna_start, z_re, params, y0)`` of a batch's columns, on the device.
+
+    The background endpoints come from the vmapped quadrature
+    (:func:`~discoeb.background.background_endpoints`), the rows from
+    :func:`_rows`, and the initial state from the joint model's initial
+    conditions in ``jax.numpy``.
+    """
+
+    joint, _ = joint_kernel(model, extra)
+    tau0, lna_start, z_re = background_endpoints(columns)
+    n_cosmo, n_k = tau0.shape[0], len(k_sorted)
+    densities = density_parameters(columns)
+    params = jnp.tile(_rows(columns, densities, tau0, z_re), (n_k, 1))
+    k = jnp.repeat(jnp.asarray(k_sorted, dtype=jnp.float64), n_cosmo)
+    params = params.at[:, IX_K].set(k)
+    params = params.at[:, IX_COSMOLOGY].set(
+        jnp.tile(jnp.arange(n_cosmo, dtype=jnp.float64), n_k)
+    )
+    inputs = _initial_inputs(columns, densities)
+    y0 = joint.initial_state(
+        k,
+        xp=jnp,
+        tau=TAU_START,
+        lna_start=jnp.tile(lna_start, n_k),
+        **{name: jnp.tile(value, n_k) for name, value in inputs.items()},
+    )
+    return tau0, lna_start, z_re, params, y0
 
 
-def _row(cosmology, tau_end: float, z_re: float) -> dict:
-    """Return one cosmology's parameter row by name, without the wave number."""
+_NAME_OF_COLUMN = {column: name for name, column in PARAM_COLUMNS.items()}
 
-    d = _densities(cosmology)
-    return {
+
+def _rows(columns, densities, tau_end, z_re):
+    """Return the cosmologies' parameter rows ``(n_cosmologies, N_PARAM)``, without the wave number.
+
+    ``densities`` is :func:`~discoeb.background.density_parameters` of the
+    columns. ``eps`` and the direction block are zero, as in every primal solve.
+    """
+
+    named = {
         **{
-            f"{name}_nominal": d[name]
+            f"{name}_nominal": densities[name]
             for name in ("grhog", "grhornomass", "grhoc", "grhob", "grhov")
         },
-        **{name: d[name] for name in ("grhok", "grhor_nu", "n_mnu", "amnu")},
+        **{name: densities[name] for name in ("grhok", "grhor_nu", "n_mnu", "amnu")},
         "tau_start": TAU_START,
         "tau_end": tau_end,
         "save_index": 1.0,
-        "w_DE_0": cosmology.w_DE_0,
-        "w_DE_a": cosmology.w_DE_a,
-        "cs2_DE": cosmology.cs2_DE,
-        "YHe_nominal": cosmology.Y_He,
-        "Tcmb_nominal": cosmology.T_cmb,
-        "H0_nominal": cosmology.H0,
-        "Omegab_nominal": cosmology.Omegab,
+        "w_DE_0": columns["w_DE_0"],
+        "w_DE_a": columns["w_DE_a"],
+        "cs2_DE": columns["cs2_DE"],
+        "YHe_nominal": columns["YHe"],
+        "Tcmb_nominal": columns["Tcmb"],
+        "H0_nominal": columns["H0"],
+        "Omegab_nominal": columns["Omegab"],
         "z_re": z_re,
     }
+    n_cosmo = columns["Omegam"].shape
+    return jnp.stack(
+        [
+            jnp.broadcast_to(
+                jnp.asarray(named.get(_NAME_OF_COLUMN.get(i), 0.0), jnp.float64),
+                n_cosmo,
+            )
+            for i in range(N_PARAM)
+        ],
+        axis=1,
+    )
 
 
-def _row_vector(cosmology, tau_end: float, z_re: float) -> np.ndarray:
-    """Return :func:`_row` as the ``N_PARAM`` columns of :data:`PARAM_COLUMNS`, zero where it has no value."""
+def _initial_inputs(columns, densities) -> dict:
+    """Return what :meth:`Model.initial_state` reads of the cosmologies besides ``k``, ``tau``, ``lna_start``."""
 
-    row = _row(cosmology, tau_end, z_re)
-    out = np.zeros(N_PARAM, dtype=np.float64)
-    for name, column in PARAM_COLUMNS.items():
-        out[column] = row.get(name, 0.0)
-    return out
-
-
-def _initial_inputs(cosmologies, spread) -> dict:
-    """Return what :meth:`Model.initial_state` reads of the cosmologies.
-
-    ``spread`` maps one value per cosmology to the trajectories' values.
-    """
-
-    densities = np.array([density_coefficients(c) for c in cosmologies]).T
     return {
-        **dict(zip(DIRECTED_NAMES[:5], map(spread, densities))),
-        "w_DE_0": spread([c.w_DE_0 for c in cosmologies]),
-        "w_DE_a": spread([c.w_DE_a for c in cosmologies]),
-        "Tcmb": spread([c.T_cmb for c in cosmologies]),
+        **{name: densities[name] for name in DIRECTED_NAMES[:5]},
+        "w_DE_0": columns["w_DE_0"],
+        "w_DE_a": columns["w_DE_a"],
+        "Tcmb": columns["Tcmb"],
     }
 
 
@@ -298,9 +361,9 @@ def make_params(
 ) -> np.ndarray:
     """Return packed parameters for the device right-hand side, one row per wave mode."""
 
-    params = np.tile(
-        _row_vector(_as_cosmology(cosmology), tau_end, z_re), (len(k_values), 1)
-    )
+    columns = _columns((cosmology,), held=False)
+    row = _rows(columns, density_parameters(columns), jnp.asarray([tau_end]), z_re)
+    params = np.tile(np.asarray(row), (len(k_values), 1))
     params[:, IX_K] = k_values
     return params
 
@@ -315,79 +378,18 @@ def make_initial_states(
     conditions broadcast over the trajectories.
     """
 
-    cosmologies = [_as_cosmology(c) for c in _as_batch(cosmology)]
+    columns = _columns(_as_batch(cosmology), held=False)
+    inputs = _initial_inputs(columns, density_parameters(columns))
 
     def per(values):
-        return values[0] if len(values) == 1 else np.asarray(values)
+        values = np.asarray(values)
+        return values[0] if len(values) == 1 else values
 
     return model.initial_state(
         k_values,
         tau=TAU_START,
         lna_start=np.asarray(lna_start, dtype=np.float64),
-        **_initial_inputs(cosmologies, per),
-    )
-
-
-@functools.lru_cache(maxsize=BATCH_CACHE_SIZE)
-def _packed(cosmologies, model, tau0, lna_start, z_re, k_bytes, tau_bytes):
-    k_arr = np.frombuffer(k_bytes, dtype=np.float64)
-    n_cosmo = len(cosmologies)
-    order = np.argsort(k_arr, kind="stable")
-    k_sorted = k_arr[order]
-    rows = np.array([_row_vector(c, t, z) for c, t, z in zip(cosmologies, tau0, z_re)])
-    params = np.tile(rows, (len(k_sorted), 1))
-    params[:, IX_K] = np.repeat(k_sorted, n_cosmo)
-    params[:, IX_COSMOLOGY] = np.tile(
-        np.arange(n_cosmo, dtype=np.float64), len(k_sorted)
-    )
-    # per-cosmology inputs, tiled over the wave modes (row = k_idx * n_cosmo + c)
-
-    def tile(values):
-        return np.tile(np.asarray(values, dtype=np.float64), len(k_sorted))
-
-    y0 = model.initial_state(
-        params[:, IX_K],
-        tau=TAU_START,
-        lna_start=tile(lna_start),
-        **_initial_inputs(cosmologies, tile),
-    )
-    if tau_bytes is None:
-        t_span = np.asarray((TAU_START, float(np.max(tau0))), dtype=np.float64)
-    else:
-        t_span = np.frombuffer(tau_bytes, dtype=np.float64).copy()
-    return (
-        np.ascontiguousarray(params),
-        np.ascontiguousarray(y0),
-        t_span,
-        order,
-        k_sorted,
-    )
-
-
-def _pack_batch(prepared, k_values, tau_save=None):
-    """Return (and cache) the packed ``(params, y0, t_span, order, k_sorted)`` of a batch.
-
-    Rows go as ``row = k_idx * n_cosmo + cosmology_idx``, so consecutive rows
-    share a wave mode. ``tau_save`` is the shared grid of save times (default:
-    the two endpoints). :func:`_launch` clips it to each trajectory's own
-    ``tau0``.
-    """
-
-    k_bytes = np.ascontiguousarray(np.asarray(k_values, dtype=np.float64)).tobytes()
-    tau_bytes = (
-        None
-        if tau_save is None
-        else np.ascontiguousarray(np.asarray(tau_save, dtype=np.float64)).tobytes()
-    )
-    return _packed(
-        prepared.cosmologies,
-        prepared.model,
-        # one host copy of each array, not a device read per element
-        tuple(np.asarray(prepared.tau0, dtype=np.float64).tolist()),
-        tuple(np.asarray(prepared.lna_start, dtype=np.float64).tolist()),
-        tuple(np.asarray(prepared.z_re, dtype=np.float64).tolist()),
-        k_bytes,
-        tau_bytes,
+        **{name: per(value) for name, value in inputs.items()},
     )
 
 
@@ -504,19 +506,22 @@ def _solve_batch(
 ):
     """Solve a batch of cosmologies at ``k_values`` in one launch.
 
-    Prepares the batch (:func:`_prepare_solve`), packs its trajectories
-    (:func:`_pack_batch`) and launches them (:func:`_launch`, which takes
-    ``options``). Returns ``(solution, prepared, k_sorted)``. ``solution`` is
+    Prepares the batch (:func:`_prepare_solve`) and launches it
+    (:func:`_launch`, which takes ``options``). ``tau_save`` defaults to the
+    two endpoints. Returns ``(solution, prepared, k_sorted)``. ``solution`` is
     whatever modax returns, with rows in ``k_idx * n_cosmo + cosmology_idx``
     order over the ascending ``k_sorted``.
     """
 
-    prepared = _prepare_solve(model, cosmologies)
-    params, y0, t_span, _, k_sorted = _pack_batch(prepared, k_values, tau_save)
+    prepared = _prepare_solve(model, cosmologies, k_values)
+    if tau_save is None:
+        t_span = jnp.stack([jnp.asarray(TAU_START), jnp.max(prepared.tau0)])
+    else:
+        t_span = jnp.asarray(tau_save, dtype=jnp.float64)
     solution = _launch(
         prepared,
-        params,
-        y0,
+        prepared.params,
+        prepared.y0,
         t_span,
         rtol=rtol,
         atol=atol,
@@ -524,7 +529,7 @@ def _solve_batch(
         max_steps=max_steps,
         **options,
     )
-    return solution, prepared, k_sorted
+    return solution, prepared, prepared.k_sorted
 
 
 def build_keep_hook(model, names):

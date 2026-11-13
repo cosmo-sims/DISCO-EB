@@ -6,6 +6,7 @@ A cosmology is a parameter dictionary (``Omegam``, ``Omegab``, ``H0``,
 model (:mod:`discoeb.models`) says which species it evolves.
 """
 
+import functools
 from typing import NamedTuple
 
 import jax
@@ -53,28 +54,42 @@ class _ParamCosmology(NamedTuple):
         }
 
 
+OPTIONAL_DEFAULTS = {
+    "w_DE_0": -1.0,
+    "w_DE_a": 0.0,
+    "cs2_DE": 1.0,
+    "Omegak": 0.0,
+    "Nmnu": 0.0,
+    "mnu": 0.0,
+    "k_p": 0.05,
+    "tau_reio": 0.0,
+}
+"""The parameter-dictionary keys a cosmology may leave out, and their values."""
+
+
 def _as_cosmology(cosmology):
     """Return a parameter dictionary as a ``_ParamCosmology``, anything else as is."""
 
     if not isinstance(cosmology, dict):
         return cosmology
+    c = {**OPTIONAL_DEFAULTS, **cosmology}
     return _ParamCosmology(
-        Omegam=float(cosmology["Omegam"]),
-        Omegab=float(cosmology["Omegab"]),
-        w_DE_0=float(cosmology.get("w_DE_0", -1.0)),
-        w_DE_a=float(cosmology.get("w_DE_a", 0.0)),
-        cs2_DE=float(cosmology.get("cs2_DE", 1.0)),
-        Omegak=float(cosmology.get("Omegak", 0.0)),
-        A_s=float(cosmology["A_s"]),
-        n_s=float(cosmology["n_s"]),
-        H0=float(cosmology["H0"]),
-        T_cmb=float(cosmology["Tcmb"]),
-        Y_He=float(cosmology["YHe"]),
-        Neff_massless=float(cosmology["Neff"]),
-        num_massive_neutrinos=float(cosmology.get("Nmnu", 0.0)),
-        mnu=float(cosmology.get("mnu", 0.0)),
-        k_pivot=float(cosmology.get("k_p", 0.05)),
-        tau_reio=float(cosmology.get("tau_reio", 0.0)),
+        Omegam=float(c["Omegam"]),
+        Omegab=float(c["Omegab"]),
+        w_DE_0=float(c["w_DE_0"]),
+        w_DE_a=float(c["w_DE_a"]),
+        cs2_DE=float(c["cs2_DE"]),
+        Omegak=float(c["Omegak"]),
+        A_s=float(c["A_s"]),
+        n_s=float(c["n_s"]),
+        H0=float(c["H0"]),
+        T_cmb=float(c["Tcmb"]),
+        Y_He=float(c["YHe"]),
+        Neff_massless=float(c["Neff"]),
+        num_massive_neutrinos=float(c["Nmnu"]),
+        mnu=float(c["mnu"]),
+        k_pivot=float(c["k_p"]),
+        tau_reio=float(c["tau_reio"]),
     )
 
 
@@ -94,55 +109,82 @@ recombination block's thermal inputs (:data:`DIRECTED_NAMES`). The forward
 sensitivities carry them through both the hierarchy and the recombination
 history. The derivative holds fixed the conformal age ``tau0`` at which a
 trajectory stops, the reionization redshift found for ``tau_reio``, and the
-initial state. The other keys must be plain numbers. Some enter as parameter
-columns the sensitivities do not carry (``Omegak``, ``Nmnu``, ``mnu``,
-``w_DE_0``, ``w_DE_a``, ``cs2_DE``, ``YHe``, ``tau_reio``), the rest not at
-all (``A_s``, ``n_s``, ``k_p``)."""
+initial state. Every key may be traced under ``jit``. Those the solve reads
+as parameter columns the sensitivities do not carry (``Omegak``, ``Nmnu``,
+``mnu``, ``w_DE_0``, ``w_DE_a``, ``cs2_DE``, ``YHe``, ``tau_reio``) raise if
+differentiated. The solve never reads ``A_s``, ``n_s`` and ``k_p``."""
 
 
 def _cosmology_dictionary(cosmology) -> dict:
     """Return a cosmology's parameter dictionary, given a dictionary or a cosmology object."""
 
     if isinstance(cosmology, dict):
-        return dict(cosmology)
+        return {**OPTIONAL_DEFAULTS, **cosmology}
     d = cosmology.to_background_params()
     d["k_p"] = cosmology.k_pivot
     return d
 
 
-def _split_cosmologies(cosmologies):
-    """Return ``(fixed, theta)``: each cosmology's plain and differentiable parameters.
+PARAMETER_KEYS = (
+    "Omegam",
+    "Omegab",
+    "A_s",
+    "n_s",
+    "H0",
+    "Tcmb",
+    "YHe",
+    "Neff",
+    *OPTIONAL_DEFAULTS,
+)
+"""Every key of a parameter dictionary, those of :data:`OPTIONAL_DEFAULTS` last."""
 
-    ``fixed`` holds one dictionary per cosmology of the keys outside
-    :data:`DIFFERENTIABLE_PARAMETERS`, as floats. The float conversion raises
-    ``ValueError`` for a JAX tracer given for one of those keys. ``theta`` is
-    the ``(n_cosmologies, 5)`` array of the differentiable keys, traced or not.
+UNUSED_BY_THE_SOLVE = ("A_s", "n_s", "k_p")
+"""Keys the Einstein-Boltzmann solve never reads: the primordial spectrum's."""
+
+
+@functools.partial(jax.custom_jvp, nondiff_argnums=(1,))
+def _not_differentiable(value, name):
+    """Return ``value``, and raise if anything differentiates with respect to it."""
+
+    return value
+
+
+@_not_differentiable.defjvp
+def _not_differentiable_jvp(name, primals, tangents):
+    raise ValueError(
+        f"{name!r} cannot be differentiated through solve_eb: the differentiable "
+        f"parameters are {DIFFERENTIABLE_PARAMETERS}"
+    )
+
+
+def _columns(cosmologies, held: bool = True) -> dict:
+    """Return a batch's parameters as JAX columns ``(n_cosmologies,)`` by key.
+
+    The cosmologies are dictionaries or cosmology objects, their values
+    numbers or JAX values, traced or not. With ``held``, a key the solve reads
+    but does not differentiate (outside :data:`DIFFERENTIABLE_PARAMETERS` and
+    :data:`UNUSED_BY_THE_SOLVE`) raises if differentiated: its derivative would
+    otherwise come back as a silent zero.
     """
 
-    fixed, rows = [], []
-    for cosmology in cosmologies:
-        d = _cosmology_dictionary(cosmology)
-        plain = {}
-        for key, value in d.items():
-            if key in DIFFERENTIABLE_PARAMETERS:
-                continue
-            try:
-                plain[key] = float(value)
-            except TypeError as error:
-                raise ValueError(
-                    f"{key!r} cannot be differentiated through solve_eb: the "
-                    f"differentiable parameters are {DIFFERENTIABLE_PARAMETERS}"
-                ) from error
-        fixed.append(plain)
-        values = [d[k] for k in DIFFERENTIABLE_PARAMETERS]
+    rows = [_cosmology_dictionary(c) for c in cosmologies]
+    columns = {}
+    for key in PARAMETER_KEYS:
+        values = [row[key] for row in rows]
         if any(isinstance(v, jax.Array) for v in values):
-            rows.append(jnp.stack([jnp.asarray(v, dtype=jnp.float64) for v in values]))
+            column = jnp.stack([jnp.asarray(v, dtype=jnp.float64) for v in values])
         else:
-            rows.append(np.asarray(values, dtype=np.float64))
-    if all(isinstance(r, np.ndarray) for r in rows):
-        # plain numbers: one host array, no per-cosmology device work
-        return tuple(fixed), np.stack(rows)
-    return tuple(fixed), jnp.stack(rows)
+            column = jnp.asarray(np.asarray(values, dtype=np.float64))
+        if held and key not in DIFFERENTIABLE_PARAMETERS + UNUSED_BY_THE_SOLVE:
+            column = _not_differentiable(column, key)
+        columns[key] = column
+    return columns
+
+
+def _is_concrete(value) -> bool:
+    """Whether ``value`` is a number now: not a JAX tracer of ``jit`` or a derivative."""
+
+    return not isinstance(value, jax.core.Tracer)
 
 
 as_cosmology = _as_cosmology

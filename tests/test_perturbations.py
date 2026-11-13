@@ -94,17 +94,45 @@ def _class_linear_pk(param, k_values):
         cosmo.empty()
 
 
+def _matter_power(k_values, batch, tau_today=None, **options):
+    """``P(k)`` of a batch as a user computes it: ``solve_eb``, then the spectrum.
+
+    ``tau_today`` must lie at or past every conformal age. It defaults to the
+    batch's oldest, which needs the parameters as numbers.
+    """
+
+    from discoeb.power_spectrum import (
+        MATTER_POWER_QUANTITIES,
+        MATTER_THERMO_WEIGHT,
+        compute_matter_power_spectrum,
+    )
+    from discoeb.solver import conformal_ages, solve_eb
+
+    if tau_today is None:
+        tau_today = conformal_ages(batch).max()
+    options.setdefault("thermo_weight", MATTER_THERMO_WEIGHT)
+    solution = solve_eb(
+        batch, k_values, [tau_today], keep=MATTER_POWER_QUANTITIES, **options
+    )
+    return compute_matter_power_spectrum(solution, batch)
+
+
 @pytest.mark.parametrize("n_cosmologies", BATCH_SIZE_CASES)
 def test_matter_power_spectrum_matches_class(n_cosmologies, benchmark):
     """Check and time one GPU launch over nearby flat LCDM cosmologies."""
 
+    import jax
+
     from discoeb.models import LCDM
-    from discoeb.power_spectrum import solve_matter_power_spectrum
 
     cosmologies = _perturbed_cosmologies(n_cosmologies)
+
+    def run(batch):
+        return np.asarray(jax.block_until_ready(_matter_power(MATTER_POWER_K, batch)))
+
     pk_ours = benchmark.pedantic(
-        solve_matter_power_spectrum,
-        args=(MATTER_POWER_K, LCDM(cosmologies)),
+        run,
+        args=(LCDM(cosmologies),),
         rounds=1,
         warmup_rounds=1,
         iterations=1,
@@ -120,7 +148,6 @@ def test_matter_power_spectrum_matches_class(n_cosmologies, benchmark):
     )
 
 
-DENSITY_NAMES = ("grhog", "grhornomass", "grhoc", "grhob", "grhov")
 DERIV_GATE = 5.0e-3
 # Relative step of the central differences. Step-acceptance flips between the
 # two shifted solves move P(k) by ~1e-5 of itself whatever the step (both
@@ -128,13 +155,20 @@ DERIV_GATE = 5.0e-3
 # swamped the derivative; at 1e-2 the noise is 5e-4 of the derivative and the
 # truncation error of the difference ~1e-4.
 FD_STEP = 1.0e-2
+# Tcmb also reaches P(k) through the recombination rates, and the thermal
+# inputs' sensitivities are biased against central differences of the joint
+# solve (YHe 2 percent, Tcmb 1.9, Omegab 0.5, with fp32 or fp64 rate math),
+# while the densities' agree to 1e-4. Through P(k) that leaves dP/dTcmb 3.7
+# percent off. A known gap of the recombination block's sensitivities, gated
+# loosely here so it cannot grow unnoticed.
+DERIV_GATES = {"Tcmb": 5.0e-2}
 
 
 def test_matter_power_spectrum_derivatives(benchmark):
-    """Time and check dP(k)/d(background densities) by forward sensitivity.
+    """Time and check dP(k)/d(differentiable parameters) by forward sensitivity.
 
-    The five densities enter the hierarchy, the recombination rates (through
-    the expansion rate), the matter weighting of ``delta_m`` and the conformal
+    The parameters enter the hierarchy, the recombination rates (through the
+    expansion rate), the matter weighting of ``delta_m`` and the conformal
     age, so this is the total derivative, with the sensitivities of the
     recombination block carried through modax's split solve. Central
     differences are the noisy side of the comparison: the solve runs at
@@ -145,39 +179,93 @@ def test_matter_power_spectrum_derivatives(benchmark):
     import jax
     import jax.numpy as jnp
 
-    from discoeb.background import density_coefficients
-    from discoeb.cosmology import _as_cosmology
+    from discoeb.cosmology import DIFFERENTIABLE_PARAMETERS
     from discoeb.models import LCDM
-    from discoeb.power_spectrum import matter_power_spectrum_jax
+    from discoeb.solver import conformal_ages
 
     cosmology = _perturbed_cosmologies(1)[0]
-    densities = jnp.asarray(
-        np.asarray(density_coefficients(_as_cosmology(cosmology)), dtype=np.float64)
-    )
-    assert densities.shape == (len(DENSITY_NAMES),)
+    theta = jnp.asarray([cosmology[name] for name in DIFFERENTIABLE_PARAMETERS])
+    # past the age of every shifted cosmology; the parameters are traced
+    tau_today = 2.0 * conformal_ages(cosmology).max()
 
-    def total_power(d):
-        return jnp.sum(matter_power_spectrum_jax(MATTER_POWER_K, LCDM(cosmology), d))
+    def total_power(t):
+        params = {**cosmology, **dict(zip(DIFFERENTIABLE_PARAMETERS, t))}
+        return jnp.sum(_matter_power(MATTER_POWER_K, LCDM(params), tau_today))
 
     value_and_grad = jax.value_and_grad(total_power)
 
     def run():
-        value, grad = value_and_grad(densities)
+        value, grad = value_and_grad(theta)
         return float(value), np.asarray(jax.block_until_ready(grad))
 
     value, grad = benchmark.pedantic(run, rounds=1, warmup_rounds=1, iterations=1)
     assert np.isfinite(grad).all(), f"non-finite gradient {grad}"
 
-    for i, name in enumerate(DENSITY_NAMES):
-        step = FD_STEP * abs(float(densities[i]))
-        plus = float(total_power(densities.at[i].add(step)))
-        minus = float(total_power(densities.at[i].add(-step)))
+    for i, name in enumerate(DIFFERENTIABLE_PARAMETERS):
+        step = FD_STEP * abs(float(theta[i]))
+        plus = float(total_power(theta.at[i].add(step)))
+        minus = float(total_power(theta.at[i].add(-step)))
         finite = (plus - minus) / (2.0 * step)
         rel = abs(grad[i] - finite) / max(abs(finite), 1e-300)
-        assert rel < DERIV_GATE, (
+        assert rel < DERIV_GATES.get(name, DERIV_GATE), (
             f"d(sum P)/d{name}: sensitivity {grad[i]:.8e} against central "
             f"difference {finite:.8e}, relative {rel:.3g}"
         )
+
+
+def test_matter_power_spectrum_under_jit():
+    """``solve_eb`` and ``compute_matter_power_spectrum`` trace under ``jit``, every key traced.
+
+    One trace serves every cosmology of the same keys, the values agree with
+    the eager solve, the gradient under ``jit`` with the eager one, and a key
+    outside :data:`DIFFERENTIABLE_PARAMETERS` still refuses a derivative.
+    """
+
+    import jax
+    import jax.numpy as jnp
+
+    from discoeb.cosmology import DIFFERENTIABLE_PARAMETERS
+    from discoeb.models import LCDM
+    from discoeb.power_spectrum import (
+        MATTER_POWER_QUANTITIES,
+        MATTER_THERMO_WEIGHT,
+        compute_matter_power_spectrum,
+    )
+    from discoeb.solver import conformal_ages, solve_eb
+
+    traces = []
+
+    def power(cosmology):
+        traces.append(cosmology)
+        batch = LCDM([cosmology])
+        solution = solve_eb(
+            batch,
+            SOLVE_EB_K,
+            conformal_ages(batch).max()[None],
+            keep=MATTER_POWER_QUANTITIES,
+            thermo_weight=MATTER_THERMO_WEIGHT,
+        )
+        return compute_matter_power_spectrum(solution, batch)[0]
+
+    jitted = jax.jit(power)
+    for cosmology in _perturbed_cosmologies(2):
+        np.testing.assert_allclose(
+            np.asarray(jitted(cosmology)), np.asarray(power(cosmology)), rtol=1e-12
+        )
+    assert sum(isinstance(c["H0"], jax.core.Tracer) for c in traces) == 1
+
+    cosmology = _perturbed_cosmologies(1)[0]
+    theta = jnp.asarray([cosmology[n] for n in DIFFERENTIABLE_PARAMETERS])
+
+    def total(t, of):
+        return jnp.sum(of({**cosmology, **dict(zip(DIFFERENTIABLE_PARAMETERS, t))}))
+
+    eager = np.asarray(jax.grad(total)(theta, power))
+    under_jit = np.asarray(jax.jit(jax.grad(lambda t: total(t, jitted)))(theta))
+    np.testing.assert_allclose(under_jit, eager, rtol=1e-12)
+
+    with pytest.raises(ValueError, match="cannot be differentiated"):
+        jax.jit(jax.grad(lambda w: jnp.sum(jitted({**cosmology, "w_DE_0": w}))))(-1.0)
 
 
 SOLVE_EB_K = MATTER_POWER_K[::16][::-1]  # descending, to exercise the reordering
@@ -197,9 +285,9 @@ def test_solve_eb_keeps_what_the_history_holds():
     """
 
     from discoeb.background import TAU_START, density_coefficients
+    from discoeb.cosmology import as_cosmology
     from discoeb.kernel import PARAM_COLUMNS, make_params
     from discoeb.models import LCDM
-    from discoeb.power_spectrum import solve_matter_power_spectrum
     from discoeb.recombination import THERMO_ERROR_WEIGHT
     from discoeb.solver import solve_eb, solve_perturbation_history_batch
 
@@ -242,10 +330,10 @@ def test_solve_eb_keeps_what_the_history_holds():
             np.testing.assert_allclose(kept[ci, j], expected, rtol=2e-6, atol=1e-12)
 
     # the same thermal error weight as solve_eb's launch, so the two solves agree bit for bit
-    pk_batch = solve_matter_power_spectrum(
+    pk_batch = _matter_power(
         SOLVE_EB_K, LCDM(cosmologies), thermo_weight=THERMO_ERROR_WEIGHT
     )
-    for ci, cosmology in enumerate(prepared.cosmologies):
+    for ci, cosmology in enumerate(map(as_cosmology, prepared.cosmologies)):
         grhoc, grhob = density_coefficients(cosmology)[2:4]
         clxc = np.asarray(solution["clxc"][ci, :, -1])
         clxb = np.asarray(solution["clxb"][ci, :, -1])
@@ -313,10 +401,10 @@ def test_solve_eb_derivatives():
     import jax.numpy as jnp
 
     from discoeb.background import TAU_START
-    from discoeb.cosmology import DIFFERENTIABLE_PARAMETERS, _as_cosmology
+    from discoeb.cosmology import DIFFERENTIABLE_PARAMETERS, _columns
     from discoeb.kernel import DIRECTED_COLUMNS, DIRECTED_NAMES, _prepare_solve
     from discoeb.models import LCDM
-    from discoeb.sensitivities import _input_vector, _kept_values
+    from discoeb.sensitivities import _directed_inputs, _kept_values
     from discoeb.solver import solve_eb
 
     cosmology = _perturbed_cosmologies(1)[0]
@@ -324,16 +412,19 @@ def test_solve_eb_derivatives():
     # step-acceptance and with it a value by ~1e-6
     theta = jnp.asarray([cosmology[key] for key in DIFFERENTIABLE_PARAMETERS])
     fixed = {k: v for k, v in cosmology.items() if k not in DIFFERENTIABLE_PARAMETERS}
-    densities = _input_vector(fixed, theta)[None, :]
+
+    def inputs_of(theta):
+        param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
+        return _directed_inputs(_columns([param]))
+
+    densities = inputs_of(theta)
     tau = np.geomspace(10.0, 2.0e4, 12)
     names = ("R", "clxc", "theta_2")
     noise = {"R": 5.0e-6, "clxc": 5.0e-6, "theta_2": 1.0e-4}
 
     plain = solve_eb(LCDM(cosmology), SOLVE_EB_K, tau, keep=names)
-    prepared = _prepare_solve(LCDM, (_as_cosmology(cosmology),))
-    kept = _kept_values(
-        prepared, SOLVE_EB_K, np.concatenate(([TAU_START], tau)), names, ()
-    )
+    prepared = _prepare_solve(LCDM, (cosmology,), SOLVE_EB_K)
+    kept = _kept_values(prepared, np.concatenate(([TAU_START], tau)), names, ())
     base = np.asarray(kept(densities))
     # The same launch, from densities formed in JAX rather than as floats.
     np.testing.assert_allclose(np.asarray(plain.values), base, rtol=1e-12)
@@ -349,7 +440,6 @@ def test_solve_eb_derivatives():
     # is the larger part of a difference.
     kept_converged = _kept_values(
         prepared,
-        SOLVE_EB_K,
         np.concatenate(([TAU_START], tau)),
         names,
         (),
@@ -397,7 +487,7 @@ def test_solve_eb_derivatives():
         return solve_eb(LCDM(param), SOLVE_EB_K, tau, keep=names).values
 
     jac_theta = np.asarray(jax.jacfwd(of_parameters)(theta))
-    d_densities = np.asarray(jax.jacfwd(lambda t: _input_vector(fixed, t))(theta))
+    d_densities = np.asarray(jax.jacfwd(lambda t: inputs_of(t)[0])(theta))
     # Omegab's column is the near-cancelling difference of the CDM and
     # baryon columns, so the contraction itself carries ~1e-9 of roundoff.
     np.testing.assert_allclose(

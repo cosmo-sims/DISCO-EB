@@ -186,16 +186,6 @@ def density_coefficients(cosmology) -> tuple[float, float, float, float, float]:
     return (d["grhog"], d["grhornomass"], d["grhoc"], d["grhob"], d["grhov"])
 
 
-def _stack_background_params(cosmologies) -> dict:
-    """Stack the cosmologies' background parameters by name, one vmap lane each."""
-
-    rows = [c.to_background_params() for c in cosmologies]
-    return {
-        key: jnp.asarray([row[key] for row in rows], dtype=jnp.float64)
-        for key in rows[0]
-    }
-
-
 def _background_tau(d):
     """Return ``(a_grid, tau_grid)`` of the conformal-time quadrature for densities ``d`` (JAX)."""
 
@@ -275,17 +265,3 @@ def background_history(cosmology):
 def _background_history(cosmology: _ParamCosmology):
     d = {k: jnp.asarray(v) for k, v in _densities(cosmology).items()}
     return tuple(np.asarray(x) for x in _background_tau(d))
-
-
-@functools.lru_cache(maxsize=8)
-def endpoints(cosmologies: tuple) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return host arrays ``(tau0, lna_start, z_re)`` of a tuple of cosmology objects, cached per batch.
-
-    One vmapped :func:`background_endpoints` launch for the batch. The
-    endpoints depend on the background alone, not on the model.
-    """
-
-    return tuple(
-        np.asarray(x)
-        for x in background_endpoints(_stack_background_params(cosmologies))
-    )
