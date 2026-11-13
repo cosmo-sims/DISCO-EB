@@ -61,8 +61,13 @@ def neutrino_density_ratio(a, amnu, xp=jnp):
         y = np.asarray(a, dtype=np.float64) * float(amnu)
         return np.sum(w * np.sqrt(1.0 + (y[..., None] / q) ** 2), axis=-1)
     y = jnp.asarray(a) * amnu
-    q, w = jnp.asarray(q, dtype=y.dtype), jnp.asarray(w, dtype=y.dtype)
-    ratio = jnp.sum(w * jnp.sqrt(1.0 + (y[..., None] / q) ** 2), axis=-1)
+    # An elementwise sum over the nodes, not jnp.sum over a trailing node
+    # axis: vmapped over a batch's background grid, XLA emits that reduction
+    # as one unrolled kernel per row block, which ptxas took half an hour to
+    # assemble for 128 cosmologies.
+    ratio = sum(
+        float(wi) * jnp.sqrt(1.0 + (y / float(qi)) ** 2) for qi, wi in zip(q, w)
+    )
     return jnp.where(amnu > 0.0, ratio, 1.0)
 
 
