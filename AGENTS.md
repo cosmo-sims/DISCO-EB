@@ -206,8 +206,8 @@ The codebase is organized into modular components in `src/discoeb/`:
      model's `with_settings(LMAX_G=...)`, or rebind `Photons.LMAX_G`
    - Host-only tests: `tests/test_eb_model.py`
 
-3. **models/** - Cosmological models built from those components
-   - `CosmologyModel(name, components, settings)` (`models/base.py`): the
+3. **models.py** - Cosmological models built from those components
+   - `CosmologyModel(name, components, settings)`: the
      component classes in state order and setting overrides; frozen and
      hashable. Models derive from each other with `replace(old, new, name=)`,
      `add(*components, name=)`, `remove(...)` and `with_settings(**kw)`.
@@ -217,8 +217,8 @@ The codebase is organized into modular components in `src/discoeb/`:
      it, `Nmnu > 0` without `MassiveNeutrinos`). `resolved()` makes every
      setting explicit at the classes' current values: the kernel caches on
      the resolved model, so rebinding a setting recompiles
-   - `models/lcdm.py`: `LCDM` (flat unless `Omegak`), `LCDM_MNU =
-     LCDM.add(MassiveNeutrinos)`; `models/w0wacdm.py`: `W0WACDM =
+   - The models: `LCDM` (flat unless `Omegak`), `LCDM_MNU =
+     LCDM.add(MassiveNeutrinos)`, `W0WACDM =
      LCDM.replace(CosmologicalConstant, DarkEnergy)`, `W0WACDM_MNU`.
      `add` appends after `ThomsonScattering`; no sum or state order moves,
      since an interaction contributes to neither

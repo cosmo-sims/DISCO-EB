@@ -1,11 +1,33 @@
-"""A cosmological model: the components it evolves and their settings."""
+"""Cosmological models built from the species, interactions and gravity components.
+
+A model lists the components it evolves (:class:`CosmologyModel`), and every
+solve names its model: ``solve_eb(cosmologies, k, tau, model=LCDM)``. Models
+derive from each other, so a new one is usually a line::
+
+    W0WACDM = LCDM.replace(CosmologicalConstant, DarkEnergy, name="w0waCDM")
+    LCDM_MNU = LCDM.add(MassiveNeutrinos, name="LCDM+mnu")
+    COARSE = LCDM.with_settings(LMAX_G=10, LMAX_NR=10)
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..component import Component, Model
-from ..gravity import SUMS
+from .component import Component, Model
+from .gravity import SUMS, AdiabaticMode, Background, Curvature, Metric
+from .interactions import ThomsonScattering
+from .species import (
+    Baryons,
+    ColdDarkMatter,
+    CosmologicalConstant,
+    DarkEnergy,
+    MassiveNeutrinos,
+    MasslessNeutrinos,
+    Photons,
+    RadiationStreaming,
+)
+
+__all__ = ["LCDM", "LCDM_MNU", "W0WACDM", "W0WACDM_MNU", "CosmologyModel"]
 
 
 @dataclass(frozen=True)
@@ -181,8 +203,6 @@ class CosmologyModel:
         model without massive neutrinos needs ``Nmnu = 0``.
         """
 
-        from ..species import DarkEnergy, MassiveNeutrinos
-
         constant = cosmology.w_DE_0 == -1.0 and cosmology.w_DE_a == 0.0
         if self.has(DarkEnergy) and constant:
             raise ValueError(
@@ -210,3 +230,37 @@ def _state_names(model: CosmologyModel) -> tuple[str, ...]:
     if model not in _STATE_NAMES:
         _STATE_NAMES[model] = tuple(model.build().state)
     return _STATE_NAMES[model]
+
+
+# --- the models -------------------------------------------------------------
+
+LCDM = CosmologyModel(
+    "LCDM",
+    (
+        Background,
+        RadiationStreaming,
+        AdiabaticMode,
+        Curvature,
+        Metric,
+        ColdDarkMatter,
+        Baryons,
+        Photons,
+        MasslessNeutrinos,
+        CosmologicalConstant,
+        ThomsonScattering,
+    ),
+)
+"""LCDM with massless neutrinos: CDM, baryons, photons coupled by Thomson
+scattering, ``Neff`` massless neutrino flavours and a cosmological constant.
+Flat unless the cosmology sets ``Omegak``."""
+
+LCDM_MNU = LCDM.add(MassiveNeutrinos, name="LCDM+mnu")
+"""LCDM with ``Nmnu`` massive neutrino flavours of mass ``mnu`` on ``NQMAX``
+momentum bins."""
+
+W0WACDM = LCDM.replace(CosmologicalConstant, DarkEnergy, name="w0waCDM")
+"""LCDM with a dark-energy fluid of equation of state ``w = w_DE_0 + w_DE_a (1 -
+a)`` and sound speed ``cs2_DE``, perturbed. Needs ``w != -1``."""
+
+W0WACDM_MNU = W0WACDM.add(MassiveNeutrinos, name="w0waCDM+mnu")
+"""w0waCDM with massive neutrinos."""
