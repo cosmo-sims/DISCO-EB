@@ -1,6 +1,6 @@
 # Models
 
-A model is the list of components a solve evolves: the species (`discoeb.species`), the interactions between them (`discoeb.interactions`) and the metric and Friedmann sum (`discoeb.gravity`). Every solve names one, as `solve_eb(..., model=LCDM)`. `discoeb.models` defines `LCDM` and `W0WACDM`, each with a massive-neutrino variant (`LCDM_MNU`, `W0WACDM_MNU`). A model rejects a cosmology it cannot represent, such as `w_DE_0 = -0.9` under `LCDM`.
+A model is the list of components a solve evolves: the species (`discoeb.species`), the interactions between them (`discoeb.interactions`) and the metric and Friedmann sum (`discoeb.gravity`). Applied to cosmologies (parameter dictionaries) it gives the batch every solve takes, as `solve_eb(LCDM(params), k, tau)`. `discoeb.models` defines `LCDM` and `W0WACDM`, each with a massive-neutrino variant (`LCDM_MNU`, `W0WACDM_MNU`). A model rejects a cosmology it cannot represent, such as `w_DE_0 = -0.9` under `LCDM`.
 
 Models derive from each other:
 
@@ -28,7 +28,7 @@ import jax.numpy as jnp
 
 def R_today(omega_m):
     param = {**cosmology, "Omegam": omega_m}
-    return solve_eb(param, k, tau, model=LCDM, keep=("R",))["R"][0, :, -1]
+    return solve_eb(LCDM(param), k, tau, keep=("R",))["R"][0, :, -1]
 
 dR = jax.jacfwd(R_today)(jnp.asarray(cosmology["Omegam"]))  # (64,)
 ```

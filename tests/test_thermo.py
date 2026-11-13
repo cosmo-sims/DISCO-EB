@@ -50,7 +50,7 @@ def kernel_thermal_history(cosmologies, n_tau: int = N_TAU):
 
     tau0 = np.asarray(conformal_ages(cosmologies))
     tau = np.geomspace(TAU_START, float(tau0.max()), n_tau)
-    solution = solve_eb(cosmologies, THERMAL_K, tau, model=LCDM, keep=THERMAL_KEEP)
+    solution = solve_eb(LCDM(cosmologies), THERMAL_K, tau, keep=THERMAL_KEEP)
     return (
         tau,
         tau0,

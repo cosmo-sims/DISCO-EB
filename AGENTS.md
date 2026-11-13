@@ -107,8 +107,8 @@ CMB code uses. That code lives in
 DISCO-CMB (`~/git/DISCO-CMB`, package `discocmb`, split out 2026-11-11 with
 the history of `cmb.py` and `lensing.py`), which imports from `discoeb` and nothing
 else (it took `spline_interpolation` with it on 2026-11-12); this package never imports
-it (`tests/test_boundary.py`). The contract is `solve_eb(cosmologies, k, tau,
-model=LCDM, keep=names, extra=components)`: named quantities evaluated in the kernel at the
+it (`tests/test_boundary.py`). The contract is `solve_eb(LCDM(cosmologies), k,
+tau, keep=names, extra=components)`: named quantities evaluated in the kernel at the
 save times, the CMB's sources being a `LineOfSightSources` component passed as
 `extra`; error weights by state name; differentiable in
 `DIFFERENTIABLE_PARAMETERS` or in the nine `DIRECTED_NAMES` inputs passed as
@@ -222,7 +222,13 @@ The codebase is organized into modular components in `src/discoeb/`:
      LCDM.replace(CosmologicalConstant, DarkEnergy)`, `W0WACDM_MNU`.
      `add` appends after `ThomsonScattering`; no sum or state order moves,
      since an interaction contributes to neither
-   - Every solve takes `model=` (keyword, required). There is no
+   - `LCDM(cosmologies)` (`CosmologyModel.__call__`) checks each cosmology
+     and returns a `CosmologyBatch(model, cosmologies)`, the one argument a
+     solve takes for both (2026-11-13; before, `model=` was a separate
+     keyword). The dicts are kept as given, so JAX values in them stay
+     differentiable; `check` reads only the plain `w_DE_*`, `Nmnu` keys.
+     Indexing gives a batch of the same model (`batch[0]`, `batch[1:]`).
+     The kernel still caches on the model alone. There is no
      `PerturbationLayout` any more (removed 2026-11-12): indices come from
      `model.state_names()` or the joint model's `index`
 
@@ -304,7 +310,7 @@ The codebase is organized into modular components in `src/discoeb/`:
    `matter_power_spectrum_jax` does (an explicit end-time term carries
    `d tau0 / d densities`)
 
-9. **solver.py** - `solve_eb(cosmologies, k, tau, *, model, keep=...)` solves
+9. **solver.py** - `solve_eb(LCDM(cosmologies), k, tau, *, keep=...)` solves
    a batch and records only the named quantities at the given times, so the
    device holds `n_k * n_cosmo * n_tau * len(keep)` numbers and never the
    history. Returns an `EBSolution` (`solution["R"]` is `(n_cosmo, n_k,
@@ -319,8 +325,8 @@ The codebase is organized into modular components in `src/discoeb/`:
    `directed_inputs`, `conformal_ages`, `state_names(model)`
 
 10. **power_spectrum.py** - `solve_matter_power_spectrum_batch(k,
-    cosmologies, *, model)` and `matter_power_spectrum_jax(k, cosmology, ...,
-    model=)` for derivatives. `examples/flat_lcdm_power_spectrum.py` is the
+    LCDM(cosmologies))` and `matter_power_spectrum_jax(k, LCDM(cosmology),
+    ...)` (a batch of one) for derivatives. `examples/flat_lcdm_power_spectrum.py` is the
     command-line entry point
 
 11. **Jacobian sparsity** (`CosmologyModel.sparsity`; its test is
@@ -365,8 +371,8 @@ The codebase is organized into modular components in `src/discoeb/`:
 
 The typical computation flow is:
 
-1. **Pick a model and define cosmological parameters** (`LCDM`, `W0WACDM`, ...;
-   Ωm, Ωb, h, As, ns, mν, w0, wa, etc.)
+1. **Pick a model and apply it to cosmological parameters** (`LCDM(params)`,
+   `W0WACDM(params)`, ...; Ωm, Ωb, h, As, ns, mν, w0, wa, etc.)
 
 2. **Background endpoints** (`background.background_endpoints`)
    - The conformal-time quadrature of the Friedmann sum gives each
@@ -382,7 +388,7 @@ The typical computation flow is:
      quantities through the save hook (`solver.solve_eb`) or the final state
      (`power_spectrum`)
 
-5. **CMB spectrum**: DISCO-CMB, through `eb.solve_eb(..., model=...)`
+5. **CMB spectrum**: DISCO-CMB, through `eb.solve_eb(LCDM(cosmologies), ...)`
 
 ### Key Design Patterns
 
@@ -421,7 +427,7 @@ See `notebooks/` directory:
 - `nb_minimal_example.ipynb` - Start here: compute matter power spectrum and derivatives
 
 The notebooks still call the removed diffrax `evolve_perturbations*` functions;
-they need porting to `solve_matter_power_spectrum_batch(..., model=...)`. The CMB notebook moved
+they need porting to `solve_matter_power_spectrum_batch(k, LCDM(cosmologies))`. The CMB notebook moved
 to DISCO-CMB.
 
 ## Contributing

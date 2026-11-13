@@ -1,7 +1,7 @@
 """Compute the linear matter power spectrum of a flat LCDM cosmology.
 
-An entry point to DISCO-EB: pick a model from ``discoeb.models``, give it a
-cosmology as a parameter dictionary and solve. The script prints ``P(k)`` at
+An entry point to DISCO-EB: pick a model from ``discoeb.models``, apply it
+to a cosmology given as a parameter dictionary and solve. The script prints ``P(k)`` at
 redshift zero and, with ``--output``, writes ``k`` and ``P(k)`` to a text
 file. The first run compiles the GPU kernel (about 35 s); modax caches it on
 disk, so later runs start in seconds.
@@ -62,7 +62,7 @@ def main(argv=None):
     k = np.geomspace(args.k_min, args.k_max, args.n_k)
 
     # One GPU launch over every wave mode; a list of cosmologies batches them.
-    (pk,) = solve_matter_power_spectrum_batch(k, [cosmology], model=LCDM)
+    (pk,) = solve_matter_power_spectrum_batch(k, LCDM([cosmology]))
 
     print(f"{'k [1/Mpc]':>12}  {'P(k) [Mpc^3]':>14}")
     for kv, pv in zip(k[:: max(1, len(k) // 16)], pk[:: max(1, len(k) // 16)]):

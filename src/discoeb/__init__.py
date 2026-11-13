@@ -18,7 +18,7 @@ times* of a batch of cosmologies and wave modes. The kernel launch evaluates
 them from the solver's dense output and returns those values, never the
 state history:
 
-* :func:`solve_eb` ``(cosmologies, k, tau, model=LCDM, keep=names,
+* :func:`solve_eb` ``(LCDM(cosmologies), k, tau, keep=names,
   extra=components)``
   returns an :class:`EBSolution` whose ``values`` are ``(n_cosmologies,
   len(keep), n_k, n_tau)``, with each cosmology's conformal age ``tau0``.
@@ -56,7 +56,14 @@ from .kernel import (
     PERTURB_RTOL,
     joint_model,
 )
-from .models import LCDM, LCDM_MNU, W0WACDM, W0WACDM_MNU, CosmologyModel
+from .models import (
+    LCDM,
+    LCDM_MNU,
+    W0WACDM,
+    W0WACDM_MNU,
+    CosmologyBatch,
+    CosmologyModel,
+)
 from .power_spectrum import matter_power_spectrum_jax, solve_matter_power_spectrum_batch
 from .recombination import THERMO_ERROR_WEIGHT
 from .solver import (
@@ -69,6 +76,7 @@ from .solver import (
 
 __all__ = [
     "Component",
+    "CosmologyBatch",
     "CosmologyModel",
     "DIFFERENTIABLE_PARAMETERS",
     "DIRECTED_NAMES",

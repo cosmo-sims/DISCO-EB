@@ -78,7 +78,7 @@ cosmology = {
 k = np.geomspace(1e-4, 1.0, 64)      # 1/Mpc
 tau = np.geomspace(1.0, 2e4, 100)    # Mpc, the last times past today
 
-solution = solve_eb(cosmology, k, tau, model=LCDM, keep=("R", "clxc"))
+solution = solve_eb(LCDM(cosmology), k, tau, keep=("R", "clxc"))
 R = solution["R"]  # (1, 64, 100): cosmologies, wave modes, times
 ```
 

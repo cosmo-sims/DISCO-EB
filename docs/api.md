@@ -7,7 +7,10 @@
 .. autofunction:: discoeb.solve_eb
 
 .. autoclass:: discoeb.CosmologyModel
-   :members: replace, add, remove, with_settings, setting, check, state_names, sparsity
+   :members: __call__, replace, add, remove, with_settings, setting, check, state_names, sparsity
+
+.. autoclass:: discoeb.CosmologyBatch
+   :no-members:
 
 .. autodata:: discoeb.LCDM
    :no-value:

@@ -16,7 +16,7 @@ from .kernel import (
     _pack_batch,
     _prepare_solve,
 )
-from .models import CosmologyModel
+from .models import CosmologyBatch, _batch_of
 from .sensitivities import _kept_values
 
 MATTER_THERMO_WEIGHT = 0.1
@@ -62,9 +62,8 @@ def _power_spectrum_from_final(y_final, k_sorted, cosmologies, k_values, index):
 
 def solve_matter_power_spectrum_batch(
     k_values,
-    cosmologies,
+    cosmologies: CosmologyBatch,
     *,
-    model: CosmologyModel,
     rtol: float = PERTURB_RTOL,
     atol: float = PERTURB_ATOL,
     first_step: float = PERTURB_FIRST_STEP,
@@ -73,11 +72,13 @@ def solve_matter_power_spectrum_batch(
 ) -> np.ndarray:
     """Return ``P(k)`` in Mpc^3, shape ``(n_cosmologies, n_k)``, for a batch in one launch.
 
-    ``model`` is the cosmological model (:mod:`discoeb.models`) every
-    cosmology of the batch belongs to.
+    ``cosmologies`` is a cosmological model applied to the batch's parameter
+    dictionaries, ``LCDM([params, ...])``
+    (:class:`~discoeb.models.CosmologyBatch`).
     """
 
-    prepared = _prepare_solve(model, tuple(cosmologies))
+    batch = _batch_of(cosmologies)
+    prepared = _prepare_solve(batch.model, batch.cosmologies)
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values)
     sol = _launch(
         prepared,
@@ -106,11 +107,10 @@ def _tau0_of(densities, d):
 
 def matter_power_spectrum_jax(
     k_values,
-    cosmology,
+    cosmology: CosmologyBatch,
     densities=None,
     thermal=None,
     *,
-    model: CosmologyModel,
     rtol: float = PERTURB_RTOL,
     atol: float = PERTURB_ATOL,
     first_step: float = PERTURB_FIRST_STEP,
@@ -119,6 +119,8 @@ def matter_power_spectrum_jax(
 ):
     """Return ``P(k)`` as a JAX array, differentiable in the densities and thermal inputs.
 
+    ``cosmology`` is a cosmological model applied to one cosmology,
+    ``LCDM(params)``.
     ``densities`` (the five of :data:`DIRECTED_NAMES`) and ``thermal`` (``YHe,
     Tcmb, H0, Omegab``) default to the cosmology's own. The derivative is the
     total one. The densities enter the hierarchy, the recombination rates
@@ -134,8 +136,13 @@ def matter_power_spectrum_jax(
     contrasts and the rates the end-time term needs at ``tau_0``.
     """
 
-    cosmology = _as_cosmology(cosmology)
-    prepared = _prepare_solve(model, (cosmology,))
+    batch = _batch_of(cosmology, "cosmology")
+    if len(batch) != 1:
+        raise ValueError(
+            f"matter_power_spectrum_jax takes one cosmology, got {len(batch)}"
+        )
+    cosmology = _as_cosmology(batch.cosmologies[0])
+    prepared = _prepare_solve(batch.model, (cosmology,))
     d = _densities(cosmology)
     if densities is None:
         densities = [d[name] for name in DIRECTED_NAMES[:5]]

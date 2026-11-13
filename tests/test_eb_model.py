@@ -160,6 +160,40 @@ def test_a_model_rejects_a_cosmology_it_cannot_represent():
         LCDM.check(as_cosmology({**base, "Nmnu": 1.0, "mnu": 0.06}))
 
 
+def test_a_model_applied_to_cosmologies_is_the_batch_a_solve_takes():
+    import jax.numpy as jnp
+
+    from discoeb.models import LCDM, W0WACDM, CosmologyBatch, _batch_of
+
+    base = dict(
+        Omegam=0.31,
+        Omegab=0.049,
+        A_s=2.1e-9,
+        n_s=0.966,
+        H0=67.0,
+        Tcmb=2.7255,
+        YHe=0.245,
+        Neff=3.046,
+    )
+    one = LCDM(base)
+    assert isinstance(one, CosmologyBatch) and one.model is LCDM
+    assert one.cosmologies == (base,) and len(one) == 1
+    many = LCDM([base, {**base, "H0": 70.0}, {**base, "H0": 72.0}])
+    assert len(many) == 3 and many[1].cosmologies[0]["H0"] == 70.0
+    assert len(many[1:]) == 2 and many[1:].model is LCDM
+    # The dictionaries are kept as given, so a JAX value stays differentiable.
+    traced = LCDM({**base, "Omegam": jnp.asarray(0.31)})
+    assert isinstance(traced.cosmologies[0]["Omegam"], type(jnp.asarray(0.31)))
+    with pytest.raises(ValueError, match="DarkEnergy"):
+        LCDM({**base, "w_DE_0": -0.9})
+    with pytest.raises(ValueError, match="w != -1"):
+        W0WACDM([base])
+    with pytest.raises(ValueError, match="at least one"):
+        LCDM([])
+    with pytest.raises(TypeError, match=r"LCDM\(\[params"):
+        _batch_of([base])
+
+
 def test_the_truncations_are_the_components_settings():
     """The model's lmax settings reach the components, which size their hierarchies."""
     cosmology_model = MODELS["ragged-blocks"]

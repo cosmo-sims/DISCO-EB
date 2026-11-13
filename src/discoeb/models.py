@@ -1,7 +1,8 @@
 """Cosmological models built from the species, interactions and gravity components.
 
-A model lists the components it evolves (:class:`CosmologyModel`), and every
-solve names its model: ``solve_eb(cosmologies, k, tau, model=LCDM)``. Models
+A model lists the components it evolves (:class:`CosmologyModel`). Called on
+cosmologies (parameter dictionaries) it gives the batch every solve takes
+(:class:`CosmologyBatch`): ``solve_eb(LCDM([params]), k, tau)``. Models
 derive from each other, so a new one is usually a line::
 
     W0WACDM = LCDM.replace(CosmologicalConstant, DarkEnergy, name="w0waCDM")
@@ -14,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .component import Component, Model
+from .cosmology import _as_batch
 from .gravity import SUMS, AdiabaticMode, Background, Curvature, Metric
 from .interactions import ThomsonScattering
 from .species import (
@@ -27,7 +29,14 @@ from .species import (
     RadiationStreaming,
 )
 
-__all__ = ["LCDM", "LCDM_MNU", "W0WACDM", "W0WACDM_MNU", "CosmologyModel"]
+__all__ = [
+    "LCDM",
+    "LCDM_MNU",
+    "W0WACDM",
+    "W0WACDM_MNU",
+    "CosmologyBatch",
+    "CosmologyModel",
+]
 
 
 @dataclass(frozen=True)
@@ -193,17 +202,41 @@ class CosmologyModel:
 
         return self.build().sparsity()
 
+    def __call__(self, cosmologies) -> CosmologyBatch:
+        """Return this model with ``cosmologies`` to solve: ``LCDM([params, ...])``.
+
+        ``cosmologies`` is one cosmology (a parameter dictionary or a cosmology
+        object) or a sequence of them. Each is checked against the model
+        (:meth:`check`). Dictionaries are kept as given, so the values of
+        :data:`~discoeb.DIFFERENTIABLE_PARAMETERS` in them may be JAX values.
+        """
+
+        batch = _as_batch(cosmologies)
+        if not batch:
+            raise ValueError(f"{self.name} needs at least one cosmology")
+        for cosmology in batch:
+            self.check(cosmology)
+        return CosmologyBatch(self, batch)
+
     def check(self, cosmology) -> None:
         """Raise ``ValueError`` if ``cosmology`` sets parameters this model ignores.
 
-        ``cosmology`` is a cosmology object
+        ``cosmology`` is a parameter dictionary or a cosmology object
         (:func:`~discoeb.cosmology.as_cosmology`). A model without the
         dark-energy fluid needs ``w_DE_0 = -1`` and ``w_DE_a = 0``, and one with
         it needs ``w != -1``, where the fluid equations divide by ``1 + w``. A
-        model without massive neutrinos needs ``Nmnu = 0``.
+        model without massive neutrinos needs ``Nmnu = 0``. Only these plain
+        parameters are read, so the differentiable ones may be traced.
         """
 
-        constant = cosmology.w_DE_0 == -1.0 and cosmology.w_DE_a == 0.0
+        if isinstance(cosmology, dict):
+            w0 = float(cosmology.get("w_DE_0", -1.0))
+            wa = float(cosmology.get("w_DE_a", 0.0))
+            n_mnu = float(cosmology.get("Nmnu", 0.0))
+        else:
+            w0, wa = cosmology.w_DE_0, cosmology.w_DE_a
+            n_mnu = cosmology.num_massive_neutrinos
+        constant = w0 == -1.0 and wa == 0.0
         if self.has(DarkEnergy) and constant:
             raise ValueError(
                 f"{self.name} evolves a dark-energy fluid, which needs w != -1; "
@@ -212,15 +245,52 @@ class CosmologyModel:
         if not self.has(DarkEnergy) and not constant:
             raise ValueError(
                 f"{self.name} has a cosmological constant but the cosmology sets "
-                f"w_DE_0 = {cosmology.w_DE_0}, w_DE_a = {cosmology.w_DE_a}; "
+                f"w_DE_0 = {w0}, w_DE_a = {wa}; "
                 "use a model with DarkEnergy (W0WACDM)"
             )
-        if not self.has(MassiveNeutrinos) and cosmology.num_massive_neutrinos > 0:
+        if not self.has(MassiveNeutrinos) and n_mnu > 0:
             raise ValueError(
                 f"{self.name} has no massive neutrinos but the cosmology sets "
-                f"Nmnu = {cosmology.num_massive_neutrinos}; "
-                "use a model with MassiveNeutrinos (LCDM_MNU)"
+                f"Nmnu = {n_mnu}; use a model with MassiveNeutrinos (LCDM_MNU)"
             )
+
+
+@dataclass(frozen=True, eq=False)
+class CosmologyBatch:
+    """A model with the cosmologies to solve it for, as ``LCDM([params, ...])`` returns.
+
+    Every solve takes one: ``solve_matter_power_spectrum_batch(k, LCDM(params))``.
+    ``model`` is the :class:`CosmologyModel`, on which the compiled kernel is
+    cached, and ``cosmologies`` the tuple of cosmologies as given. Indexing
+    gives a batch of the same model: ``batch[0]`` holds the first cosmology,
+    ``batch[2:5]`` three.
+    """
+
+    model: CosmologyModel
+    cosmologies: tuple
+
+    def __len__(self) -> int:
+        return len(self.cosmologies)
+
+    def __getitem__(self, index) -> CosmologyBatch:
+        selected = self.cosmologies[index]
+        if isinstance(index, slice):
+            return CosmologyBatch(self.model, selected)
+        return CosmologyBatch(self.model, (selected,))
+
+    def __repr__(self) -> str:
+        return f"{self.model.name}(<{len(self)} cosmologies>)"
+
+
+def _batch_of(batch, what: str = "cosmologies") -> CosmologyBatch:
+    """Return ``batch`` if it is a :class:`CosmologyBatch`, else raise a ``TypeError`` that says how to make one."""
+
+    if isinstance(batch, CosmologyBatch):
+        return batch
+    raise TypeError(
+        f"{what} must be a model applied to parameter dictionaries, such as "
+        f"LCDM([params, ...]), not {type(batch).__name__}"
+    )
 
 
 _STATE_NAMES: dict = {}

@@ -55,7 +55,7 @@ cosmology = {
 k = np.geomspace(1.0e-4, 1.0, 13)  # 1/Mpc
 tau = np.geomspace(1.0, 2.0e4, 200)  # Mpc; the last values lie past tau0
 
-solution = solve_eb(cosmology, k, tau, model=LCDM, keep=("R",))
+solution = solve_eb(LCDM(cosmology), k, tau, keep=("R",))
 R = np.asarray(solution["R"][0])  # (n_k, n_tau); one cosmology was passed
 tau0 = float(solution.tau0[0])
 
@@ -91,7 +91,7 @@ fixed = {
 
 def r_today(log_theta):
     param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, jnp.exp(log_theta)))}
-    return jnp.log(solve_eb(param, k, tau, model=LCDM, keep=("R",))["R"][0, :, -1])
+    return jnp.log(solve_eb(LCDM(param), k, tau, keep=("R",))["R"][0, :, -1])
 
 
 log_theta = jnp.log(jnp.asarray([cosmology[key] for key in DIFFERENTIABLE_PARAMETERS]))

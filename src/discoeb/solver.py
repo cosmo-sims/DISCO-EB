@@ -29,16 +29,15 @@ from .kernel import (
     _pack_batch,
     _prepare_solve,
 )
-from .models import CosmologyModel
+from .models import CosmologyBatch, CosmologyModel, _batch_of
 from .recombination import THERMO_ERROR_WEIGHT
 from .sensitivities import _input_vector, _kept_values
 
 
 def solve_perturbation_history_batch(
     k_values,
-    cosmologies,
+    cosmologies: CosmologyBatch,
     *,
-    model: CosmologyModel,
     tau_save=None,
     rtol: float = PERTURB_RTOL,
     atol: float = PERTURB_ATOL,
@@ -47,6 +46,8 @@ def solve_perturbation_history_batch(
 ):
     """Solve a batch of cosmologies on a shared ``tau_save`` grid in one launch.
 
+    ``cosmologies`` is a model applied to parameter dictionaries,
+    ``LCDM([params, ...])`` (:class:`~discoeb.models.CosmologyBatch`).
     One modax launch integrates all ``n_cosmologies * n_k`` trajectories, each
     with its recombination block stepping ahead of its hierarchy
     (:func:`joint_kernel`). Each trajectory stops at its own ``tau0``, and later
@@ -55,7 +56,8 @@ def solve_perturbation_history_batch(
     nvar)`` in ascending ``k``.
     """
 
-    prepared = _prepare_solve(model, tuple(cosmologies))
+    batch = _batch_of(cosmologies)
+    prepared = _prepare_solve(batch.model, batch.cosmologies)
     params, y0, t_span, order, k_sorted = _pack_batch(prepared, k_values, tau_save)
     sol = _launch(
         prepared,
@@ -99,11 +101,10 @@ class EBSolution:
 
 
 def solve_eb(
-    cosmologies,
+    cosmologies: CosmologyBatch,
     k_values,
     tau,
     *,
-    model: CosmologyModel,
     keep=None,
     extra=(),
     inputs=None,
@@ -128,15 +129,12 @@ def solve_eb(
     Parameters
     ----------
     cosmologies
-        One cosmology (a parameter dictionary or a cosmology object) or a
-        sequence of them, all suited to ``model``. The values of
-        :data:`DIFFERENTIABLE_PARAMETERS` may be JAX arrays, traced or not. The
-        others must be plain numbers.
-    model
-        The cosmological model (:mod:`discoeb.models`): which species and
-        interactions the solve evolves, ``LCDM`` for instance. Its
-        :meth:`~discoeb.models.CosmologyModel.check` rejects a cosmology it
-        cannot represent.
+        A cosmological model applied to the cosmologies to solve,
+        ``LCDM([params, ...])`` (:class:`~discoeb.models.CosmologyBatch`). The
+        model says which species and interactions the solve evolves. Each
+        cosmology is a parameter dictionary or a cosmology object. The values
+        of :data:`DIFFERENTIABLE_PARAMETERS` may be JAX arrays, traced or not.
+        The others must be plain numbers.
     k_values
         Wave numbers in 1/Mpc, in any order.
     tau
@@ -189,7 +187,9 @@ def solve_eb(
     reionization redshift.
     """
 
-    fixed, theta = _split_cosmologies(_as_batch(cosmologies))
+    batch = _batch_of(cosmologies)
+    model = batch.model
+    fixed, theta = _split_cosmologies(batch.cosmologies)
     n_cosmo = len(fixed)
 
     tau = np.asarray(tau, dtype=np.float64).reshape(-1)
@@ -298,12 +298,14 @@ def solve_eb(
 def directed_inputs(cosmologies) -> np.ndarray:
     """Return the ``(n_cosmologies, 9)`` directed inputs of :data:`DIRECTED_NAMES` the cosmologies imply.
 
-    These are the five background densities and the recombination block's
+    ``cosmologies`` is a :class:`~discoeb.models.CosmologyBatch`, one cosmology
+    or a sequence of them: the inputs do not depend on the model. These are
+    the five background densities and the recombination block's
     ``YHe``, ``Tcmb``, ``H0`` and ``Omegab``: the variables :func:`solve_eb`
     takes as ``inputs`` and differentiates with respect to.
     """
 
-    fixed, theta = _split_cosmologies(_as_batch(cosmologies))
+    fixed, theta = _split_cosmologies(_cosmologies_of(cosmologies))
     return np.stack(
         [
             np.asarray(_input_vector(fixed[i], jnp.asarray(theta[i])))
@@ -317,10 +319,11 @@ def conformal_ages(cosmologies) -> np.ndarray:
 
     Reads the same cached background endpoints as :func:`solve_eb`, so a solve
     of the same cosmologies right after reuses them. The conformal age depends
-    on the background alone, so no model is needed.
+    on the background alone, so ``cosmologies`` may be a
+    :class:`~discoeb.models.CosmologyBatch`, one cosmology or a sequence of them.
     """
 
-    batch = tuple(_as_cosmology(c) for c in _as_batch(cosmologies))
+    batch = tuple(_as_cosmology(c) for c in _cosmologies_of(cosmologies))
     return np.asarray(endpoints(batch)[0], dtype=np.float64)
 
 
@@ -328,3 +331,11 @@ def state_names(model: CosmologyModel) -> tuple[str, ...]:
     """Return the perturbation state names of ``model``, for ``keep`` and ``error_weights``."""
 
     return model.state_names()
+
+
+def _cosmologies_of(cosmologies) -> tuple:
+    """Return the cosmologies of a batch, one cosmology or a sequence of them, as a tuple."""
+
+    if isinstance(cosmologies, CosmologyBatch):
+        return cosmologies.cosmologies
+    return _as_batch(cosmologies)
