@@ -14,15 +14,15 @@ import numpy as np
 from .background import TAU_START, background_endpoints
 from .cosmology import _as_batch, _columns, _is_concrete
 from .kernel import (
-    DIRECTED_NAMES,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
     PERTURB_RTOL,
     _prepare_solve,
     _solve_batch,
+    parameter_layout,
 )
-from .models import CosmologyBatch, CosmologyModel, _batch_of
+from .models import W0WACDM_MNU, CosmologyBatch, CosmologyModel, _batch_of
 from .recombination import THERMO_ERROR_WEIGHT
 from .sensitivities import _directed_inputs, _kept_values
 
@@ -166,9 +166,10 @@ def solve_eb(
         model's quantities and add their own (the line-of-sight sources of
         :mod:`discocmb.cmb`). The hook cache tells them apart by class.
     inputs
-        The ``(n_cosmologies, 9)`` directed inputs of :data:`DIRECTED_NAMES`
-        (the five background densities and the recombination block's ``YHe``,
-        ``Tcmb``, ``H0``, ``Omegab``), replacing those the cosmologies imply
+        The ``(n_cosmologies, n_directed)`` directed inputs of the model
+        (:data:`DIRECTED_NAMES` for a built-in one: the five background
+        densities and the recombination block's ``YHe``, ``Tcmb``, ``H0``,
+        ``Omegab``), replacing those the cosmologies imply
         (:func:`directed_inputs`). They are differentiable in their own right:
         the solution becomes a function of them, at fixed background endpoints
         of the cosmologies.
@@ -224,19 +225,20 @@ def solve_eb(
         drop_first = True  # traced times must lie after TAU_START
     tau_grid = jnp.concatenate((jnp.asarray([TAU_START]), tau)) if drop_first else tau
 
-    columns = _columns(batch.cosmologies)
+    columns = _columns(batch.cosmologies, keys=model.parameter_keys())
     prepared = _prepare_solve(model, batch.cosmologies, k_values, extra, columns)
     if inputs is None:
         # JAX arithmetic: the derivative in the parameters chains through
         # the densities into the inputs-level rule of _kept_values
-        x = _directed_inputs(columns)
+        x = _directed_inputs(columns, model, extra)
     else:
         # The given inputs are the solve's variables. The cosmologies set
         # everything else, the background endpoints included.
         x = jnp.asarray(inputs, dtype=jnp.float64)
-        if x.shape != (n_cosmo, len(DIRECTED_NAMES)):
+        n_directed = len(parameter_layout(model, extra).directed)
+        if x.shape != (n_cosmo, n_directed):
             raise ValueError(
-                f"inputs must be (n_cosmologies, {len(DIRECTED_NAMES)}), got {x.shape}"
+                f"inputs must be (n_cosmologies, {n_directed}), got {x.shape}"
             )
     of_inputs = _kept_values(
         prepared,
@@ -262,36 +264,52 @@ def solve_eb(
 
 
 def directed_inputs(cosmologies) -> jax.Array:
-    """Return the ``(n_cosmologies, 9)`` directed inputs of :data:`DIRECTED_NAMES` the cosmologies imply.
+    """Return the ``(n_cosmologies, n_directed)`` directed inputs the cosmologies imply.
 
-    ``cosmologies`` is a :class:`~discoeb.models.CosmologyBatch`, one cosmology
-    or a sequence of them: the inputs do not depend on the model. These are
-    the five background densities and the recombination block's
+    ``cosmologies`` is a :class:`~discoeb.models.CosmologyBatch`, or one
+    cosmology or a sequence of them for the built-in models' inputs
+    (:data:`DIRECTED_NAMES`). These are the model's directed parameters: for
+    a built-in model the five background densities and the recombination block's
     ``YHe``, ``Tcmb``, ``H0`` and ``Omegab``: the variables :func:`solve_eb`
     takes as ``inputs`` and differentiates with respect to. A JAX array,
     traceable under ``jit``.
     """
 
-    return _directed_inputs(_columns(_cosmologies_of(cosmologies), held=False))
+    model = _model_of(cosmologies)
+    columns = _columns(
+        _cosmologies_of(cosmologies), held=False, keys=model.parameter_keys()
+    )
+    return _directed_inputs(columns, model)
 
 
 def conformal_ages(cosmologies) -> jax.Array:
     """Return each cosmology's conformal age ``tau0`` (Mpc), where its trajectories stop.
 
     The conformal age depends on the background alone, so ``cosmologies`` may
-    be a :class:`~discoeb.models.CosmologyBatch`, one cosmology or a sequence
-    of them. A JAX array, traceable under ``jit``: the same vmapped quadrature
+    be a :class:`~discoeb.models.CosmologyBatch`, or one cosmology or a
+    sequence of them for a built-in model's background. A JAX array, traceable under ``jit``: the same vmapped quadrature
     :func:`solve_eb` runs.
     """
 
-    columns = _columns(_cosmologies_of(cosmologies), held=False)
-    return background_endpoints(columns)[0]
+    model = _model_of(cosmologies)
+    columns = _columns(
+        _cosmologies_of(cosmologies), held=False, keys=model.parameter_keys()
+    )
+    return background_endpoints(columns, model)[0]
 
 
 def state_names(model: CosmologyModel) -> tuple[str, ...]:
     """Return the perturbation state names of ``model``, for ``keep`` and ``error_weights``."""
 
     return model.state_names()
+
+
+def _model_of(cosmologies) -> CosmologyModel:
+    """Return a batch's model, or :data:`~discoeb.models.W0WACDM_MNU` for bare cosmologies."""
+
+    if isinstance(cosmologies, CosmologyBatch):
+        return cosmologies.model
+    return W0WACDM_MNU
 
 
 def _cosmologies_of(cosmologies) -> tuple:

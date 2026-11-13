@@ -19,7 +19,17 @@ from __future__ import annotations
 
 import math
 
-from .component import Component, Species, State
+from .component import Component, Parameter, Species, State
+
+# Density coefficients in CAMB's convention, ``8 pi G rho / c^2`` in 1/Mpc^2:
+# ``H^2 = sum_i grho_i / 3`` gives the Hubble rate in 1/Mpc and ``a'/a = a H``
+# the conformal one. The perturbation kernel's ``grho_i_t = 8 pi G rho_i a^2``
+# are these times ``a^2``.
+
+GRHOM_PER_H0SQ = 3.33795017e-11  # 8 pi G rho_crit / c^2 per (H0 in km/s/Mpc)^2
+GRHOG_PER_TCMB4 = 1.49594245e-13  # photons, per K^4
+GRHOR_PER_TCMB4 = 3.39739477e-14  # one massless neutrino flavour, per K^4
+C2OK = 1.62581581e4  # K / eV: amnu = m_nu c^2 / (k_B T_nu0) = mnu * C2OK / Tcmb
 
 SUMS = ("grho", "gpres", "dgrho", "dgq", "dgpi")
 """The quantities summed over species.
@@ -33,7 +43,15 @@ curvature adds ``grhok`` to ``grho`` but no pressure, since it is no fluid."""
 
 
 class Background(Component):
-    """Powers of the scale factor, the Friedmann equation, ``1/tau`` and ``1/k^2``."""
+    """Powers of the scale factor, the Friedmann equation, ``1/tau`` and ``1/k^2``.
+
+    It declares the Hubble constant ``H0`` (km/s/Mpc), which the
+    recombination rates read too, and the critical density ``grhom`` derived
+    from it.
+    """
+
+    H0 = Parameter(directed=True)
+    grhom = Parameter(value=lambda H0: GRHOM_PER_H0SQ * H0**2)
 
     def a2(self, a):
         return a * a
@@ -63,7 +81,13 @@ class AdiabaticMode(Component):
     matter-radiation parameter ``om`` and their combinations. The host
     evaluates them from the background densities when it assembles the
     initial state, and the states' ``initial`` functions read them by name.
+    The primordial spectrum ``A_s (k / k_p)^(n_s - 1)`` scales the mode. The
+    solve never reads it, the matter power spectrum does.
     """
+
+    A_s = Parameter()
+    n_s = Parameter()
+    k_p = Parameter(0.05)
 
     def x(self, k, tau):
         return k * tau
@@ -83,6 +107,9 @@ class AdiabaticMode(Component):
 
 class Curvature(Species):
     """Spatial curvature: a density ``grhok = 8 pi G rho_K a^2`` and the metric factors."""
+
+    Omegak = Parameter(0.0)
+    grhok = Parameter(value=lambda grhom, Omegak: grhom * Omegak, column=True)
 
     def grho(self, grhok):
         return grhok

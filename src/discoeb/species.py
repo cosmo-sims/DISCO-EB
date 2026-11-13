@@ -29,7 +29,8 @@ from __future__ import annotations
 
 import math
 
-from .component import Component, Setting, Species, State
+from .component import Component, Parameter, Setting, Species, State
+from .gravity import C2OK, GRHOG_PER_TCMB4, GRHOR_PER_TCMB4
 from .util import neutrino_momentum_bins
 
 
@@ -45,17 +46,20 @@ def _needs_octupole(**lmax):
 
 
 # --- matter -------------------------------------------------------------------------
-# The row holds each density coefficient ``grho_i = 8 pi G rho_i a^2`` today as a
-# nominal value plus ``eps`` times its direction, so modax's sensitivity in
-# ``eps`` is the derivative along that direction.
+# Each density coefficient ``grho_i = 8 pi G rho_i a^2`` today is a directed
+# parameter: the row holds a nominal value and a direction, the generated
+# provider reads ``grho_i = nominal + eps * direction``, and modax's
+# sensitivity in ``eps`` is the derivative along that direction.
 
 
 class ColdDarkMatter(Species):
     # adiabatic mode: 3/4 of the photon density contrast
     clxc = State(initial=lambda theta: 0.75 * theta[0])
 
-    def grhoc(self, grhoc_nominal, eps, dir_grhoc):
-        return grhoc_nominal + eps * dir_grhoc
+    Omegam = Parameter()  # CDM and baryons
+    grhoc = Parameter(
+        value=lambda grhom, Omegam, Omegab: grhom * (Omegam - Omegab), directed=True
+    )
 
     def grhoc_t(self, grhoc, inv_a):
         return grhoc * inv_a
@@ -80,8 +84,10 @@ class Baryons(Species):
     clxb = State(initial=lambda theta: 0.75 * theta[0])
     vb = State(initial=lambda theta: 0.75 * theta[1])
 
-    def grhob(self, grhob_nominal, eps, dir_grhob):
-        return grhob_nominal + eps * dir_grhob
+    # The recombination rates read Omegab and the helium fraction YHe too.
+    Omegab = Parameter(directed=True)
+    YHe = Parameter(directed=True)
+    grhob = Parameter(value=lambda grhom, Omegab: grhom * Omegab, directed=True)
 
     def grhob_t(self, grhob, inv_a):
         return grhob * inv_a
@@ -212,12 +218,12 @@ class Photons(Species):
     theta = State(lambda self: self.LMAX_G + 1, initial=_theta_initial)
     e = State(lambda self: self.LMAX_POL - 1)
 
+    Tcmb = Parameter(directed=True)  # K, read by the recombination rates too
+    grhog = Parameter(value=lambda Tcmb: GRHOG_PER_TCMB4 * Tcmb**4, directed=True)
+
     def __init__(self, **settings):
         super().__init__(**settings)
         _needs_octupole(LMAX_G=self.LMAX_G, LMAX_POL=self.LMAX_POL)
-
-    def grhog(self, grhog_nominal, eps, dir_grhog):
-        return grhog_nominal + eps * dir_grhog
 
     def grhog_t(self, grhog, inv_a2):
         return grhog * inv_a2
@@ -297,12 +303,14 @@ class MasslessNeutrinos(Species):
 
     n = State(lambda self: self.LMAX_NR + 1, initial=_n_initial)
 
+    Neff = Parameter()
+    grhornomass = Parameter(
+        value=lambda Neff, Tcmb: Neff * (GRHOR_PER_TCMB4 * Tcmb**4), directed=True
+    )
+
     def __init__(self, **settings):
         super().__init__(**settings)
         _needs_octupole(LMAX_NR=self.LMAX_NR)
-
-    def grhornomass(self, grhornomass_nominal, eps, dir_grhornomass):
-        return grhornomass_nominal + eps * dir_grhornomass
 
     def grhor_t(self, grhornomass, inv_a2):
         return grhornomass * inv_a2
@@ -356,6 +364,12 @@ class MassiveNeutrinos(Species):
 
     psi = State(lambda self: (self.NQMAX, self.LMAX_NU + 1), initial=_psi_initial)
 
+    Nmnu = Parameter(0.0)  # flavours
+    mnu = Parameter(0.0)  # eV, each
+    grhor_nu = Parameter(value=lambda Tcmb: GRHOR_PER_TCMB4 * Tcmb**4, column=True)
+    n_mnu = Parameter(value=lambda Nmnu: Nmnu, column=True)
+    amnu = Parameter(value=lambda mnu, Tcmb: mnu * C2OK / Tcmb, column=True)
+
     def __init__(self, **settings):
         super().__init__(**settings)
         _needs_octupole(LMAX_NU=self.LMAX_NU)
@@ -406,10 +420,13 @@ class MassiveNeutrinos(Species):
 
 
 class _DarkEnergyDensity(Species):
-    """The dark-energy density today and its part of the Friedmann sum, for either kind."""
+    """The dark-energy density today and its part of the Friedmann sum, for either kind.
 
-    def grhov(self, grhov_nominal, eps, dir_grhov):
-        return grhov_nominal + eps * dir_grhov
+    Its density today closes the budget: the background sets it so that the
+    densities sum to the critical one.
+    """
+
+    grhov = Parameter(directed=True, closes_budget=True)
 
     def grho(self, grhov_t):
         return grhov_t
@@ -442,6 +459,19 @@ class DarkEnergy(_DarkEnergyDensity):
     # adiabatic, at rest
     clxq = State(initial=lambda w_DE_0, clxc: (1.0 + w_DE_0) * clxc)
     thetaq = State()
+
+    w_DE_0 = Parameter(-1.0, column=True)
+    w_DE_a = Parameter(0.0, column=True)
+    cs2_DE = Parameter(1.0, column=True)
+
+    @classmethod
+    def check(cls, w_DE_0, w_DE_a):
+        """The fluid equations divide by ``1 + w``."""
+        if float(w_DE_0) == -1.0 and float(w_DE_a) == 0.0:
+            raise ValueError(
+                "it evolves a dark-energy fluid, which needs w != -1; use a model "
+                "with a cosmological constant for w_DE_0 = -1, w_DE_a = 0"
+            )
 
     def w_Q(self, a, w_DE_0, w_DE_a):
         return w_DE_0 + w_DE_a * (1.0 - a)

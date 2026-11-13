@@ -111,7 +111,8 @@ it (`tests/test_boundary.py`). The contract is `solve_eb(LCDM(cosmologies), k,
 tau, keep=names, extra=components)`: named quantities evaluated in the kernel at the
 save times, the CMB's sources being a `LineOfSightSources` component passed as
 `extra`; error weights by state name; differentiable in
-`DIFFERENTIABLE_PARAMETERS` or in the nine `DIRECTED_NAMES` inputs passed as
+`DIFFERENTIABLE_PARAMETERS` or in the model's directed inputs (the nine
+`DIRECTED_NAMES` for a built-in model) passed as
 `inputs=` (`directed_inputs` gives a cosmology's). Grids read
 `background_history`, `density_coefficients` and `conformal_ages`. A CMB
 change that seems to need a private name should add to `__init__.py` instead;
@@ -180,7 +181,21 @@ The codebase is organized into modular components in `src/discoeb/`:
      (see modax/numba-enzyme). No external DI library: python-dependency-injector
      and its kin wire runtime object graphs from explicit declarations, not
      build-time code from parameter names
-   - Host-only tests: `tests/test_component.py`
+   - Cosmological parameters are declared by components too (2026-11-13):
+     `Omegam = Parameter()` a cosmology-dictionary key (with a default it may
+     be left out), `w_DE_0 = Parameter(-1.0, column=True)` a key the kernel
+     reads as a row column, `grhoc = Parameter(value=lambda grhom, Omegam,
+     Omegab: ..., directed=True)` a kernel input derived on the host by name
+     from other parameters. `directed=True` makes columns `x_nominal` and
+     `dir_x` and generates the provider `x = x_nominal + eps * dir_x`.
+     `grhov` has `closes_budget=True`, the closure itself staying in
+     `background.density_parameters`. Two components of one model may share
+     a name only through the same `Parameter` object (`Recombination.amnu =
+     MassiveNeutrinos.amnu`). A component's `check` classmethod names the
+     keys it validates (`DarkEnergy.check(cls, w_DE_0, w_DE_a)`).
+     `declared_parameters(classes)`, `derive_parameters(...)`
+   - Host-only tests: `tests/test_component.py`; a species with a parameter
+     of its own, added from the test file alone: `tests/test_new_species.py`
 
 2. **species.py, interactions.py, gravity.py** - The Einstein-Boltzmann system
    as components (`eb_model.py` was split into these on 2026-11-12)
@@ -190,7 +205,14 @@ The codebase is organized into modular components in `src/discoeb/`:
      CAMB's sign, read by `solve_eb`'s hook and not by the right-hand side),
      `Curvature`, `AdiabaticMode` (the growing-mode quantities `x`, `Rv`, `om`
      the initial conditions read) and `SUMS` (`grho`, `gpres`, `dgrho`, `dgq`,
-     `dgpi`, summed over the species a model includes)
+     `dgpi`, summed over the species a model includes). The density constants
+     (`GRHOM_PER_H0SQ`, ...) live here. Parameters: `H0`, `grhom` on
+     `Background`, `A_s`, `n_s`, `k_p` on `AdiabaticMode`, `Omegak`, `grhok`
+     on `Curvature`; in `species.py` `Omegam`, `grhoc` on CDM, `Omegab`,
+     `YHe`, `grhob` on `Baryons`, `Tcmb`, `grhog` on `Photons`, `Neff`,
+     `grhornomass` on `MasslessNeutrinos`, `grhov` on both dark energies, the
+     `w_DE_*`, `cs2_DE` on `DarkEnergy`, `Nmnu`, `mnu`, `grhor_nu`, `n_mnu`,
+     `amnu` on `MassiveNeutrinos`; `tau_reio` on `Recombination`
    - `species.py`: `ColdDarkMatter`, `Baryons`, `Photons` (settings `LMAX_G`,
      `LMAX_POL`; states `theta` = Theta_0..LMAX_G and `e` = E_2..LMAX_POL,
      collisionless part), `MasslessNeutrinos` (`LMAX_NR`),
@@ -212,9 +234,13 @@ The codebase is organized into modular components in `src/discoeb/`:
      hashable. Models derive from each other with `replace(old, new, name=)`,
      `add(*components, name=)`, `remove(...)` and `with_settings(**kw)`.
      `build(thermal_history=None, extra=())` instantiates the component
-     `Model`; `state_names()`, `sparsity()`, `setting(name)` and
-     `check(cosmology)` (rejects `w != -1` without `DarkEnergy`, `w = -1` with
-     it, `Nmnu > 0` without `MassiveNeutrinos`). `resolved()` makes every
+     `Model`; `state_names()`, `sparsity()`, `setting(name)`,
+     `parameters(extra=())` (the components' and `Recombination`'s
+     declarations), `parameter_keys()` and `check(cosmology)`: a key another
+     component declares but none of this model's must keep its default
+     (`w_DE_0 != -1` needs `DarkEnergy`, `Nmnu > 0` `MassiveNeutrinos`), then
+     each component's `check` hook runs (`DarkEnergy` rejects `w = -1`),
+     traced values skipped. `resolved()` makes every
      setting explicit at the classes' current values: the kernel caches on
      the resolved model, so rebinding a setting recompiles
    - The models: `LCDM` (flat unless `Omegak`), `LCDM_MNU =
@@ -226,35 +252,42 @@ The codebase is organized into modular components in `src/discoeb/`:
      and returns a `CosmologyBatch(model, cosmologies)`, the one argument a
      solve takes for both (2026-11-13; before, `model=` was a separate
      keyword). The dicts are kept as given, so JAX values in them stay
-     differentiable; `check` reads only the plain `w_DE_*`, `Nmnu` keys.
+     differentiable; `check` skips traced values.
      Indexing gives a batch of the same model (`batch[0]`, `batch[1:]`).
      The kernel still caches on the model alone. There is no
      `PerturbationLayout` any more (removed 2026-11-12): indices come from
      `model.state_names()` or the joint model's `index`
 
 4. **background.py** - The expansion history
-   - `density_parameters(param, xp)` (the `grho*` coefficients, the budget
-     closed at `a = 1` with the model's `grho`), `expansion_rate` / `dtauda`
-     (the model's `adotoa` via `Model.evaluate(..., math=jnp)` over
-     `background_model()`, every species enabled), the massive-neutrino
+   - `density_parameters(param, xp, model)` (every parameter the model
+     declares, derived ones by `derive_parameters`, the budget closed at
+     `a = 1` with the model's `grho`), `expansion_rate` / `dtauda` (the
+     model's `adotoa` via `Model.evaluate(..., math=jnp)` over
+     `background_model(model)`, the model's own species). Without a model
+     these use `W0WACDM_MNU`, whose sum equals every built-in model's on the
+     cosmologies it accepts (`density_coefficients`, `background_history`,
+     `conformal_ages` of bare dicts). The massive-neutrino
      density `neutrino_density_ratio`, summed directly over the
      `NQ_NEUTRINO_TABLE` = 100 momentum nodes. The conformal-time quadrature
      `_background_tau`; `background_endpoints` vmaps it over a batch for
-     `tau0`, `ln a` at `TAU_START` and `z_re` (`conformal_ages` reads it, no
-     model needed). Nothing is cached per batch: the whole preparation is JAX
+     `tau0`, `ln a` at `TAU_START` and `z_re` (`conformal_ages` reads it; the
+     model is a static argument). Nothing is cached per batch: the whole preparation is JAX
      and traces under `jit`
    - The momentum bins (`neutrino_momentum_bins`, cached) live in `util.py`
      beside the Gauss-Laguerre rule
 
 5. **cosmology.py** - The parameter dictionary, its hashable form
    `_ParamCosmology` (`as_cosmology`), batches, and
-   `DIFFERENTIABLE_PARAMETERS`. `_columns(cosmologies)` stacks a batch into
-   JAX columns `(n_cosmo,)` by key, values traced or not; a key the solve
+   `DIFFERENTIABLE_PARAMETERS`. `_columns(cosmologies, keys=model.parameter_keys())`
+   stacks a batch into JAX columns `(n_cosmo,)` by key, values traced or
+   not, plus any key another component declares that a cosmology gives
+   (`w_DE_0` in an LCDM dict); a key the solve
    reads but does not differentiate (`w_DE_*`, `Omegak`, `Nmnu`, `mnu`,
    `YHe`, `tau_reio`, `cs2_DE`) passes through `_not_differentiable`, a
    `custom_jvp` whose rule raises, so a derivative is never a silent zero.
-   A dictionary may leave out the keys of `OPTIONAL_DEFAULTS` (`w_DE_0`,
-   `Omegak`, `Nmnu`, `k_p`, ...). `CosmologyModel.check` skips traced values
+   A dictionary may leave out a key whose declaration has a default (`w_DE_0`,
+   `Omegak`, `Nmnu`, `k_p`, ...). `_ParamCosmology.extra` holds declared
+   keys beyond its fixed fields. `CosmologyModel.check` skips traced values
 
 6. **recombination.py** - Recombination history, inside the joint kernel
    - RECFAST's `(x_H, x_He, T_m)`, `ln a` and the optical depth `kappa` are
@@ -305,14 +338,21 @@ The codebase is organized into modular components in `src/discoeb/`:
      signature modax and Enzyme need, calling one device function per
      provider. Loops over multipoles and runtime indices are fine because
      numba-enzyme optimises the primal with `O3` before Enzyme.
-     `PARAM_COLUMNS` names the parameter row's columns
+   - The parameter row is generated: `parameter_layout(model, extra)` (cached
+     per resolved model) is `(x_nominal of each directed parameter,
+     SOLVER_COLUMNS = tau_start, tau_end, k, cosmology_tag, save_index, z_re,
+     the other column parameters, eps, dir_x of each directed)`, the directed
+     ones in `DIRECTED_NAMES` order and then component order. `_rows` and the
+     initial state iterate over the declarations. `PARAM_COLUMNS`, `N_PARAM`,
+     `DIRECTED_COLUMNS` are `W0WACDM_MNU`'s row (`DEFAULT_LAYOUT`), a superset
+     of every built-in model's, for host tests and `make_params`
    - `build_keep_hook(model, names)` is the save hook: a `(y, tau, p) ->
      tuple` function of state elements copied from the state and provided
      quantities such as `R` compiled by `Model.build_function`, cached per
      model and set of names (`_keep_hook`)
 
 8. **sensitivities.py** - `_kept_values`: the hooked launch as a
-   `jax.custom_jvp` in the nine `DIRECTED_NAMES` inputs. Its rule replicates
+   `jax.custom_jvp` in the layout's directed inputs (`DIRECTED_NAMES`). Its rule replicates
    every trajectory once per input and runs `jax.jvp` of the launch in the
    parameter row's `eps` column, split into a leaf of its own (`(head, eps,
    tail)`), with `sens_error_control=False`: modax integrates one sensitivity

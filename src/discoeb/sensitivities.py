@@ -1,7 +1,8 @@
 """Derivatives of kept quantities: forward sensitivities along the directed inputs.
 
-The model reads each input a derivative may move (:data:`~discoeb.kernel.DIRECTED_NAMES`)
-as ``x_nominal + eps dir_x``. A sensitivity launch replicates every
+The model reads each input a derivative may move (its directed parameters,
+:data:`~discoeb.kernel.DIRECTED_NAMES` for the built-in models) as
+``x_nominal + eps dir_x``. A sensitivity launch replicates every
 trajectory once per input and differentiates the launch in ``eps``, a leaf of
 the parameter row of its own, with ``jax.jvp``: modax then integrates one
 sensitivity column per replica and keeps each quantity's derivative beside it.
@@ -15,9 +16,6 @@ import numpy as np
 
 from .background import density_parameters
 from .kernel import (
-    DIRECTED_COLUMNS,
-    IX_DIR,
-    IX_EPS,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
@@ -25,28 +23,22 @@ from .kernel import (
     _keep_hook,
     _launch,
     _named_error_weights,
+    parameter_layout,
 )
+from .models import W0WACDM_MNU
 from .recombination import THERMO_ERROR_WEIGHT
 
 
-def _directed_inputs(columns) -> jax.Array:
-    """Return the ``(n_cosmologies, 9)`` inputs of :data:`DIRECTED_NAMES` from a batch's columns, in JAX."""
+def _directed_inputs(columns, model=W0WACDM_MNU, extra=()) -> jax.Array:
+    """Return the ``(n_cosmologies, n_directed)`` directed inputs of ``model`` from a batch's columns, in JAX.
 
-    d = density_parameters(columns)
-    return jnp.stack(
-        [
-            d["grhog"],
-            d["grhornomass"],
-            d["grhoc"],
-            d["grhob"],
-            d["grhov"],
-            columns["YHe"],
-            columns["Tcmb"],
-            columns["H0"],
-            columns["Omegab"],
-        ],
-        axis=1,
-    )
+    They are the layout's directed parameters (:func:`~discoeb.kernel.parameter_layout`),
+    :data:`~discoeb.kernel.DIRECTED_NAMES` for every built-in model.
+    """
+
+    values = density_parameters(columns, model=model)
+    names = parameter_layout(model, extra).directed
+    return jnp.stack([values[name] for name in names], axis=1)
 
 
 def _kept_values(
@@ -67,13 +59,13 @@ def _kept_values(
 
     ``prepared`` is the batch :func:`~discoeb.kernel._prepare_solve` packed at
     its wave modes, and ``tau_grid`` the save times, which may be traced.
-    The result, ``of_inputs(x)``, takes ``x``, the ``(n_cosmologies, 9)``
-    inputs of :data:`DIRECTED_NAMES`, and returns the kept quantities as
+    The result, ``of_inputs(x)``, takes ``x``, the ``(n_cosmologies,
+    n_directed)`` inputs of the layout's directed parameters, and returns the kept quantities as
     ``(n_cosmologies, len(names), n_k, n_tau)`` in the caller's wave-mode order.
     It is a ``jax.custom_jvp`` in ``x``. The plain hooked launch gives the
     value. A forward-sensitivity launch gives the tangent: it replicates every
     trajectory once per input, and each replica carries the single column
-    ``S = dy / d eps`` of its unit direction through ``IX_EPS`` and ``IX_DIR``.
+    ``S = dy / d eps`` of its unit direction through ``eps`` and the ``dir`` block.
     That column is ``jax.jvp`` of the launch in ``eps``, a leaf of the
     parameter row of its own, so modax integrates it alone. modax stores each
     kept quantity of :func:`build_keep_hook` and its derivative along the
@@ -104,10 +96,12 @@ def _kept_values(
         )
     n_k, n_grid, n_keep = len(k_sorted), len(tau_grid), len(names)
     first = 1 if drop_first else 0
+    layout = prepared.layout
+    ix_eps, ix_dir = layout.ix_eps, layout.ix_dir
     columns = np.asarray(
-        DIRECTED_COLUMNS
+        layout.directed_columns
     )  # a constant: no tracer for the rule to close over
-    n_dir = len(DIRECTED_COLUMNS)
+    n_dir = len(columns)
     hook = _keep_hook(model, extra, names)
 
     def with_inputs(base, x, replicas=1):
@@ -152,11 +146,11 @@ def _kept_values(
         # Replica j of trajectory i is row i * n_dir + j, along the unit
         # direction e_j. Each carries the single column S = dy / d eps.
         params_rep = jnp.repeat(params, n_dir, axis=0)
-        params_rep = params_rep.at[:, IX_DIR : IX_DIR + n_dir].set(
+        params_rep = params_rep.at[:, ix_dir : ix_dir + n_dir].set(
             jnp.tile(jnp.eye(n_dir), (n_k * n_cosmo, 1))
         )
         row = with_inputs(params_rep, x, n_dir)
-        head, eps, tail = row[:, :IX_EPS], row[:, IX_EPS:IX_DIR], row[:, IX_DIR:]
+        head, eps, tail = row[:, :ix_eps], row[:, ix_eps:ix_dir], row[:, ix_dir:]
 
         def kept_of(e):
             # eps is a leaf of its own, so differentiating it carries the one

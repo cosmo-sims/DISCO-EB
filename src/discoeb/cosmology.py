@@ -13,6 +13,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .component import REQUIRED, declarations_of
+
 
 class _ParamCosmology(NamedTuple):
     """Hashable form of the DISCO-EB parameter dictionary."""
@@ -33,6 +35,7 @@ class _ParamCosmology(NamedTuple):
     mnu: float
     k_pivot: float
     tau_reio: float = 0.0  # reionization optical depth (0: no reionization)
+    extra: tuple = ()  # (key, value) of the parameters other components declare
 
     def to_background_params(self):
         return {
@@ -51,28 +54,68 @@ class _ParamCosmology(NamedTuple):
             "Nmnu": self.num_massive_neutrinos,
             "mnu": self.mnu,
             "tau_reio": self.tau_reio,
+            **dict(self.extra),
         }
 
 
-OPTIONAL_DEFAULTS = {
-    "w_DE_0": -1.0,
-    "w_DE_a": 0.0,
-    "cs2_DE": 1.0,
-    "Omegak": 0.0,
-    "Nmnu": 0.0,
-    "mnu": 0.0,
-    "k_p": 0.05,
-    "tau_reio": 0.0,
+_FIELD_KEYS = {
+    "Omegam": "Omegam",
+    "Omegab": "Omegab",
+    "w_DE_0": "w_DE_0",
+    "w_DE_a": "w_DE_a",
+    "cs2_DE": "cs2_DE",
+    "Omegak": "Omegak",
+    "A_s": "A_s",
+    "n_s": "n_s",
+    "H0": "H0",
+    "T_cmb": "Tcmb",
+    "Y_He": "YHe",
+    "Neff_massless": "Neff",
+    "num_massive_neutrinos": "Nmnu",
+    "mnu": "mnu",
+    "k_pivot": "k_p",
+    "tau_reio": "tau_reio",
 }
-"""The parameter-dictionary keys a cosmology may leave out, and their values."""
+"""The cosmology object's fields and the dictionary keys they hold."""
+
+
+def _is_parameter(key) -> bool:
+    """Whether a component declares ``key`` as a cosmology-dictionary key."""
+
+    return any(p.is_key for _, p in declarations_of(key))
+
+
+def _default(key):
+    """A key's default, as the components declaring it give it (:data:`REQUIRED` if none)."""
+
+    for _, parameter in declarations_of(key):
+        if parameter.is_key:
+            return parameter.default
+    return REQUIRED
 
 
 def _as_cosmology(cosmology):
-    """Return a parameter dictionary as a ``_ParamCosmology``, anything else as is."""
+    """Return a parameter dictionary as a ``_ParamCosmology``, anything else as is.
+
+    Keys a component declares besides the fields go into ``extra``. A key no
+    component declares is dropped, and a field's key left out takes its
+    declared default.
+    """
 
     if not isinstance(cosmology, dict):
         return cosmology
-    c = {**OPTIONAL_DEFAULTS, **cosmology}
+    c = dict(cosmology)
+    for key in _FIELD_KEYS.values():
+        if key not in c and _default(key) is not REQUIRED:
+            c[key] = _default(key)
+    fields = set(_FIELD_KEYS.values())
+    extra = tuple(
+        sorted(
+            (k, float(v))
+            for k, v in cosmology.items()
+            if k not in fields and _is_parameter(k)
+        )
+    )
     return _ParamCosmology(
         Omegam=float(c["Omegam"]),
         Omegab=float(c["Omegab"]),
@@ -90,6 +133,7 @@ def _as_cosmology(cosmology):
         mnu=float(c["mnu"]),
         k_pivot=float(c["k_p"]),
         tau_reio=float(c["tau_reio"]),
+        extra=extra,
     )
 
 
@@ -119,24 +163,11 @@ def _cosmology_dictionary(cosmology) -> dict:
     """Return a cosmology's parameter dictionary, given a dictionary or a cosmology object."""
 
     if isinstance(cosmology, dict):
-        return {**OPTIONAL_DEFAULTS, **cosmology}
+        return dict(cosmology)
     d = cosmology.to_background_params()
     d["k_p"] = cosmology.k_pivot
     return d
 
-
-PARAMETER_KEYS = (
-    "Omegam",
-    "Omegab",
-    "A_s",
-    "n_s",
-    "H0",
-    "Tcmb",
-    "YHe",
-    "Neff",
-    *OPTIONAL_DEFAULTS,
-)
-"""Every key of a parameter dictionary, those of :data:`OPTIONAL_DEFAULTS` last."""
 
 UNUSED_BY_THE_SOLVE = ("A_s", "n_s", "k_p")
 """Keys the Einstein-Boltzmann solve never reads: the primordial spectrum's."""
@@ -157,20 +188,43 @@ def _not_differentiable_jvp(name, primals, tangents):
     )
 
 
-def _columns(cosmologies, held: bool = True) -> dict:
+def _columns(cosmologies, held: bool = True, keys=None) -> dict:
     """Return a batch's parameters as JAX columns ``(n_cosmologies,)`` by key.
 
-    The cosmologies are dictionaries or cosmology objects, their values
-    numbers or JAX values, traced or not. With ``held``, a key the solve reads
-    but does not differentiate (outside :data:`DIFFERENTIABLE_PARAMETERS` and
-    :data:`UNUSED_BY_THE_SOLVE`) raises if differentiated: its derivative would
-    otherwise come back as a silent zero.
+    ``keys`` maps the keys a model declares to their defaults
+    (:meth:`CosmologyModel.parameter_keys
+    <discoeb.models.CosmologyModel.parameter_keys>`), by default those of
+    every built-in species. A cosmology may leave out a key with a default.
+    Keys other components declare are kept when a cosmology gives them, so
+    that differentiating one raises, and keys no component declares are
+    dropped. The cosmologies are dictionaries or cosmology objects, their
+    values numbers or JAX values, traced or not. With ``held``, a key the
+    solve reads but does not differentiate (outside
+    :data:`DIFFERENTIABLE_PARAMETERS` and :data:`UNUSED_BY_THE_SOLVE`) raises
+    if differentiated: its derivative would otherwise come back as a silent
+    zero.
     """
 
+    if keys is None:
+        from .models import W0WACDM_MNU
+
+        keys = W0WACDM_MNU.parameter_keys()
     rows = [_cosmology_dictionary(c) for c in cosmologies]
+    keys = dict(keys)
+    for row in rows:
+        for key in row:
+            if key not in keys and _is_parameter(key):
+                keys[key] = _default(key)
     columns = {}
-    for key in PARAMETER_KEYS:
-        values = [row[key] for row in rows]
+    for key, default in keys.items():
+        values = []
+        for row in rows:
+            if key in row:
+                values.append(row[key])
+            elif default is REQUIRED:
+                raise KeyError(key)
+            else:
+                values.append(default)
         if any(isinstance(v, jax.Array) for v in values):
             column = jnp.stack([jnp.asarray(v, dtype=jnp.float64) for v in values])
         else:

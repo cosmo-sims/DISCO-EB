@@ -56,7 +56,8 @@ from __future__ import annotations
 import math
 import os
 
-from .component import Component, State, float32, float64
+from .component import Component, Parameter, State, float32, float64
+from .species import MassiveNeutrinos
 from .util import neutrino_momentum_bins
 
 # RECFAST's physical and atomic constants (PDG 2023 where noted).
@@ -164,18 +165,6 @@ equilibrium (CLASS's ``recfast_z_full_H_recombination``)."""
 DZ_H_SAHA_BLEND = 50.0
 """Half-width in redshift of the blend from the Saha slope into the rate
 equation (CLASS's ``recfast_delta_z_full_H_recombination``)."""
-
-THERMAL_PARAMETERS = (
-    "YHe_nominal",
-    "Tcmb_nominal",
-    "H0_nominal",
-    "Omegab_nominal",
-    "z_re",
-)
-"""The cosmology's inputs to the recombination rates and reionization. They
-are columns of the parameter row after the hierarchy's own
-(:data:`discoeb.perturbations.PARAM_COLUMNS`). ``z_re = 0`` means no
-reionization."""
 
 THERMO_ERROR_WEIGHT = float(os.environ.get("DISCO_THERMO_WEIGHT", "1.0"))
 """Weight of ``ln a`` and the three RECFAST states in the error norm of the
@@ -516,6 +505,14 @@ class Recombination(Component):
     thermo = State(3, initial=_thermo_initial)
     kappa = State()
 
+    # The reionization optical depth sets the solver's column z_re. The
+    # massive-neutrino background ratios read the neutrino mass, so the block
+    # shares its declarations with MassiveNeutrinos, which may be absent. The
+    # rates read YHe, Tcmb, H0 and Omegab, which the species declare.
+    tau_reio = Parameter(0.0)
+    mnu = MassiveNeutrinos.mnu
+    amnu = MassiveNeutrinos.amnu
+
     def __init__(self, **settings):
         super().__init__(**settings)
         q, w, _ = neutrino_momentum_bins(NQ_NU_BACKGROUND)
@@ -555,22 +552,6 @@ class Recombination(Component):
                 total += self.nu_w[i] / math.sqrt(1.0 + (a * amnu / self.nu_q[i]) ** 2)
             total *= 1.0 / 3.0
         return total
-
-    # Each input a derivative can move is ``x = x_nominal + eps dir_x``
-    # (:data:`discoeb.perturbations.IX_EPS`). Every primal solve has
-    # ``eps = 0``, and ``d/d eps`` gives the derivative along ``dir``.
-
-    def YHe(self, YHe_nominal, eps, dir_YHe):
-        return YHe_nominal + eps * dir_YHe
-
-    def Tcmb(self, Tcmb_nominal, eps, dir_Tcmb):
-        return Tcmb_nominal + eps * dir_Tcmb
-
-    def H0(self, H0_nominal, eps, dir_H0):
-        return H0_nominal + eps * dir_H0
-
-    def Omegab(self, Omegab_nominal, eps, dir_Omegab):
-        return Omegab_nominal + eps * dir_Omegab
 
     def fHe(self, YHe):
         return YHe / (const_mHe_mH * (1.0 - YHe))

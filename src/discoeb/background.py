@@ -17,29 +17,20 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .component import Model
+from .component import Model, derive_parameters
 from .cosmology import _as_cosmology, _ParamCosmology
-from .gravity import SUMS, Background, Curvature
-from .recombination import recombination_model
-from .species import (
-    Baryons,
-    ColdDarkMatter,
-    DarkEnergy,
-    MassiveNeutrinos,
-    MasslessNeutrinos,
-    Photons,
+from .gravity import (  # noqa: F401 (the density constants, re-exported)
+    C2OK,
+    GRHOG_PER_TCMB4,
+    GRHOM_PER_H0SQ,
+    GRHOR_PER_TCMB4,
 )
+from .models import W0WACDM_MNU, CosmologyModel
+from .recombination import recombination_model
 from .util import neutrino_momentum_bins
 
-# Density coefficients in CAMB's convention, ``8 pi G rho / c^2`` in 1/Mpc^2:
-# ``H^2 = sum_i grho_i / 3`` gives the Hubble rate in 1/Mpc and ``a'/a = a H``
-# the conformal one. The perturbation kernel's ``grho_i_t = 8 pi G rho_i a^2``
-# are these times ``a^2``.
-
-GRHOM_PER_H0SQ = 3.33795017e-11  # 8 pi G rho_crit / c^2 per (H0 in km/s/Mpc)^2
-GRHOG_PER_TCMB4 = 1.49594245e-13  # photons, per K^4
-GRHOR_PER_TCMB4 = 3.39739477e-14  # one massless neutrino flavour, per K^4
-C2OK = 1.62581581e4  # K / eV: amnu = m_nu c^2 / (k_B T_nu0) = mnu * C2OK / Tcmb
+# The density coefficients are in CAMB's convention (see discoeb.gravity), and
+# the species declare how each derives from the cosmology's keys.
 
 NQ_NEUTRINO_TABLE = 100
 """Momentum nodes for the massive-neutrino background density. ``rho_nu(a)``
@@ -71,96 +62,70 @@ def neutrino_density_ratio(a, amnu, xp=jnp):
     return jnp.where(amnu > 0.0, ratio, 1.0)
 
 
-_BACKGROUND_MODEL: list = []
+def background_model(model: CosmologyModel | None = None) -> Model:
+    """The species of ``model`` whose ``grho`` is the Friedmann sum.
 
-
-def background_model() -> Model:
-    """The species whose ``grho`` is the Friedmann sum, with every component enabled.
-
-    At ``w = -1`` the dark-energy fluid is the cosmological constant, and a
-    massive-neutrino density with ``n_mnu = 0`` vanishes, so one model serves
-    every cosmology. The hierarchy truncations don't affect the background.
+    Without a model it is :data:`~discoeb.models.W0WACDM_MNU`, whose
+    components declare every built-in parameter. For a cosmology another
+    built-in model accepts, its sum is that model's: at ``w = -1`` the
+    dark-energy fluid is the cosmological constant, and a massive-neutrino
+    density with ``n_mnu = 0`` vanishes. The hierarchy truncations don't
+    affect the background.
     """
 
-    if not _BACKGROUND_MODEL:
-        _BACKGROUND_MODEL.append(
-            Model(
-                [
-                    Background(),
-                    Curvature(),
-                    ColdDarkMatter(),
-                    Baryons(),
-                    Photons(),
-                    MasslessNeutrinos(),
-                    DarkEnergy(),
-                    MassiveNeutrinos(),
-                ],
-                sums=SUMS,
-            )
-        )
-    return _BACKGROUND_MODEL[0]
+    return _background_model(W0WACDM_MNU if model is None else model)
 
 
-def density_parameters(param, xp=jnp) -> dict:
-    """The background densities of a parameter dictionary, keyed as the model names them.
+@functools.lru_cache(maxsize=None)
+def _background_model(model: CosmologyModel) -> Model:
+    return model.build()
 
-    ``grhom`` is the critical density, ``grhog`` the photons', ``grhor`` one
-    massless neutrino flavour's, ``grhornomass`` the ``Neff`` massless
-    flavours'. ``grhoc``, ``grhob`` and ``grhok`` are the cold dark matter,
-    baryons and curvature, and ``grhor_nu``, ``n_mnu`` and ``amnu`` the
-    massive neutrinos'. ``grhov``, the dark energy's, closes the budget at
-    ``a = 1`` with the model's own Friedmann sum:
-    ``grhov = grhom - grho(a=1 | grhov=0)``. The dictionary also holds
-    ``OmegaDE``, ``grho_mnu_today`` and the dark-energy parameters. Pass
+
+def density_parameters(param, xp=jnp, model: CosmologyModel | None = None) -> dict:
+    """The parameters of ``model`` for a parameter dictionary, keyed as the components name them.
+
+    The keys pass through, and every derived parameter comes from its
+    declaration (:class:`~discoeb.component.Parameter`): ``grhom`` the
+    critical density, ``grhog``, ``grhornomass``, ``grhoc``, ``grhob`` and
+    ``grhok`` the photons, massless neutrinos, cold dark matter, baryons and
+    curvature, ``grhor_nu``, ``n_mnu`` and ``amnu`` the massive neutrinos.
+    ``grhov``, the dark energy's, closes the budget at ``a = 1`` with the
+    model's own Friedmann sum: ``grhov = grhom - grho(a=1 | grhov=0)``.
+    Without a model these are :data:`~discoeb.models.W0WACDM_MNU`'s. Pass
     ``xp=jnp`` for a traced cosmology and ``xp=np`` for one given as floats.
     """
 
-    H0, Tcmb = param["H0"], param["Tcmb"]
-    grhom = GRHOM_PER_H0SQ * H0**2
-    grhor = GRHOR_PER_TCMB4 * Tcmb**4
-    d = {
-        "grhom": grhom,
-        "grhog": GRHOG_PER_TCMB4 * Tcmb**4,
-        "grhor": grhor,
-        "grhornomass": param["Neff"] * grhor,
-        "grhoc": grhom * (param["Omegam"] - param["Omegab"]),
-        "grhob": grhom * param["Omegab"],
-        "grhok": grhom * param["Omegak"],
-        "grhor_nu": grhor,
-        "n_mnu": param["Nmnu"],
-        "amnu": param["mnu"] * C2OK / Tcmb,
-        "w_DE_0": param["w_DE_0"],
-        "w_DE_a": param["w_DE_a"],
-        "cs2_DE": param.get("cs2_DE", 1.0),
-    }
-    rhonu_today = neutrino_density_ratio(1.0, d["amnu"], xp)
-    without_dark_energy = background_model().evaluate(
-        "grho",
-        math=(math if xp is np else jnp),
-        a=1.0,
-        rhonu=rhonu_today,
-        grhov=0.0,
-        **d,
-    )
-    d["grhov"] = grhom - without_dark_energy
-    d["OmegaDE"] = d["grhov"] / grhom
-    d["grho_mnu_today"] = grhor * d["n_mnu"] * rhonu_today
-    return d
+    background = background_model(model)
+    math_module = math if xp is np else jnp
+
+    def close(name, values):
+        amnu = values.get("amnu", 0.0)
+        without = background.evaluate(
+            "grho",
+            math=math_module,
+            a=1.0,
+            rhonu=neutrino_density_ratio(1.0, amnu, xp),
+            **{**values, name: 0.0},
+        )
+        return values["grhom"] - without
+
+    parameters = (W0WACDM_MNU if model is None else model).parameters()
+    return derive_parameters(parameters, param, math=math_module, close=close)
 
 
-def expansion_rate(a, densities):
+def expansion_rate(a, densities, model: CosmologyModel | None = None):
     """The conformal Hubble rate ``a'/a = a H`` at scalar ``a``, from the model's ``adotoa``."""
 
-    rhonu = neutrino_density_ratio(a, densities["amnu"])
-    return background_model().evaluate(
+    rhonu = neutrino_density_ratio(a, densities.get("amnu", 0.0))
+    return background_model(model).evaluate(
         "adotoa", math=jnp, a=a, rhonu=rhonu, **densities
     )
 
 
-def dtauda(a, densities):
+def dtauda(a, densities, model: CosmologyModel | None = None):
     """``d tau / d a = 1 / (a^2 H)`` at scalar ``a`` (``jax.vmap`` over an array)."""
 
-    return 1.0 / (a * expansion_rate(a, densities))
+    return 1.0 / (a * expansion_rate(a, densities, model))
 
 
 N_BACKGROUND_GRID = 4096
@@ -186,16 +151,19 @@ def density_coefficients(cosmology) -> tuple[float, float, float, float, float]:
     return (d["grhog"], d["grhornomass"], d["grhoc"], d["grhob"], d["grhov"])
 
 
-def _background_tau(d):
+def _background_tau(d, model: CosmologyModel | None = None):
     """Return ``(a_grid, tau_grid)`` of the conformal-time quadrature for densities ``d`` (JAX)."""
 
     a_bg = jnp.geomspace(1.0e-9, 1.0, N_BACKGROUND_GRID)
-    dt = jax.vmap(dtauda, in_axes=(0, None))(a_bg, d)
+    dt = jax.vmap(lambda a: dtauda(a, d, model))(a_bg)
     steps = 0.5 * (dt[1:] + dt[:-1]) * jnp.diff(a_bg)
+    # the radiation that sets tau at the grid's start
     radiation = (
         d["grhog"]
         + d["grhornomass"]
-        + d["grhor_nu"] * d["n_mnu"] * neutrino_density_ratio(1.0e-9, d["amnu"])
+        + d.get("grhor_nu", 0.0)
+        * d.get("n_mnu", 0.0)
+        * neutrino_density_ratio(1.0e-9, d.get("amnu", 0.0))
     )
     taumin = 1.0e-9 / jnp.sqrt(radiation / 3.0)
     return a_bg, jnp.concatenate((jnp.zeros((1,)), jnp.cumsum(steps))) + taumin
@@ -235,9 +203,11 @@ def _reionization_redshift(a_bg, tau_bg, params, tau_reio):
     return jnp.where(tau_reio > 0.0, 0.5 * (lo + hi), 0.0)
 
 
-@jax.jit
-def background_endpoints(stacked):
+@functools.partial(jax.jit, static_argnums=(1,))
+def background_endpoints(stacked, model: CosmologyModel | None = None):
     """Return ``(tau0, lna_start, z_re)`` of stacked background parameters, one vmap lane each.
+
+    ``model`` gives the species (:func:`background_model`).
 
     ``tau0`` is the conformal age, where each trajectory stops. ``lna_start`` is
     ``ln a`` at :data:`TAU_START`, where it starts. ``z_re`` is the reionization
@@ -247,7 +217,7 @@ def background_endpoints(stacked):
     """
 
     def one(params):
-        a_bg, tau_bg = _background_tau(density_parameters(params))
+        a_bg, tau_bg = _background_tau(density_parameters(params, model=model), model)
         lna_start = jnp.log(jnp.interp(TAU_START, tau_bg, a_bg))
         z_re = _reionization_redshift(a_bg, tau_bg, params, params["tau_reio"])
         return tau_bg[-1], lna_start, z_re

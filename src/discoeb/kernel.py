@@ -10,6 +10,7 @@ hooks that keep named quantities.
 
 import functools
 import os
+from dataclasses import dataclass
 from typing import NamedTuple
 
 import jax
@@ -19,47 +20,21 @@ import numpy as np
 from .background import TAU_START, background_endpoints, density_parameters
 from .component import Model, _compile
 from .cosmology import _as_batch, _columns
-from .models import CosmologyModel
-from .recombination import THERMAL_PARAMETERS, THERMO_ERROR_WEIGHT, Recombination
+from .models import W0WACDM_MNU, CosmologyModel
+from .recombination import THERMO_ERROR_WEIGHT, Recombination
 
 PERTURB_RTOL = 1.0e-4
 PERTURB_ATOL = 1.0e-4
 PERTURB_FIRST_STEP = 1.0e-2
 PERTURB_MAX_STEPS = 20000
 
-# Columns of the packed parameter row the device right-hand side reads:
-#   p = (grhog, grhornomass, grhoc, grhob, grhov,
-#        tau_start, tau_end, k, cosmology_idx, save_index,
-#        w_DE_0, w_DE_a, cs2_DE, grhok, grhor_nu, n_mnu, amnu,
-#        YHe, Tcmb, H0, Omegab, z_re,
-#        eps, dir_grhog, dir_grhornomass, dir_grhoc, dir_grhob, dir_grhov, dir_YHe, dir_Tcmb, dir_H0, dir_Omegab)
-# grhok = grhom * Omega_k is the constant comoving curvature density
-# coefficient 8 pi G rho_K a^2, zero for a flat cosmology. The recombination
-# rates and reionization read the five columns after ``amnu``
-# (:data:`discoeb.recombination.THERMAL_PARAMETERS`). The model reads each input
-# a derivative may move (:data:`DIRECTED_COLUMNS`: the five densities, ``YHe``,
-# ``Tcmb``, ``H0``, ``Omegab``) as ``x_nominal + eps dir_x``. ``eps`` is zero in
-# every primal solve, and the derivative in ``eps`` is the directional
-IX_TAU_START = 5
-IX_TAU_END = 6
-IX_K = 7
-IX_COSMOLOGY = 8
-IX_SAVE_INDEX = 9
-IX_W_DE_0 = 10
-IX_W_DE_A = 11
-IX_CS2_DE = 12
-IX_GRHOK = 13
-IX_GRHOR_NU = 14
-IX_NMNU = 15
-IX_AMNU = 16
-N_PARAM_HIERARCHY = IX_AMNU + 1
-IX_YHE = N_PARAM_HIERARCHY
-IX_TCMB = N_PARAM_HIERARCHY + 1
-IX_H0 = N_PARAM_HIERARCHY + 2
-IX_OMEGAB = N_PARAM_HIERARCHY + 3
-IX_EPS = N_PARAM_HIERARCHY + len(THERMAL_PARAMETERS)
-IX_DIR = IX_EPS + 1
-DIRECTED_NAMES = (
+SOLVER_COLUMNS = ("tau_start", "tau_end", "k", "cosmology_tag", "save_index", "z_re")
+"""The row's columns the solver sets rather than a component: the
+integration span, the wave number, the cosmology's index in the batch, the
+save counter and the reionization redshift the background finds for
+``tau_reio``."""
+
+_BUILT_IN_DIRECTED = (
     "grhog",
     "grhornomass",
     "grhoc",
@@ -70,35 +45,103 @@ DIRECTED_NAMES = (
     "H0",
     "Omegab",
 )
-"""The inputs a trajectory's sensitivity direction may move, in the order of :data:`DIRECTED_COLUMNS`."""
-DIRECTED_COLUMNS = (0, 1, 2, 3, 4, IX_YHE, IX_TCMB, IX_H0, IX_OMEGAB)
-"""The columns of :data:`DIRECTED_NAMES`: their nominal values, with ``eps`` and the ``dir`` block after the row."""
-N_PARAM = IX_DIR + len(DIRECTED_COLUMNS)
+"""The public order of the built-in directed parameters (:data:`DIRECTED_NAMES`).
+A model's other directed parameters follow them in component order."""
 
-PARAM_COLUMNS = {
-    "grhog_nominal": 0,
-    "grhornomass_nominal": 1,
-    "grhoc_nominal": 2,
-    "grhob_nominal": 3,
-    "grhov_nominal": 4,
-    "tau_start": IX_TAU_START,
-    "tau_end": IX_TAU_END,
-    "k": IX_K,
-    "cosmology_tag": IX_COSMOLOGY,
-    "save_index": IX_SAVE_INDEX,
-    "w_DE_0": IX_W_DE_0,
-    "w_DE_a": IX_W_DE_A,
-    "cs2_DE": IX_CS2_DE,
-    "grhok": IX_GRHOK,
-    "grhor_nu": IX_GRHOR_NU,
-    "n_mnu": IX_NMNU,
-    "amnu": IX_AMNU,
-    **{name: N_PARAM_HIERARCHY + i for i, name in enumerate(THERMAL_PARAMETERS)},
-    "eps": IX_EPS,
-    **{f"dir_{name}": IX_DIR + i for i, name in enumerate(DIRECTED_NAMES)},
-}
-"""The row's columns by the names the component model's providers take them under
-(:mod:`discoeb.species`, :mod:`discoeb.recombination`)."""
+
+@dataclass(frozen=True)
+class ParameterLayout:
+    """The columns of a model's parameter row, generated from its parameters.
+
+    The row is ``(x_nominal for each directed x, SOLVER_COLUMNS, the other
+    column parameters, eps, dir_x for each directed x)``. The directed
+    parameters come in :data:`DIRECTED_NAMES` order, then in component
+    order, and the other columns in component and declaration order, so the
+    layout is a function of the resolved model and the kernels cached on it
+    stay valid. ``eps`` is zero in every primal solve, and the derivative in
+    it is the directional derivative along ``dir``
+    (:func:`~discoeb.sensitivities._kept_values`).
+    """
+
+    columns: dict
+    """Column by the name the providers read it under: ``grhoc_nominal``, ``k``, ``eps``, ``dir_grhoc``."""
+    directed: tuple[str, ...]
+    """The directed parameters: the inputs a sensitivity launch moves."""
+    values: tuple[tuple[str, int], ...]
+    """``(parameter, column)`` of the parameters the row holds."""
+
+    @property
+    def n(self) -> int:
+        return len(self.columns)
+
+    @property
+    def ix_eps(self) -> int:
+        return self.columns["eps"]
+
+    @property
+    def ix_dir(self) -> int:
+        return self.ix_eps + 1
+
+    @property
+    def ix_tau_end(self) -> int:
+        return self.columns["tau_end"]
+
+    @property
+    def directed_columns(self) -> tuple[int, ...]:
+        """The nominal columns of :attr:`directed`."""
+        return tuple(self.columns[f"{name}_nominal"] for name in self.directed)
+
+
+def parameter_layout(model: CosmologyModel, extra=()) -> ParameterLayout:
+    """Return the row layout of ``model`` with the component classes ``extra`` appended (cached)."""
+
+    return _parameter_layout(model.resolved(), tuple(extra))
+
+
+@functools.lru_cache(maxsize=None)
+def _parameter_layout(model: CosmologyModel, extra) -> ParameterLayout:
+    parameters = model.parameters(extra)
+    directed = [n for n, p in parameters.items() if p.directed]
+    directed.sort(
+        key=lambda n: (
+            _BUILT_IN_DIRECTED.index(n)
+            if n in _BUILT_IN_DIRECTED
+            else len(_BUILT_IN_DIRECTED)
+        )
+    )
+    others = [n for n, p in parameters.items() if p.column and not p.directed]
+    clash = sorted(set(SOLVER_COLUMNS) & set(parameters))
+    if clash:
+        raise ValueError(f"{clash} name solver columns, not parameters")
+    names = [
+        *(f"{n}_nominal" for n in directed),
+        *SOLVER_COLUMNS,
+        *others,
+        "eps",
+        *(f"dir_{n}" for n in directed),
+    ]
+    columns = {name: i for i, name in enumerate(names)}
+    values = tuple(
+        (n, columns[parameters[n].column_name]) for n in (*directed, *others)
+    )
+    return ParameterLayout(columns, tuple(directed), values)
+
+
+DEFAULT_LAYOUT = parameter_layout(W0WACDM_MNU)
+"""The row of :data:`~discoeb.models.W0WACDM_MNU`, whose columns are a superset of
+every built-in model's. Each model's kernel reads its own
+(:func:`parameter_layout`); a host test may build any built-in model on this one."""
+
+PARAM_COLUMNS = DEFAULT_LAYOUT.columns
+"""The default row's columns by the names the providers take them under."""
+N_PARAM = DEFAULT_LAYOUT.n
+DIRECTED_NAMES = DEFAULT_LAYOUT.directed
+"""The inputs a trajectory's sensitivity direction may move in every built-in
+model: the five background densities and the recombination rates' ``YHe``,
+``Tcmb``, ``H0`` and ``Omegab``. A model whose components declare more
+directed parameters appends them (:func:`parameter_layout`)."""
+DIRECTED_COLUMNS = DEFAULT_LAYOUT.directed_columns
+"""The nominal columns of :data:`DIRECTED_NAMES` in the default row."""
 
 TRAJECTORIES_PER_BLOCK = 32
 """Wave modes packed into one CUDA block by modax's thread-local Rodas5P kernel."""
@@ -171,17 +214,18 @@ def _joint_kernel(cosmology_model: CosmologyModel, extra):
     from modax import Block, Hierarchy
 
     model = joint_model(cosmology_model, extra)
+    columns = _parameter_layout(cosmology_model, extra).columns
     pattern = model.sparsity()
     thermal = model.state_indices(THERMAL_STATES)
     others = [name for name in model.states if name not in THERMAL_STATES]
     hierarchy_idx = model.state_indices(others)
     recombination = Block(
-        model.build(PARAM_COLUMNS, states=THERMAL_STATES, name="recombination_rhs"),
+        model.build(columns, states=THERMAL_STATES, name="recombination_rhs"),
         len(thermal),
         outputs=model.build_function(
             THERMAL_QUANTITIES,
             inputs=("y", "tau"),
-            params=PARAM_COLUMNS,
+            params=columns,
             states=THERMAL_STATES,
             name="thermal_quantities",
         ),
@@ -191,7 +235,7 @@ def _joint_kernel(cosmology_model: CosmologyModel, extra):
     )
     hierarchy = Block(
         model.build(
-            PARAM_COLUMNS,
+            columns,
             states=others,
             quantities=THERMAL_QUANTITIES,
             name="hierarchy_rhs",
@@ -215,11 +259,12 @@ class _PreparedSolve(NamedTuple):
     cosmologies: tuple
     cosmology_model: CosmologyModel
     model: Model
+    layout: ParameterLayout
     ode_fn: object  # the modax Hierarchy
     tau0: jax.Array  # (n_cosmologies,)
     lna_start: jax.Array
     z_re: jax.Array
-    params: jax.Array  # (n_k * n_cosmologies, N_PARAM)
+    params: jax.Array  # (n_k * n_cosmologies, layout.n)
     y0: jax.Array  # (n_k * n_cosmologies, nvar)
     order: np.ndarray  # the caller's wave modes, sorted
     k_sorted: np.ndarray
@@ -253,7 +298,7 @@ def _prepare_solve(
     order = np.argsort(k, kind="stable")
     k_sorted = k[order]
     if columns is None:
-        columns = _columns(cosmologies)
+        columns = _columns(cosmologies, keys=resolved.parameter_keys())
     columns = jax.lax.stop_gradient(columns)
     tau0, lna_start, z_re, params, y0 = _pack(
         resolved, tuple(extra), tuple(k_sorted.tolist()), columns
@@ -262,6 +307,7 @@ def _prepare_solve(
         cosmologies,
         resolved,
         joint,
+        parameter_layout(resolved, extra),
         hierarchy,
         tau0,
         lna_start,
@@ -284,106 +330,101 @@ def _pack(model: CosmologyModel, extra, k_sorted, columns):
     """
 
     joint, _ = joint_kernel(model, extra)
-    tau0, lna_start, z_re = background_endpoints(columns)
+    layout = parameter_layout(model, extra)
+    tau0, lna_start, z_re = background_endpoints(columns, model)
     n_cosmo, n_k = tau0.shape[0], len(k_sorted)
-    densities = density_parameters(columns)
-    params = jnp.tile(_rows(columns, densities, tau0, z_re), (n_k, 1))
+    values = density_parameters(columns, model=model)
+    params = jnp.tile(_rows(layout, values, tau0, z_re), (n_k, 1))
     k = jnp.repeat(jnp.asarray(k_sorted, dtype=jnp.float64), n_cosmo)
-    params = params.at[:, IX_K].set(k)
-    params = params.at[:, IX_COSMOLOGY].set(
+    params = params.at[:, layout.columns["k"]].set(k)
+    params = params.at[:, layout.columns["cosmology_tag"]].set(
         jnp.tile(jnp.arange(n_cosmo, dtype=jnp.float64), n_k)
     )
-    inputs = _initial_inputs(columns, densities)
     y0 = joint.initial_state(
         k,
         xp=jnp,
         tau=TAU_START,
         lna_start=jnp.tile(lna_start, n_k),
-        **{name: jnp.tile(value, n_k) for name, value in inputs.items()},
+        **{name: jnp.tile(value, n_k) for name, value in values.items()},
     )
     return tau0, lna_start, z_re, params, y0
 
 
-_NAME_OF_COLUMN = {column: name for name, column in PARAM_COLUMNS.items()}
+def _rows(layout: ParameterLayout, values, tau_end, z_re):
+    """Return the cosmologies' parameter rows ``(n_cosmologies, layout.n)``, without the wave number.
 
-
-def _rows(columns, densities, tau_end, z_re):
-    """Return the cosmologies' parameter rows ``(n_cosmologies, N_PARAM)``, without the wave number.
-
-    ``densities`` is :func:`~discoeb.background.density_parameters` of the
-    columns. ``eps`` and the direction block are zero, as in every primal solve.
+    ``values`` are the model's parameters
+    (:func:`~discoeb.background.density_parameters`), each ``(n_cosmologies,)``.
+    ``eps`` and the direction block are zero, as in every primal solve.
     """
 
-    named = {
-        **{
-            f"{name}_nominal": densities[name]
-            for name in ("grhog", "grhornomass", "grhoc", "grhob", "grhov")
-        },
-        **{name: densities[name] for name in ("grhok", "grhor_nu", "n_mnu", "amnu")},
-        "tau_start": TAU_START,
-        "tau_end": tau_end,
-        "save_index": 1.0,
-        "w_DE_0": columns["w_DE_0"],
-        "w_DE_a": columns["w_DE_a"],
-        "cs2_DE": columns["cs2_DE"],
-        "YHe_nominal": columns["YHe"],
-        "Tcmb_nominal": columns["Tcmb"],
-        "H0_nominal": columns["H0"],
-        "Omegab_nominal": columns["Omegab"],
-        "z_re": z_re,
-    }
-    n_cosmo = columns["Omegam"].shape
+    by_column = {column: values[name] for name, column in layout.values}
+    by_column[layout.columns["tau_start"]] = TAU_START
+    by_column[layout.columns["tau_end"]] = tau_end
+    by_column[layout.columns["save_index"]] = 1.0
+    by_column[layout.columns["z_re"]] = z_re
+    n_cosmo = jnp.shape(tau_end)
     return jnp.stack(
         [
             jnp.broadcast_to(
-                jnp.asarray(named.get(_NAME_OF_COLUMN.get(i), 0.0), jnp.float64),
+                jnp.asarray(by_column.get(i, 0.0), jnp.float64),
                 n_cosmo,
             )
-            for i in range(N_PARAM)
+            for i in range(layout.n)
         ],
         axis=1,
     )
 
 
-def _initial_inputs(columns, densities) -> dict:
-    """Return what :meth:`Model.initial_state` reads of the cosmologies besides ``k``, ``tau``, ``lna_start``."""
-
-    return {
-        **{name: densities[name] for name in DIRECTED_NAMES[:5]},
-        "w_DE_0": columns["w_DE_0"],
-        "w_DE_a": columns["w_DE_a"],
-        "Tcmb": columns["Tcmb"],
-    }
-
-
 def make_params(
-    cosmology, k_values: np.ndarray, tau_end: float, z_re: float = 0.0
+    cosmology,
+    k_values: np.ndarray,
+    tau_end: float,
+    z_re: float = 0.0,
+    model: CosmologyModel = W0WACDM_MNU,
 ) -> np.ndarray:
-    """Return packed parameters for the device right-hand side, one row per wave mode."""
+    """Return packed parameters for the device right-hand side, one row per wave mode.
 
-    columns = _columns((cosmology,), held=False)
-    row = _rows(columns, density_parameters(columns), jnp.asarray([tau_end]), z_re)
+    The row is ``model``'s (:func:`parameter_layout`), by default
+    :data:`PARAM_COLUMNS`.
+    """
+
+    columns = _columns((cosmology,), held=False, keys=model.parameter_keys())
+    row = _rows(
+        parameter_layout(model),
+        density_parameters(columns, model=model),
+        jnp.asarray([tau_end]),
+        z_re,
+    )
     params = np.tile(np.asarray(row), (len(k_values), 1))
-    params[:, IX_K] = k_values
+    params[:, parameter_layout(model).columns["k"]] = k_values
     return params
 
 
 def make_initial_states(
-    cosmology, k_values: np.ndarray, model, lna_start
+    cosmology,
+    k_values: np.ndarray,
+    model,
+    lna_start,
+    cosmology_model: CosmologyModel = W0WACDM_MNU,
 ) -> np.ndarray:
     """Return adiabatic initial states plus the fully ionized thermal state, ``(n_k, nvar)``.
 
     ``cosmology`` is one cosmology or a sequence of ``len(k_values)``, one per
-    trajectory. ``lna_start`` is a number or one per trajectory. The initial
+    trajectory. ``model`` is the joint component model and
+    ``cosmology_model`` the model whose parameters the initial conditions
+    read. ``lna_start`` is a number or one per trajectory. The initial
     conditions broadcast over the trajectories.
     """
 
-    columns = _columns(_as_batch(cosmology), held=False)
-    inputs = _initial_inputs(columns, density_parameters(columns))
+    columns = _columns(
+        _as_batch(cosmology), held=False, keys=cosmology_model.parameter_keys()
+    )
+    inputs = density_parameters(columns, model=cosmology_model)
 
     def per(values):
         values = np.asarray(values)
-        return values[0] if len(values) == 1 else values
+        return values[0] if values.shape == (1,) else values
 
     return model.initial_state(
         k_values,
@@ -457,7 +498,7 @@ def _launch(
     The method object carries the numerics: the hierarchy's LU precision and the
     PI controller's gains. The recombination block, which the hierarchy reads,
     always factorises in double. Each trajectory gets its own row of save
-    times, the shared ``t_span`` clipped to its ``tau0`` in ``IX_TAU_END``, so
+    times, the shared ``t_span`` clipped to its ``tau0`` in ``tau_end``, so
     it stops there and its later saves hold its final state.
     """
 
@@ -465,12 +506,13 @@ def _launch(
     from modax import solve as modax_solve
 
     method = Rodas5P(lu_precision=lu_precision, gains=PIDGains(pcoeff=0.3, icoeff=0.4))
-    # A tuple is the row split into leaves, the first holding IX_TAU_END.
+    # A tuple is the row split into leaves, the first holding tau_end.
     head = params[0] if isinstance(params, tuple) else params
+    ix_tau_end = prepared.layout.ix_tau_end
     if isinstance(head, np.ndarray):
-        t_rows = np.minimum(np.asarray(t_span)[None, :], head[:, IX_TAU_END, None])
+        t_rows = np.minimum(np.asarray(t_span)[None, :], head[:, ix_tau_end, None])
     else:
-        tau_end = jax.lax.stop_gradient(head[:, IX_TAU_END, None])
+        tau_end = jax.lax.stop_gradient(head[:, ix_tau_end, None])
         t_rows = jnp.minimum(jnp.asarray(t_span)[None, :], tau_end)
     return modax_solve(
         prepared.ode_fn,
@@ -532,7 +574,7 @@ def _solve_batch(
     return solution, prepared, prepared.k_sorted
 
 
-def build_keep_hook(model, names):
+def build_keep_hook(model, names, layout: ParameterLayout = DEFAULT_LAYOUT):
     """Return a modax save hook ``(y, tau, p) -> tuple`` of the quantities ``names``.
 
     A name is a state element or a quantity the joint model provides. State
@@ -542,7 +584,7 @@ def build_keep_hook(model, names):
     quantities (``R``, ``sigma``, ``phi`` with the line-of-sight sources
     appended, ``opacity`` or ``cs2`` from the thermal states) come from
     :meth:`~discoeb.component.Model.build_function`, with the state, the time and
-    the parameter row as inputs. The hook clamps the time to the trajectory's
+    the parameter row of ``layout`` as inputs. The hook clamps the time to the trajectory's
     own ``tau_end``: a save past a cosmology's ``tau0`` holds its final state,
     and the background at ``tau0`` goes with it. ``hook._generated_source``
     holds its generated source.
@@ -565,7 +607,7 @@ def build_keep_hook(model, names):
     namespace: dict = {}
     lines = [
         "def quantities(y, tau, p):",
-        f"    t = p[{IX_TAU_END}]",
+        f"    t = p[{layout.ix_tau_end}]",
         "    if tau < t:",
         "        t = tau",
     ]
@@ -573,7 +615,7 @@ def build_keep_hook(model, names):
         # build_function returns a lone output bare, so pair it with tau.
         outputs = provided if len(provided) > 1 else [*provided, "tau"]
         namespace["kept"] = model.build_function(
-            outputs, inputs=("y", "tau"), params=PARAM_COLUMNS, name="kept"
+            outputs, inputs=("y", "tau"), params=layout.columns, name="kept"
         )
         targets = ", ".join(f"q_{i}" for i in range(len(outputs)))
         lines.append(f"    {targets} = kept(y, t, p)")
@@ -591,4 +633,6 @@ def build_keep_hook(model, names):
 def _keep_hook(model: CosmologyModel, extra, names):
     """Return the compiled hook for a resolved model, extra components and names (cached)."""
 
-    return build_keep_hook(joint_model(model, extra), names)
+    return build_keep_hook(
+        joint_model(model, extra), names, _parameter_layout(model, extra)
+    )

@@ -59,6 +59,20 @@ for any quantity, on floats or JAX arrays. A scalar's initial condition
 returns the value. A vector's takes ``output``, zero-filled, and writes into
 it. A state without one starts at zero.
 
+**Parameters.** ``Omegam = Parameter()`` declares a key of the cosmology
+dictionary, ``w_DE_0 = Parameter(-1.0, column=True)`` one with a default
+that the kernel reads as a column of the parameter row, and ``grhoc =
+Parameter(value=lambda grhom, Omegam, Omegab: grhom * (Omegam - Omegab),
+directed=True)`` a kernel input derived from other parameters by name. A
+directed parameter ``x`` is a column ``x_nominal`` and a column ``dir_x``,
+and the component provides ``x = x_nominal + eps * dir_x``, so a
+sensitivity in ``eps`` is the derivative along ``dir``. One parameter,
+``grhov``, closes the density budget (``closes_budget=True``): the
+background computes it (:func:`discoeb.background.density_parameters`).
+Two components of a model may declare one name only through the same
+:class:`Parameter` object. A ``check`` classmethod whose parameters name
+cosmology keys rejects values the component cannot represent.
+
 **Sparsity.** Nothing declares which states a derivative depends on.
 :meth:`Model.sparsity` reads the Jacobian's pattern off the providers. It
 resolves the same dependency graph as a build, but on values that carry the
@@ -122,6 +136,7 @@ with ``linecache`` so numba can read it.
 
 from __future__ import annotations
 
+import functools
 import graphlib
 import inspect
 import itertools
@@ -287,6 +302,183 @@ def _is_constant(value) -> bool:
     )
 
 
+# --- parameters -----------------------------------------------------------------------
+
+
+class _Required:
+    def __repr__(self):
+        return "REQUIRED"
+
+
+REQUIRED: Any = _Required()
+"""The default of a cosmology key every cosmology must give."""
+
+_DECLARED: dict[str, list[tuple[type, Parameter]]] = {}
+"""Every parameter any component class declares, by name: its owners and declarations."""
+
+
+class Parameter:
+    """A cosmological parameter a component declares: ``Omegam = Parameter()``.
+
+    Without ``value`` it is a key of the cosmology dictionary, which may leave
+    it out when it has a ``default``. With ``value``, a function whose
+    parameter names are other parameters, it is derived from them on the host
+    in JAX. ``column`` puts it in the kernel's parameter row under its name,
+    for the providers to read. ``directed`` puts it there as ``x_nominal`` and
+    ``dir_x`` instead and generates the provider ``x = x_nominal + eps *
+    dir_x``, so the forward sensitivities may move it. ``closes_budget`` marks
+    the density the background sets so that the densities sum to the critical
+    one today.
+    """
+
+    def __init__(
+        self,
+        default=REQUIRED,
+        *,
+        value: Callable | None = None,
+        column: bool = False,
+        directed: bool = False,
+        closes_budget: bool = False,
+    ):
+        if value is not None and not callable(value):
+            raise TypeError("value must be a function of other parameters")
+        if (value is not None or closes_budget) and default is not REQUIRED:
+            raise TypeError("a derived parameter has no default")
+        if value is not None and closes_budget:
+            raise TypeError("the budget closure derives the parameter itself")
+        self.default = default
+        self.value: Any = value
+        self.directed = directed
+        self.column = column or directed
+        self.closes_budget = closes_budget
+        self.name: str | None = None
+        self.reads: tuple[str, ...] = ()
+        if value is not None:
+            takes_self, reads = _positional_names(value, "a parameter's value")
+            self.reads = tuple(reads)
+            if takes_self:
+                raise TypeError("a parameter's value reads other parameters, not self")
+
+    def __set_name__(self, owner, name):
+        if not name.isidentifier() or name.startswith("_"):
+            raise ValueError(f"{owner.__name__}: {name!r} is not a parameter name")
+        if self.name is not None and self.name != name:
+            raise ValueError(f"one Parameter declared as {self.name!r} and {name!r}")
+        self.name = name
+        _DECLARED.setdefault(name, []).append((owner, self))
+
+    @property
+    def is_key(self) -> bool:
+        """Whether a cosmology dictionary gives it (else it is derived)."""
+        return self.value is None and not self.closes_budget
+
+    @property
+    def column_name(self) -> str:
+        """The row column the kernel reads it from: ``x``, or ``x_nominal`` if directed."""
+        return f"{self.name}_nominal" if self.directed else str(self.name)
+
+    @functools.cached_property
+    def provider(self) -> Callable:
+        """``x(self, x_nominal, eps, dir_x)`` of a directed parameter, a provider of its component."""
+        n = str(self.name)
+        source = f"def {n}(self, {n}_nominal, eps, dir_{n}):\n    return {n}_nominal + eps * dir_{n}\n"
+        scope: dict[str, Any] = {}
+        exec(compile(source, f"<discoeb parameter {n}>", "exec"), {}, scope)  # noqa: S102
+        return scope[n]
+
+    def __repr__(self):
+        return f"Parameter({self.name})"
+
+
+def declared_parameters(classes) -> dict[str, Parameter]:
+    """The parameters the component classes declare, by name, in class and declaration order.
+
+    Raises ``ValueError`` if two of them declare one name by different
+    :class:`Parameter` objects.
+    """
+
+    found: dict[str, Parameter] = {}
+    owner: dict[str, str] = {}
+    for cls in classes:
+        for name, parameter in cls.declared_parameters():
+            if name in found and found[name] is not parameter:
+                raise ValueError(
+                    f"{owner[name]} and {cls.__name__} both declare the parameter {name!r}"
+                )
+            if name not in found:
+                found[name], owner[name] = parameter, cls.__name__
+    closing = [n for n, p in found.items() if p.closes_budget]
+    if len(closing) > 1:
+        raise ValueError(f"only one parameter may close the budget, not {closing}")
+    return found
+
+
+def declarations_of(name: str) -> list[tuple[type, Parameter]]:
+    """The component classes declaring the parameter ``name``, with their declarations."""
+
+    return list(_DECLARED.get(name, ()))
+
+
+def derive_parameters(
+    parameters: Mapping[str, Parameter], given: Mapping, *, math=math, close=None
+) -> dict:
+    """Return the value of every parameter in ``parameters``.
+
+    A key's value is ``given[key]``, or its default. A derived parameter's is
+    its ``value`` function of the others, evaluated with ``math`` as the
+    module its ``math.sqrt`` and friends use (``jax.numpy`` for traced
+    values). The parameter that closes the budget is ``close(name, values)``,
+    where ``values`` holds every parameter that does not depend on it.
+    """
+
+    names = _host_names(math)
+    memo: dict = {}
+    values: dict = {}
+
+    def reaches(name, target, seen=()):
+        p = parameters.get(name)
+        if p is None or name in seen:
+            return False
+        return any(r == target or reaches(r, target, (*seen, name)) for r in p.reads)
+
+    def get(name, stack=()):
+        if name in values:
+            return values[name]
+        if name in stack:
+            raise ValueError("circular parameters: " + " -> ".join((*stack, name)))
+        p = parameters.get(name)
+        if p is None:
+            raise NameError(
+                f"{stack[-1] if stack else 'a parameter'} reads {name!r}, "
+                "which no component of the model declares"
+            )
+        if p.closes_budget:
+            if close is None:
+                raise ValueError(f"nothing closes the budget for {name!r}")
+            others = {
+                m: get(m, (*stack, name))
+                for m in parameters
+                if m != name and not reaches(m, name)
+            }
+            value = close(name, others)
+        elif p.value is None:
+            if name in given:
+                value = given[name]
+            elif p.default is REQUIRED:
+                raise KeyError(name)
+            else:
+                value = p.default
+        else:
+            fn = _bound_function(p.value, lambda f: f, names, memo)
+            value = fn(*(get(r, (*stack, name)) for r in p.reads))
+        values[name] = value
+        return value
+
+    for name in parameters:
+        get(name)
+    return values
+
+
 # --- states ---------------------------------------------------------------------------
 
 
@@ -324,7 +516,15 @@ class State:
 
 
 class Component:
-    """Provides quantities and may own settings and state variables (see the module docstring)."""
+    """Provides quantities and may own settings, parameters and state variables (see the module docstring).
+
+    A component may define a ``check`` classmethod whose parameters name the
+    cosmology keys it validates (``check(cls, w_DE_0, w_DE_a)``), raising
+    ``ValueError`` for values it cannot represent.
+    :meth:`CosmologyModel.check <discoeb.models.CosmologyModel.check>` calls
+    it with their values, unless one of them is traced. ``check`` is never a
+    provider.
+    """
 
     _setting_names: tuple[str, ...] = ()
 
@@ -356,6 +556,18 @@ class Component:
         for klass in reversed(cls.__mro__):
             for attr, value in vars(klass).items():
                 if isinstance(value, State) and attr not in seen:
+                    seen.add(attr)
+                    found.append((attr, value))
+        return found
+
+    @classmethod
+    def declared_parameters(cls) -> list[tuple[str, Parameter]]:
+        """The ``Parameter`` attributes, in declaration order, base classes first."""
+
+        found, seen = [], set()
+        for klass in reversed(cls.__mro__):
+            for attr, value in vars(klass).items():
+                if isinstance(value, Parameter) and attr not in seen:
                     seen.add(attr)
                     found.append((attr, value))
         return found
@@ -501,7 +713,7 @@ def _providers(component: Component, states: Mapping[str, _State]) -> list[_Prov
         if klass in _FRAMEWORK_CLASSES:
             continue  # the framework's own methods are not providers
         for attr, member in vars(klass).items():
-            if attr in seen or attr.startswith("_"):
+            if attr in seen or attr.startswith("_") or attr == "check":
                 continue
             seen.add(attr)
             # Every method not named with a leading underscore is a provider, a
@@ -510,6 +722,11 @@ def _providers(component: Component, states: Mapping[str, _State]) -> list[_Prov
                 found.append(_Provider(component, attr, member.__func__, states))
             elif isinstance(member, types.FunctionType):
                 found.append(_Provider(component, attr, member, states))
+    provided = {p.attr for p in found}
+    for attr, parameter in type(component).declared_parameters():
+        # A directed parameter's provider, unless a subclass overrides it.
+        if parameter.directed and attr not in provided:
+            found.append(_Provider(component, attr, parameter.provider, states))
     for attr, value in vars(component).items():
         if (
             attr not in seen

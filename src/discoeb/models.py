@@ -12,12 +12,21 @@ derive from each other, so a new one is usually a line::
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 
-from .component import Component, Model
-from .cosmology import _as_batch, _is_concrete
+from .component import (
+    REQUIRED,
+    Component,
+    Model,
+    Parameter,
+    declarations_of,
+    declared_parameters,
+)
+from .cosmology import _as_batch, _cosmology_dictionary, _is_concrete
 from .gravity import SUMS, AdiabaticMode, Background, Curvature, Metric
 from .interactions import ThomsonScattering
+from .recombination import Recombination
 from .species import (
     Baryons,
     ColdDarkMatter,
@@ -77,6 +86,7 @@ class CosmologyModel:
                 f"{self.name} has no component with settings {unknown}; "
                 f"its settings are {sorted(known)}"
             )
+        self.parameters()  # raises if two components declare one name differently
 
     def __repr__(self) -> str:
         return f"CosmologyModel({self.name!r})"
@@ -172,6 +182,26 @@ class CosmologyModel:
         components.extend(extra)
         return Model(components, sums=SUMS)
 
+    def parameters(self, extra=()) -> dict[str, Parameter]:
+        """Return the parameters the model's components declare, by name.
+
+        They include those of the recombination block every solve appends
+        (:func:`discoeb.kernel.joint_model`) and of the component classes
+        ``extra``. The keys among them make up the cosmology dictionary
+        (:meth:`parameter_keys`), the columns the kernel's parameter row
+        (:func:`discoeb.kernel.parameter_layout`).
+        """
+
+        return declared_parameters((*self.components, Recombination, *extra))
+
+    def parameter_keys(self) -> dict[str, object]:
+        """Return the cosmology-dictionary keys of :meth:`parameters` and their defaults.
+
+        :data:`~discoeb.component.REQUIRED` marks a key every cosmology gives.
+        """
+
+        return {n: p.default for n, p in self.parameters().items() if p.is_key}
+
     def state_names(self) -> tuple[str, ...]:
         """Return the perturbation state's element names in index order."""
 
@@ -222,40 +252,47 @@ class CosmologyModel:
         """Raise ``ValueError`` if ``cosmology`` sets parameters this model ignores.
 
         ``cosmology`` is a parameter dictionary or a cosmology object
-        (:func:`~discoeb.cosmology.as_cosmology`). A model without the
-        dark-energy fluid needs ``w_DE_0 = -1`` and ``w_DE_a = 0``, and one with
-        it needs ``w != -1``, where the fluid equations divide by ``1 + w``. A
-        model without massive neutrinos needs ``Nmnu = 0``. Under ``jit``,
-        where these are traced, there is nothing to check.
+        (:func:`~discoeb.cosmology.as_cosmology`). A key that another
+        component declares but none of this model's must keep its declared
+        default: a model without the dark-energy fluid needs ``w_DE_0 = -1``
+        and ``w_DE_a = 0``, one without massive neutrinos ``Nmnu = 0``. Then
+        each component's ``check`` hook runs on the keys it names
+        (:meth:`DarkEnergy.check <discoeb.species.DarkEnergy.check>` needs
+        ``w != -1``). A traced value, under ``jit``, has nothing to compare
+        yet and is skipped.
         """
 
-        if isinstance(cosmology, dict):
-            w0 = cosmology.get("w_DE_0", -1.0)
-            wa = cosmology.get("w_DE_a", 0.0)
-            n_mnu = cosmology.get("Nmnu", 0.0)
-        else:
-            w0, wa = cosmology.w_DE_0, cosmology.w_DE_a
-            n_mnu = cosmology.num_massive_neutrinos
-        if not all(map(_is_concrete, (w0, wa, n_mnu))):
-            return  # traced under jit: nothing to compare yet
-        w0, wa, n_mnu = float(w0), float(wa), float(n_mnu)
-        constant = w0 == -1.0 and wa == 0.0
-        if self.has(DarkEnergy) and constant:
-            raise ValueError(
-                f"{self.name} evolves a dark-energy fluid, which needs w != -1; "
-                "use a model with a cosmological constant for w_DE_0 = -1, w_DE_a = 0"
-            )
-        if not self.has(DarkEnergy) and not constant:
-            raise ValueError(
-                f"{self.name} has a cosmological constant but the cosmology sets "
-                f"w_DE_0 = {w0}, w_DE_a = {wa}; "
-                "use a model with DarkEnergy (W0WACDM)"
-            )
-        if not self.has(MassiveNeutrinos) and n_mnu > 0:
-            raise ValueError(
-                f"{self.name} has no massive neutrinos but the cosmology sets "
-                f"Nmnu = {n_mnu}; use a model with MassiveNeutrinos (LCDM_MNU)"
-            )
+        values = _cosmology_dictionary(cosmology)
+        parameters = self.parameters()
+        for key, value in values.items():
+            if key in parameters or not _is_concrete(value):
+                continue
+            owners = [(cls, p) for cls, p in declarations_of(key) if p.is_key]
+            if not owners:
+                continue  # a key no component declares
+            default = owners[0][1].default
+            if default is REQUIRED or float(value) != default:
+                names = ", ".join(sorted({cls.__name__ for cls, _ in owners}))
+                raise ValueError(
+                    f"{self.name} has no component with the parameter {key} "
+                    f"(set to {value}, default {default}); use a model with {names}"
+                )
+        keys = self.parameter_keys()
+        filled = {**{k: v for k, v in keys.items() if v is not REQUIRED}, **values}
+        for cls in (*self.components, Recombination):
+            hook = getattr(cls, "check", None)
+            if hook is None:
+                continue
+            names = list(inspect.signature(hook).parameters)
+            if any(n not in filled for n in names):
+                continue  # a required key left out fails where it is read
+            args = [filled[n] for n in names]
+            if not all(map(_is_concrete, args)):
+                continue  # traced under jit: nothing to compare yet
+            try:
+                hook(*args)
+            except ValueError as e:
+                raise ValueError(f"{self.name}: {e}") from None
 
 
 @dataclass(frozen=True, eq=False)
