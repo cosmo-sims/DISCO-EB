@@ -485,6 +485,13 @@ The typical computation flow is:
 - Regression testing with `pytest-regressions` to track accuracy changes
 - Benchmark testing with `pytest-benchmark` to track performance
 - CLASS reference spectra are computed on the fly by the tests (classy)
+- `tests/test_sweep.py` sweeps a fixed-seed Latin hypercube of 32 cosmologies
+  per model (LCDM, W0WACDM, LCDM_MNU) in one launch each: finite P(k), steps
+  well under `max_steps`, P(k) against CLASS at gates set from measured errors,
+  and a self-convergence check against a 1000x tighter fp64-LU solve. A CPL
+  `w(a)` crossing -1 hits `max_steps` and is silently wrong (strict `xfail`).
+  The self-convergence tests are marked `slow`, which `pyproject.toml`
+  deselects by default: run them with `uv run pytest tests -m slow -rs`
 
 ## Example Notebooks
 
