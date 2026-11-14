@@ -108,6 +108,69 @@ class Baryons(Species):
         return -adotoa * vb + k * cs2 * clxb
 
 
+class Fluid(Species):
+    """A perfect fluid with a constant equation of state ``w`` and rest-frame sound speed ``cs2``.
+
+    The fluid equations of :class:`DarkEnergy` at constant ``w``, where the
+    adiabatic sound speed is ``w`` itself:
+
+    ``delta' = -(1+w)(theta + k z) - 3 (cs2 - w) aH delta
+               - 9 (1+w)(cs2 - w) (aH)^2 theta / k^2``,
+    ``theta' = -(1 - 3 cs2) aH theta + cs2 k^2 delta / (1+w)``,
+
+    with no anisotropic stress. Its density today is ``Omega`` of the
+    critical one and scales as ``a^(-3(1+w))``. It starts in the adiabatic
+    mode, ``delta = (1 + w) clxc`` at rest. ``w = cs2 = 0`` is a second cold
+    dark matter and ``w = cs2 = 1/3`` a dark radiation without shear.
+
+    Its names (``delta``, ``theta``, ``w``, ``cs2``) are generic, so a model
+    lists it under a name of its own, any number of times::
+
+        LCDM.add(Fluid.named("dr"), name="LCDM+dr")   # dr_Omega, dr_w, dr_delta ...
+    """
+
+    delta = State(initial=lambda w, clxc: (1.0 + w) * clxc)
+    theta = State()
+
+    Omega = Parameter(0.0)
+    w = Parameter(0.0, column=True)
+    cs2 = Parameter(0.0, column=True)
+    grho0 = Parameter(value=lambda grhom, Omega: grhom * Omega, directed=True)
+
+    @classmethod
+    def check(cls, Omega, w):
+        """The Euler equation divides by ``1 + w``."""
+        if float(w) == -1.0:
+            raise ValueError("a fluid needs w != -1; use a cosmological constant")
+        if float(Omega) < 0.0:
+            raise ValueError(f"a fluid's density Omega = {Omega} must not be negative")
+
+    def grho_t(self, grho0, a, w):
+        return grho0 * a ** (-1.0 - 3.0 * w)
+
+    def grho(self, grho_t):
+        return grho_t
+
+    def gpres(self, grho_t, w):
+        return w * grho_t
+
+    def dgrho(self, grho_t, delta):
+        return grho_t * delta
+
+    def dgq(self, grho_t, w, theta, k):
+        return grho_t * (1.0 + w) * theta / k
+
+    def d_delta(self, delta, theta, z, k, adotoa, w, cs2, inv_k2):
+        return (
+            -(1.0 + w) * (theta + k * z)
+            - 3.0 * (cs2 - w) * adotoa * delta
+            - 9.0 * (1.0 + w) * (cs2 - w) * adotoa**2 * inv_k2 * theta
+        )
+
+    def d_theta(self, delta, theta, k, adotoa, w, cs2):
+        return -(1.0 - 3.0 * cs2) * adotoa * theta + cs2 / (1.0 + w) * k**2 * delta
+
+
 # --- the radiation streaming approximation ------------------------------------------
 
 

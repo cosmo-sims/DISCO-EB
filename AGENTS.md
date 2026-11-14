@@ -196,6 +196,16 @@ The codebase is organized into modular components in `src/discoeb/`:
      MassiveNeutrinos.amnu`). A component's `check` classmethod names the
      keys it validates (`DarkEnergy.check(cls, w_DE_0, w_DE_a)`).
      `declared_parameters(classes)`, `derive_parameters(...)`
+   - `Component.named("x")` (2026-11-14) is a cached subclass whose states,
+     parameters and quantities carry the prefix `x_` (`_renames`), so a
+     model may list one component several times: `LCDM.add(Fluid.named("dr"),
+     Fluid.named("idm"))`. The functions are the class's own. `_Provider`,
+     a state's `initial`, a `Parameter`'s `reads` and the `check` hook
+     translate each signature name the component itself declares
+     (`_model_name`); other names and sum contributions stay as written, so
+     a named component cannot read a foreign quantity that shares one of its
+     own names. Settings are shared. `species.Fluid` (constant `w`, `cs2`)
+     is meant to be used this way: `tests/test_named_components.py`
    - Host-only tests: `tests/test_component.py`; a species with a parameter
      of its own, added from the test file alone: `tests/test_new_species.py`
 
@@ -218,7 +228,8 @@ The codebase is organized into modular components in `src/discoeb/`:
    - `species.py`: `ColdDarkMatter`, `Baryons`, `Photons` (settings `LMAX_G`,
      `LMAX_POL`; states `theta` = Theta_0..LMAX_G and `e` = E_2..LMAX_POL,
      collisionless part), `MasslessNeutrinos` (`LMAX_NR`),
-     `CosmologicalConstant` or `DarkEnergy` (CPL fluid), `MassiveNeutrinos`
+     `CosmologicalConstant` or `DarkEnergy` (CPL fluid), `Fluid` (constant
+     `w` and `cs2`, no shear, listed under a name), `MassiveNeutrinos`
      (`LMAX_NU`, `NQMAX`; matrix state `psi[bin, l]`, quadrature nodes as tuple
      constants) and `RadiationStreaming` (CLASS's RSA). The free-streaming tail
      is one helper `stream(...)` shared by the three hierarchies

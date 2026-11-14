@@ -283,7 +283,7 @@ class CosmologyModel:
             hook = getattr(cls, "check", None)
             if hook is None:
                 continue
-            names = list(inspect.signature(hook).parameters)
+            names = [cls._renames.get(n, n) for n in inspect.signature(hook).parameters]
             if any(n not in filled for n in names):
                 continue  # a required key left out fails where it is read
             args = [filled[n] for n in names]

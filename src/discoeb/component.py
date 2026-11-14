@@ -388,6 +388,19 @@ class Parameter:
         exec(compile(source, f"<discoeb parameter {n}>", "exec"), {}, scope)  # noqa: S102
         return scope[n]
 
+    def renamed(self, renames: Mapping[str, str]) -> Parameter:
+        """A copy for a named component: it reads its component's own parameters under their new names."""
+
+        copy = Parameter(
+            self.default if self.value is None and not self.closes_budget else REQUIRED,
+            column=self.column,
+            directed=self.directed,
+            closes_budget=self.closes_budget,
+        )
+        copy.value = self.value
+        copy.reads = tuple(renames.get(r, r) for r in self.reads)
+        return copy
+
     def __repr__(self):
         return f"Parameter({self.name})"
 
@@ -529,6 +542,9 @@ class Component:
     """
 
     _setting_names: tuple[str, ...] = ()
+    _renames: Mapping[str, str] = {}
+    """Of a :meth:`named` component: the names it declares to those it takes in a model."""
+    _named_parameters: tuple[tuple[str, Parameter], ...] | None = None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -551,6 +567,54 @@ class Component:
         return cls._setting_names
 
     @classmethod
+    def named(cls, name: str):
+        """Return this component under a name of its own: ``Fluid.named("dr")``.
+
+        The copy is a subclass whose states, parameters and quantities
+        carry the prefix ``name_``: the state ``delta`` becomes
+        ``dr_delta``, the key ``Omega`` ``dr_Omega``, the quantity
+        ``grho_t`` ``dr_grho_t``. Its functions are the class's own, and
+        each name in their signatures that the component itself declares
+        resolves to the prefixed one. Every other name, and a contribution
+        to one of the model's sums, stays as written. So one model may list
+        a component several times, each copy with its own state and
+        parameters: two dark fluids, two scalar fields. Settings are shared.
+        """
+
+        if not name.isidentifier() or name.startswith("_"):
+            raise ValueError(f"{name!r} is not a name for a component")
+        if cls._renames:
+            raise TypeError(f"{cls.__name__} already carries a name")
+        key = (cls, name)
+        if key not in _NAMED:
+            own = [n for n, _ in cls.declared_states()]
+            own += [n for n, _ in cls.declared_parameters()]
+            for klass in cls.__mro__:
+                if klass in _FRAMEWORK_CLASSES:
+                    continue
+                for attr, member in vars(klass).items():
+                    if attr.startswith(("_", "d_")) or attr == "check":
+                        continue
+                    if isinstance(member, (staticmethod, types.FunctionType)):
+                        own.append(attr)
+            renames = {n: f"{name}_{n}" for n in dict.fromkeys(own)}
+            parameters = {
+                renames[n]: p.renamed(renames) for n, p in cls.declared_parameters()
+            }
+            _NAMED[key] = type(
+                f"{cls.__name__}_{name}",
+                (cls,),
+                {
+                    "__doc__": cls.__doc__,
+                    "__module__": cls.__module__,
+                    "_renames": types.MappingProxyType(renames),
+                    "_named_parameters": tuple(parameters.items()),
+                    **parameters,
+                },
+            )
+        return _NAMED[key]
+
+    @classmethod
     def declared_states(cls) -> list[tuple[str, State]]:
         """The ``State`` attributes, in declaration order, base classes first."""
 
@@ -559,13 +623,15 @@ class Component:
             for attr, value in vars(klass).items():
                 if isinstance(value, State) and attr not in seen:
                     seen.add(attr)
-                    found.append((attr, value))
+                    found.append((cls._renames.get(attr, attr), value))
         return found
 
     @classmethod
     def declared_parameters(cls) -> list[tuple[str, Parameter]]:
         """The ``Parameter`` attributes, in declaration order, base classes first."""
 
+        if cls._named_parameters is not None:
+            return list(cls._named_parameters)
         found, seen = [], set()
         for klass in reversed(cls.__mro__):
             for attr, value in vars(klass).items():
@@ -620,6 +686,8 @@ class Interaction(Component):
 
 _FRAMEWORK_CLASSES = (Component, Species, Interaction, object)
 _SELF_TYPES: dict[tuple, type] = {}
+_NAMED: dict[tuple, type] = {}
+"""The named copies of component classes (:meth:`Component.named`), one per class and name."""
 
 
 # --- quantities -----------------------------------------------------------------------
@@ -686,30 +754,47 @@ class _Provider:
         attr: str,
         fn: Callable,
         states: Mapping[str, _State],
+        sums: Sequence[str] = (),
     ):
-        self.component, self.attr, self.fn = component, attr, fn
+        self.component, self.fn = component, fn
         self.label = f"{component.label}.{attr}"
         self.symbol = f"{component.label}__{attr}"
         self.self_symbol = f"{component.label}_self"
         self.takes_self, names = _positional_names(fn, self.label)
+        # the names as the model knows them: a named component's own carry its prefix
+        names = [_model_name(component, n, sums) for n in names]
         self.written = None
         if attr.startswith("d_"):
-            state = states.get(attr[2:])
+            written = _model_name(component, attr[2:], sums)
+            state = states.get(written)
             if state is None:
                 raise ValueError(
-                    f"{self.label} writes {attr[2:]!r}, which no component owns"
+                    f"{self.label} writes {written!r}, which no component owns"
                 )
+            self.attr = f"d_{written}"
             self.written = state
             _check_output(self.label, "the derivative", state.shape, names)
-        elif OUTPUT in names:
-            raise TypeError(
-                f"{self.label}: only a vector state's derivative fills an {OUTPUT!r}"
-            )
+        else:
+            self.attr = _model_name(component, attr, sums)
+            if OUTPUT in names:
+                raise TypeError(
+                    f"{self.label}: only a vector state's derivative fills an {OUTPUT!r}"
+                )
         self.params = tuple(n for n in names if n != OUTPUT)
         self.signature = tuple(names)
 
 
-def _providers(component: Component, states: Mapping[str, _State]) -> list[_Provider]:
+def _model_name(component: Component, name: str, sums: Sequence[str] = ()) -> str:
+    """The name a model knows ``name`` by when ``component`` writes it: prefixed if a named component declares it."""
+
+    if name in sums:
+        return name
+    return type(component)._renames.get(name, name)
+
+
+def _providers(
+    component: Component, states: Mapping[str, _State], sums: Sequence[str] = ()
+) -> list[_Provider]:
     found, seen = [], set()
     for klass in type(component).__mro__:
         if klass in _FRAMEWORK_CLASSES:
@@ -721,9 +806,9 @@ def _providers(component: Component, states: Mapping[str, _State]) -> list[_Prov
             # Every method not named with a leading underscore is a provider, a
             # staticmethod one without self.
             if isinstance(member, staticmethod):
-                found.append(_Provider(component, attr, member.__func__, states))
+                found.append(_Provider(component, attr, member.__func__, states, sums))
             elif isinstance(member, types.FunctionType):
-                found.append(_Provider(component, attr, member, states))
+                found.append(_Provider(component, attr, member, states, sums))
     provided = {p.attr for p in found}
     for attr, parameter in type(component).declared_parameters():
         # A directed parameter's provider, unless a subclass overrides it.
@@ -736,7 +821,7 @@ def _providers(component: Component, states: Mapping[str, _State]) -> list[_Prov
             and isinstance(value, types.FunctionType)
         ):
             seen.add(attr)
-            found.append(_Provider(component, attr, value, states))
+            found.append(_Provider(component, attr, value, states, sums))
     return found
 
 
@@ -862,7 +947,12 @@ class _HostValues:
                 _check_output(
                     f"{name}.initial", "the initial condition", s.shape, params
                 )
-                args = [output if p == OUTPUT else self[p] for p in params]
+                args = [
+                    output
+                    if p == OUTPUT
+                    else self[_model_name(s.component, p, self.model.sums)]
+                    for p in params
+                ]
                 filled = self._call(fn, s.component, takes_self, args)
                 result = output.array() if s.shape else filled
         elif name in self.contributions:
@@ -1182,7 +1272,9 @@ class Model:
 
         if not hasattr(self, "_provider_list"):
             self._provider_list = [
-                p for c in self.components for p in _providers(c, self.states)
+                p
+                for c in self.components
+                for p in _providers(c, self.states, self.sums)
             ]
         return self._provider_list
 
