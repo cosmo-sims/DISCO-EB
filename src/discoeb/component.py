@@ -626,7 +626,7 @@ class _HostValues:
                 filled = self._call(fn, s.component, takes_self, args)
                 if not s.shape:
                     result = filled
-                elif output is not result:
+                elif isinstance(output, _Scratch):
                     result = output.array
         elif name in self.model.sums:
             parts = [

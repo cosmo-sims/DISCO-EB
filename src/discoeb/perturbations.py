@@ -877,7 +877,9 @@ def _pack(cosmologies, model, tau0, lna_start, z_re, k_arr, xp=np):
         params[:, IX_K] = k_column
         params[:, IX_COSMOLOGY] = tags
     else:
-        params = params.at[:, IX_K].set(k_column).at[:, IX_COSMOLOGY].set(tags)
+        params = (
+            jnp.asarray(params).at[:, IX_K].set(k_column).at[:, IX_COSMOLOGY].set(tags)
+        )
     # per-cosmology inputs, tiled over the wave modes (row = k_idx * n_cosmo + c)
 
     def tile(values):
@@ -1824,6 +1826,10 @@ def solve_eb(
 
     if layout is None:
         layout = _batch_layout(dictionaries(theta, fixed))
+    # keys that act on what the layout leaves out, so refuse a derivative
+    left_out_keys = (
+        () if layout.enable_dark_energy else ("w_DE_0", "w_DE_a", "cs2_DE")
+    ) + (() if layout.has_massive_neutrinos else ("Nmnu", "mnu"))
     names = tuple(layout_state_names(layout) if keep is None else keep)
     if len(set(names)) != len(names):
         raise ValueError(f"keep names a quantity twice: {names}")
@@ -1946,7 +1952,7 @@ def solve_eb(
         return EBSolution(
             names=names,
             k=k_values,
-            tau=tau if a is None else save_times(prepared)[:, 1:],
+            tau=tau if tau is not None else save_times(prepared)[:, 1:],
             tau0=tau0 if isinstance(tau0, jax.Array) else np.asarray(tau0),
             values=values,
             layout=layout,
@@ -2006,12 +2012,7 @@ def solve_eb(
             for k in DIFFERENTIABLE_PARAMETERS
             if not isinstance(dtheta[k], SymbolicZero)
         ]
-        left_out = [
-            k
-            for k in keys
-            if (k in ("w_DE_0", "w_DE_a", "cs2_DE") and not layout.enable_dark_energy)
-            or (k in ("Nmnu", "mnu") and not layout.has_massive_neutrinos)
-        ]
+        left_out = [k for k in keys if k in left_out_keys]
         if left_out:
             raise ValueError(
                 f"{left_out[0]!r} cannot be differentiated through solve_eb with "
