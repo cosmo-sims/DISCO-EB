@@ -7,19 +7,32 @@ equations of :mod:`discoeb.species` through ``0.5 h' = k z`` and the shear
 ``sigma`` (see :class:`Metric`). The curved-geometry relations follow
 CLASS's ``perturbations.c`` with ``K = -grhok / 3`` and ``s2^2 = 1 - 3K/k^2``.
 
-The components here are neither species nor interactions. :class:`Background`
-turns the summed density ``grho`` into the expansion rate, :class:`Metric`
+The components here are neither species nor interactions.
+:class:`Kinematics` holds the powers of the scale factor and the wave number
+every component reads. :class:`Background` is the Friedmann equation: it
+turns the summed density ``grho`` into the expansion rate. :class:`Metric`
 holds ``etak`` and the Einstein constraints, :class:`Curvature` the spatial
 curvature, and :class:`AdiabaticMode` the growing-mode quantities the
 species' initial conditions read. Every model in :mod:`discoeb.models`
-includes all four.
+includes all five.
+
+**The interface.** The species meet gravity in two sets of names. They
+contribute to the sums :data:`SUMS`, which describe the fluids alone. They
+read :data:`GRAVITY_INTERFACE`: the expansion rate ``adotoa`` and the metric
+sources ``z`` and ``sigma``. A theory of gravity is a set of
+:class:`~discoeb.component.Gravity` components that provides those three
+from the sums, so another theory replaces :class:`Background` (a modified
+Friedmann equation), :class:`Metric` (modified constraints, with states of
+its own if it needs them) or both, and no species changes::
+
+    BRANS_DICKE = LCDM.replace(Background, BransDickeBackground, name="BD")
 """
 
 from __future__ import annotations
 
 import math
 
-from .component import Component, Parameter, Species, State
+from .component import Component, Gravity, Parameter, State
 
 # Density coefficients in CAMB's convention, ``8 pi G rho / c^2`` in 1/Mpc^2:
 # ``H^2 = sum_i grho_i / 3`` gives the Hubble rate in 1/Mpc and ``a'/a = a H``
@@ -39,19 +52,17 @@ pressure (CAMB's, so the comoving curvature perturbation can divide by
 ``rho + p``). ``dgrho = Sum grho_i_t delta_i`` and ``dgq = Sum grho_i_t q_i``
 source the Einstein constraints. ``dgpi = Sum grho_i_t pi_i`` is the
 anisotropic stress the line-of-sight sources' Weyl potential needs. Spatial
-curvature adds ``grhok`` to ``grho`` but no pressure, since it is no fluid."""
+curvature is no fluid and contributes to none of them: the Friedmann equation
+reads it as :meth:`Curvature.Kcurv`."""
+
+GRAVITY_INTERFACE = ("adotoa", "z", "sigma")
+"""What every species reads of gravity, and a model's gravity components provide:
+the conformal Hubble rate and the metric sources ``z = h' / (2k)`` and
+``sigma = k alpha`` of synchronous gauge."""
 
 
-class Background(Component):
-    """Powers of the scale factor, the Friedmann equation, ``1/tau`` and ``1/k^2``.
-
-    It declares the Hubble constant ``H0`` (km/s/Mpc), which the
-    recombination rates read too, and the critical density ``grhom`` derived
-    from it.
-    """
-
-    H0 = Parameter(directed=True)
-    grhom = Parameter(value=lambda H0: GRHOM_PER_H0SQ * H0**2)
+class Kinematics(Component):
+    """Powers of the scale factor, ``1/tau`` and ``1/k^2``, for every component to read."""
 
     def a2(self, a):
         return a * a
@@ -68,9 +79,27 @@ class Background(Component):
     def inv_k2(self, k):
         return 1.0 / (k * k)
 
-    def adotoa(self, grho):
-        """The conformal Hubble rate ``a'/a = sqrt(grho / 3)``."""
-        return math.sqrt(grho * (1.0 / 3.0))
+
+class Background(Gravity):
+    """The Friedmann equation of general relativity: the expansion rate from the fluids.
+
+    It declares the Hubble constant ``H0`` (km/s/Mpc), which the
+    recombination rates read too, and the critical density ``grhom`` derived
+    from it. A theory with another Friedmann equation replaces this
+    component and provides ``adotoa`` (and ``adotoa_prime`` if something
+    reads it) its own way.
+    """
+
+    H0 = Parameter(directed=True)
+    grhom = Parameter(value=lambda H0: GRHOM_PER_H0SQ * H0**2)
+
+    def adotoa(self, grho, Kcurv):
+        """The conformal Hubble rate ``a'/a = sqrt(grho / 3 - K)``."""
+        return math.sqrt(grho * (1.0 / 3.0) - Kcurv)
+
+    def adotoa_prime(self, grho, gpres):
+        """``(a'/a)' = -(grho + 3 gpres) / 6``, the acceleration equation. Curvature drops out."""
+        return -(grho + 3.0 * gpres) * (1.0 / 6.0)
 
 
 class AdiabaticMode(Component):
@@ -105,14 +134,15 @@ class AdiabaticMode(Component):
         return om * tau
 
 
-class Curvature(Species):
-    """Spatial curvature: a density ``grhok = 8 pi G rho_K a^2`` and the metric factors."""
+class Curvature(Gravity):
+    """Spatial curvature ``K = -grhok / 3``, with ``grhok = Omegak grhom``, and the metric factors.
+
+    It is geometry, not a fluid: it enters the Friedmann equation through
+    ``Kcurv`` and none of the sums.
+    """
 
     Omegak = Parameter(0.0)
     grhok = Parameter(value=lambda grhom, Omegak: grhom * Omegak, directed=True)
-
-    def grho(self, grhok):
-        return grhok
 
     def s2(self, grhok, inv_k2):
         """``s2^2 = 1 - 3K/k^2 = 1 + grhok/k^2`` (1 when flat)."""
@@ -125,7 +155,7 @@ class Curvature(Species):
         return -grhok * (1.0 / 3.0)
 
 
-class Metric(Component):
+class Metric(Gravity):
     """The synchronous-gauge metric: ``etak = k eta`` and the Einstein constraints.
 
     ``h' = (k^2 s2^2 eta + 1.5 a^2 delta_rho) / (0.5 aH)`` with ``z = h'/(2k)``,
@@ -143,12 +173,12 @@ class Metric(Component):
     def sigma(self, z, dgq, inv_k2, inv_s2):
         return (z + 1.5 * dgq * inv_k2) * inv_s2
 
-    def R(self, etak, k, adotoa, dgq, grho, gpres, grhok):
+    def R(self, etak, k, adotoa, dgq, grho, gpres):
         """The comoving curvature perturbation ``R``, unity for the adiabatic mode.
 
         ``R`` is the gauge-invariant curvature on slices where the total
         momentum density vanishes. From synchronous gauge the slicing shifts
-        by ``T = theta / k^2``, with ``theta = k dgq / (grho_fluid + gpres)``
+        by ``T = theta / k^2``, with ``theta = k dgq / (grho + gpres)``
         the total velocity divergence (``dgq = 8 pi G a^2 (rho + p) theta /
         k``), and the curvature ``eta`` becomes ``eta + aH T``. The sign is
         CAMB's: the initial conditions set ``R = 1`` (``etak = -k`` at
@@ -158,7 +188,7 @@ class Metric(Component):
         super-horizon scales up to ``O((k tau)^2)`` and decays with the
         mode's potentials through horizon entry.
         """
-        return -etak / k - adotoa * dgq / (k * (grho - grhok + gpres))
+        return -etak / k - adotoa * dgq / (k * (grho + gpres))
 
     def d_etak(self, dgq, Kcurv, z, inv_s2):
         return (0.5 * dgq + Kcurv * z) * inv_s2

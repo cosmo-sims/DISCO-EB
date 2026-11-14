@@ -24,7 +24,15 @@ from .component import (
     declared_parameters,
 )
 from .cosmology import _as_batch, _cosmology_dictionary, _is_concrete
-from .gravity import SUMS, AdiabaticMode, Background, Curvature, Metric
+from .gravity import (
+    GRAVITY_INTERFACE,
+    SUMS,
+    AdiabaticMode,
+    Background,
+    Curvature,
+    Kinematics,
+    Metric,
+)
 from .interactions import ThomsonScattering
 from .recombination import Recombination
 from .species import (
@@ -87,6 +95,14 @@ class CosmologyModel:
                 f"its settings are {sorted(known)}"
             )
         self.parameters()  # raises if two components declare one name differently
+        provided = {n for cls in self.components for n in cls.provided_names()}
+        missing = [n for n in GRAVITY_INTERFACE if n not in provided]
+        if missing:
+            raise ValueError(
+                f"{self.name} has no gravity component that provides {missing}: "
+                "the species read the expansion rate adotoa (Background) and "
+                "the metric sources z and sigma (Metric)"
+            )
 
     def __repr__(self) -> str:
         return f"CosmologyModel({self.name!r})"
@@ -347,6 +363,7 @@ def _state_names(model: CosmologyModel) -> tuple[str, ...]:
 LCDM = CosmologyModel(
     "LCDM",
     (
+        Kinematics,
         Background,
         RadiationStreaming,
         AdiabaticMode,

@@ -567,6 +567,21 @@ class Component:
         return cls._setting_names
 
     @classmethod
+    def provided_names(cls) -> tuple[str, ...]:
+        """The quantities the class's methods provide, as written (derivatives left out)."""
+
+        found = []
+        for klass in cls.__mro__:
+            if klass in _FRAMEWORK_CLASSES:
+                continue
+            for attr, member in vars(klass).items():
+                if attr.startswith(("_", "d_")) or attr == "check":
+                    continue
+                if isinstance(member, (staticmethod, types.FunctionType)):
+                    found.append(attr)
+        return tuple(dict.fromkeys(found))
+
+    @classmethod
     def named(cls, name: str):
         """Return this component under a name of its own: ``Fluid.named("dr")``.
 
@@ -589,14 +604,7 @@ class Component:
         if key not in _NAMED:
             own = [n for n, _ in cls.declared_states()]
             own += [n for n, _ in cls.declared_parameters()]
-            for klass in cls.__mro__:
-                if klass in _FRAMEWORK_CLASSES:
-                    continue
-                for attr, member in vars(klass).items():
-                    if attr.startswith(("_", "d_")) or attr == "check":
-                        continue
-                    if isinstance(member, (staticmethod, types.FunctionType)):
-                        own.append(attr)
+            own += cls.provided_names()
             renames = {n: f"{name}_{n}" for n in dict.fromkeys(own)}
             parameters = {
                 renames[n]: p.renamed(renames) for n, p in cls.declared_parameters()
@@ -672,6 +680,15 @@ class Species(Component):
     """A component with a density: it contributes to the model's sums."""
 
 
+class Gravity(Component):
+    """A component of the theory of gravity: the expansion rate, the metric and its constraints.
+
+    The species read what these provide and never each other
+    (:data:`discoeb.gravity.GRAVITY_INTERFACE`), so a model changes its
+    theory of gravity by replacing them.
+    """
+
+
 class Interaction(Component):
     """A component without state, writing the derivatives of species' state."""
 
@@ -684,7 +701,7 @@ class Interaction(Component):
             )
 
 
-_FRAMEWORK_CLASSES = (Component, Species, Interaction, object)
+_FRAMEWORK_CLASSES = (Component, Species, Gravity, Interaction, object)
 _SELF_TYPES: dict[tuple, type] = {}
 _NAMED: dict[tuple, type] = {}
 """The named copies of component classes (:meth:`Component.named`), one per class and name."""
@@ -1550,6 +1567,12 @@ class Model:
                 raise ValueError(f"{provider.label} provides {q!r}, which is given")
             elif q not in base:
                 producers[q] = provider
+        # A scalar state's rate is a quantity too: the sum of what writes it,
+        # under the name d_<state>, for a provider that needs it (a
+        # constraint that reads eta', a field equation that reads h'').
+        for name, written in derivatives.items():
+            if written and not self.states[name].shape and f"d_{name}" not in base:
+                contributions[f"d_{name}"] = written
         return producers, contributions, derivatives
 
     @staticmethod
@@ -1752,6 +1775,8 @@ class Model:
         ]
         for s in block:
             d = f"d_{s.name}"
+            if d in order:
+                continue  # a provider read the rate: it is a quantity above
             if not s.shape:
                 lines.append(
                     f"    {d} = " + " + ".join(call(p) for p in derivatives[s.name])

@@ -211,11 +211,14 @@ The codebase is organized into modular components in `src/discoeb/`:
 
 2. **species.py, interactions.py, gravity.py** - The Einstein-Boltzmann system
    as components (`eb_model.py` was split into these on 2026-11-12)
-   - `gravity.py`: `Background` (`adotoa` from the summed `grho`), `Metric`
+   - `gravity.py`: `Kinematics` (`a2`, `inv_a`, `inv_a2`, `inv_tau`,
+     `inv_k2`), `Background` (the Friedmann equation: `adotoa = sqrt(grho/3 -
+     Kcurv)` and `adotoa_prime = -(grho + 3 gpres)/6`), `Metric`
      (etak and the Einstein constraints `z`, `sigma`, and `R`, the comoving
-     curvature perturbation `-etak/k - aH dgq / (k (grho - grhok + gpres))`,
+     curvature perturbation `-etak/k - aH dgq / (k (grho + gpres))`,
      CAMB's sign, read by `solve_eb`'s hook and not by the right-hand side),
-     `Curvature`, `AdiabaticMode` (the growing-mode quantities `x`, `Rv`, `om`
+     `Curvature` (geometry: `Kcurv`, `s2`; in no sum since 2026-11-14),
+     `AdiabaticMode` (the growing-mode quantities `x`, `Rv`, `om`
      the initial conditions read) and `SUMS` (`grho`, `gpres`, `dgrho`, `dgq`,
      `dgpi`, summed over the species a model includes). The density constants
      (`GRHOM_PER_H0SQ`, ...) live here. Parameters: `H0`, `grhom` on
@@ -225,6 +228,15 @@ The codebase is organized into modular components in `src/discoeb/`:
      `grhornomass` on `MasslessNeutrinos`, `grhov` on both dark energies, the
      `w_DE_*`, `cs2_DE` on `DarkEnergy`, `Nmnu`, `mnu`, `grhor_nu`, `n_mnu`,
      `amnu` on `MassiveNeutrinos`; `tau_reio` on `Recombination`
+   - The gravity interface (2026-11-14): species contribute to `SUMS`
+     (fluids only) and read `GRAVITY_INTERFACE` = `adotoa`, `z`, `sigma`,
+     which `component.Gravity` subclasses (`Background`, `Metric`,
+     `Curvature`) provide. `CosmologyModel` raises if a model provides none
+     of one. Another theory is `LCDM.replace(Background, Other)` or
+     `replace(Metric, Other)`; the closure follows since it solves
+     `adotoa(a=1)` (`tests/test_gravity.py`). A scalar state's rate is a
+     quantity `d_<state>` any provider or hook may read (`_collect` adds it
+     to the contributions; the driver then computes it once)
    - `species.py`: `ColdDarkMatter`, `Baryons`, `Photons` (settings `LMAX_G`,
      `LMAX_POL`; states `theta` = Theta_0..LMAX_G and `e` = E_2..LMAX_POL,
      collisionless part), `MasslessNeutrinos` (`LMAX_NR`),

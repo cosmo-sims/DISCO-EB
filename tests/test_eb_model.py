@@ -68,7 +68,7 @@ def test_the_einstein_sources_sum_over_the_enabled_species():
     model, _ = build(MODELS["flat-lcdm"])
     lines = [ell.strip() for ell in model.source.splitlines()]
     assert (
-        "grho = Curvature__grho(Curvature_self, grhok) + ColdDarkMatter__grho(ColdDarkMatter_self, grhoc_t) + Baryons__grho(Baryons_self, grhob_t)"
+        "grho = ColdDarkMatter__grho(ColdDarkMatter_self, grhoc_t) + Baryons__grho(Baryons_self, grhob_t)"
         " + Photons__grho(Photons_self, grhog_t) + MasslessNeutrinos__grho(MasslessNeutrinos_self, grhor_t) + CosmologicalConstant__grho(CosmologicalConstant_self, grhov_t)"
     ) in lines
     assert (
