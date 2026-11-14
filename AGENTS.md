@@ -574,6 +574,16 @@ The typical computation flow is:
   `w(a)` crossing -1 hits `max_steps` and is silently wrong (strict `xfail`).
   The self-convergence tests are marked `slow`, which `pyproject.toml`
   deselects by default: run them with `uv run pytest tests -m slow -rs`
+- Two gates are noise-limited (measured 2026-11-14 by scaling H0 by 1 +
+  O(1e-11), on the code before and after that day's refactor alike), so a
+  change to any kernel's bits can flip them: `test_recfast_matches_class`'s
+  `c_b^2` in the T_m switch window (over its 0.2 gate in 15 to 23 of 40
+  draws; 0.5 percent of cosmologies, a few off by a factor 62, since
+  `matter_temperature_rate` switches hard and `cs2` reads the rate), and
+  `test_more_parameters_solve_eb[w_DE_a]`'s `dclxb` (3e-4 to 5e-3 against
+  1e-3). DISCO-CMB's EE derivative gate (1.2e-3 to 2.2e-3 against 2e-3) and
+  its reionization TE gate at `l = 30` (0.0195 to 0.0200 against 0.02) sit
+  as close. Rerun with a nudged H0 before bisecting one of them
 
 ## Example Notebooks
 
