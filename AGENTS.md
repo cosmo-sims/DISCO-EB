@@ -262,8 +262,11 @@ The codebase is organized into modular components in `src/discoeb/`:
 
 4. **background.py** - The expansion history
    - `density_parameters(param, xp, model)` (every parameter the model
-     declares, derived ones by `derive_parameters`, the budget closed at
-     `a = 1` with the model's `grho`), `expansion_rate` / `dtauda` (the
+     declares, derived ones by `derive_parameters`; the `closes_budget`
+     parameter is the root of `3 adotoa(a=1)^2 = grhom`, one secant step
+     where the rate is linear in it, `CLOSURE_STEPS` = 6 more through
+     `_background_solution` for a model with background states, so a scalar
+     field's `V0` may close the budget: `tests/test_quintessence.py`), `expansion_rate` / `dtauda` (the
      model's `adotoa` via `Model.evaluate(..., math=jnp)` over
      `background_model(model)`, the model's own species). Without a model
      these use `W0WACDM_MNU`, whose sum equals every built-in model's on the

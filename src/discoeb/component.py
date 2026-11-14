@@ -66,9 +66,10 @@ Parameter(value=lambda grhom, Omegam, Omegab: grhom * (Omegam - Omegab),
 directed=True)`` a kernel input derived from other parameters by name. A
 directed parameter ``x`` is a column ``x_nominal`` and a column ``dir_x``,
 and the component provides ``x = x_nominal + eps * dir_x``, so a
-sensitivity in ``eps`` is the derivative along ``dir``. One parameter,
-``grhov``, closes the density budget (``closes_budget=True``): the
-background computes it (:func:`discoeb.background.density_parameters`).
+sensitivity in ``eps`` is the derivative along ``dir``. One parameter
+closes the density budget (``closes_budget=True``, ``grhov`` in the built-in
+models): the background solves for it so that the model expands at ``H0``
+today (:func:`discoeb.background.density_parameters`).
 Two components of a model may declare one name only through the same
 :class:`Parameter` object. A ``check`` classmethod whose parameters name
 cosmology keys rejects values the component cannot represent.
@@ -327,8 +328,9 @@ class Parameter:
     for the providers to read. ``directed`` puts it there as ``x_nominal`` and
     ``dir_x`` instead and generates the provider ``x = x_nominal + eps *
     dir_x``, so the forward sensitivities may move it. ``closes_budget`` marks
-    the density the background sets so that the densities sum to the critical
-    one today.
+    the parameter the background solves for so that the model expands at
+    ``H0`` today: a density, or anything else the expansion rate depends on,
+    such as the height of a scalar field's potential.
     """
 
     def __init__(
