@@ -67,6 +67,42 @@ def test_reionization_optical_depth():
     assert abs(z_bump - z_reio_class) < 1.5, (z_bump, z_reio_class)
 
 
+def test_reionization_redshift_derivative():
+    """``z_re`` is differentiable in ``tau_reio``, and fixed where the bracket clamps it.
+
+    Inside the bisection's bracket ``[1, 40]`` the derivative is the implicit
+    one and matches a central difference. A ``tau_reio`` too small to reach
+    ``z_re = 1`` leaves ``z_re`` at the bound, so its derivative is zero, as
+    the clamped value's is.
+    """
+
+    import jax
+    import jax.numpy as jnp
+
+    from discoeb.perturbations import (
+        _as_cosmology,
+        _stack_background_params,
+        background_endpoints,
+    )
+
+    def z_re(tau_reio):
+        cosmology = _as_cosmology({**REFERENCE_COSMOLOGY, "tau_reio": 0.0}, jnp.asarray)
+        stacked = _stack_background_params((cosmology,))
+        return background_endpoints({**stacked, "tau_reio": tau_reio[None]})[2][0]
+
+    step = 1.0e-4
+    derivative = float(jax.grad(z_re)(jnp.asarray(TAU_REIO)))
+    finite = (
+        float(z_re(jnp.asarray(TAU_REIO + step)))
+        - float(z_re(jnp.asarray(TAU_REIO - step)))
+    ) / (2.0 * step)
+    assert derivative > 0.0
+    assert abs(derivative - finite) < 1.0e-3 * abs(finite), (derivative, finite)
+
+    assert float(z_re(jnp.asarray(1.0e-3))) == pytest.approx(1.0, abs=1.0e-6)
+    assert float(jax.grad(z_re)(jnp.asarray(1.0e-3))) == 0.0
+
+
 def test_no_reionization_by_default():
     """tau_reio = 0 (the default) adds no optical depth after recombination."""
 

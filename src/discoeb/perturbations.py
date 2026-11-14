@@ -629,11 +629,15 @@ def _reionization_redshift(a_bg, tau_bg, params, tau_reio):
     z_re = 0.5 * (lo + hi)
     # The bisection's midpoint carries no derivative. The implicit function
     # theorem gives it, d z_re = -d(tau_of - tau_reio) / (d tau_of / d z_re),
-    # here as a term that is zero in value.
+    # here as a term that is zero in value. Only a root inside the bracket
+    # moves: a tau_reio the bracket cannot reach leaves z_re at a bound (the
+    # bound itself never moves), and so does its derivative.
+    inside = (tau_reio > 0.0) & (lo > 1.0) & (hi < 40.0)
     residual = tau_of(z_re) - tau_reio
     slope = jax.lax.stop_gradient(jax.grad(tau_of)(z_re))
-    slope = jnp.where(tau_reio > 0.0, slope, 1.0)
-    z_re = z_re - (residual - jax.lax.stop_gradient(residual)) / slope
+    slope = jnp.where(inside, slope, 1.0)
+    moved = (residual - jax.lax.stop_gradient(residual)) / slope
+    z_re = z_re - jnp.where(inside, moved, 0.0)
     return jnp.where(tau_reio > 0.0, z_re, 0.0)
 
 
@@ -1704,7 +1708,11 @@ def solve_eb(
         JAX array, traced or not, as under ``jit``. Only those of
         :data:`DIFFERENTIABLE_PARAMETERS` may be differentiated.
     k_values
-        Wave numbers in 1/Mpc, in any order.
+        Wave numbers in 1/Mpc, in any order. ``k_values``, ``tau`` and ``a``
+        are numbers, not traced values, also under ``jit``: the number of save
+        times is compiled into the kernel's hook, and the wave numbers order
+        the launch. Pass them as fixed grids (a jitted function closes over
+        them).
     tau
         Strictly increasing conformal times in Mpc at which to record, starting
         at or after ``TAU_START``. Every launch starts at ``TAU_START``, so a
