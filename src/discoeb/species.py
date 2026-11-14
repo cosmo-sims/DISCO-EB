@@ -67,6 +67,9 @@ class ColdDarkMatter(Species):
     def grho(self, grhoc_t):
         return grhoc_t
 
+    def grho_matter(self, grhoc_t):
+        return grhoc_t
+
     def dgrho(self, grhoc_t, clxc):
         return grhoc_t * clxc
 
@@ -95,6 +98,9 @@ class Baryons(Species):
     def grho(self, grhob_t):
         return grhob_t
 
+    def grho_matter(self, grhob_t):
+        return grhob_t
+
     def dgrho(self, grhob_t, clxb):
         return grhob_t * clxb
 
@@ -121,7 +127,10 @@ class Fluid(Species):
     with no anisotropic stress. Its density today is ``Omega`` of the
     critical one and scales as ``a^(-3(1+w))``. It starts in the adiabatic
     mode, ``delta = (1 + w) clxc`` at rest. ``w = cs2 = 0`` is a second cold
-    dark matter and ``w = cs2 = 1/3`` a dark radiation without shear.
+    dark matter and ``w = cs2 = 1/3`` a dark radiation without shear. The
+    growing mode's series does not count it: a subclass that is matter or
+    radiation contributes its ``grho_t`` to ``grho_matter`` or
+    ``grho_radiation``.
 
     Its names (``delta``, ``theta``, ``w``, ``cs2``) are generic, so a model
     lists it under a name of its own, any number of times::
@@ -294,6 +303,9 @@ class Photons(Species):
     def grho(self, grhog_t):
         return grhog_t
 
+    def grho_radiation(self, grhog_t):
+        return grhog_t
+
     def clxg(self, theta, rsa, rsa_delta):
         return theta[0] + rsa * (rsa_delta - theta[0])
 
@@ -379,6 +391,12 @@ class MasslessNeutrinos(Species):
         return grhornomass * inv_a2
 
     def grho(self, grhor_t):
+        return grhor_t
+
+    def grho_radiation(self, grhor_t):
+        return grhor_t
+
+    def grho_free_streaming(self, grhor_t):
         return grhor_t
 
     def dgrho(self, grhor_t, n, rsa):

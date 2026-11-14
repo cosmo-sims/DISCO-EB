@@ -35,6 +35,10 @@ class SecondDarkMatter(Species):
     def grho(self, grhox_t):
         return grhox_t
 
+    def grho_matter(self, grhox_t):
+        """It is matter to the growing mode's initial conditions."""
+        return grhox_t
+
     def dgrho(self, grhox_t, clxx):
         return grhox_t * clxx
 
@@ -146,6 +150,24 @@ def test_the_right_hand_side_reads_the_generated_provider():
     assert (model.index["etak"], model.index["clxx"]) in pattern
 
 
+def test_the_growing_mode_counts_the_new_species_as_matter():
+    """Splitting the dark matter leaves the initial state alone: ``om`` sums ``grho_matter``."""
+
+    from discoeb.kernel import joint_model, make_initial_states
+
+    k = np.array([1.0e-2, 1.0e-1])
+    plain = make_initial_states(
+        COSMOLOGY, k, joint_model(LCDM), -15.0, cosmology_model=LCDM
+    )
+    split = make_initial_states(
+        _split(COSMOLOGY), k, joint_model(LCDM_X), -15.0, cosmology_model=LCDM_X
+    )
+    n = len(LCDM.state_names())
+    np.testing.assert_allclose(split[:, :n], plain[:, :n], rtol=1e-12)
+    # the neutrino quadrupole carries the O(om tau) term that reads the sum
+    assert (plain[:, joint_model(LCDM).index["n_2"]] != 0.0).all()
+
+
 SOLVE_K = np.geomspace(1.0e-3, 0.3, 8)
 SOLVE_TAU = np.geomspace(1.0, 2.0e4, 16)  # the last lies past tau0
 
@@ -173,9 +195,9 @@ def test_splitting_the_dark_matter_leaves_the_solve_unchanged():
     np.testing.assert_allclose(split.tau0, plain.tau0, rtol=1e-12)
     # The same equations and initial state; the fp32 LU tells the columns apart.
     np.testing.assert_allclose(split["clxx"], split["clxc"], rtol=1e-5)
-    # Not theta_2: AdiabaticMode's matter parameter om reads grhoc + grhob,
-    # so the initial state's O(om tau) terms leave out the second fluid.
-    for name in ("clxc", "R"):
+    # theta_2 too: the growing mode's matter parameter om sums grho_matter,
+    # which the second fluid contributes to.
+    for name in ("clxc", "R", "theta_2"):
         a, b = np.asarray(split[name]), np.asarray(plain[name])
         assert np.abs(a - b).max() < 1e-3 * np.abs(b).max(), name
 

@@ -44,7 +44,16 @@ GRHOG_PER_TCMB4 = 1.49594245e-13  # photons, per K^4
 GRHOR_PER_TCMB4 = 3.39739477e-14  # one massless neutrino flavour, per K^4
 C2OK = 1.62581581e4  # K / eV: amnu = m_nu c^2 / (k_B T_nu0) = mnu * C2OK / Tcmb
 
-SUMS = ("grho", "gpres", "dgrho", "dgq", "dgpi")
+SUMS = (
+    "grho",
+    "gpres",
+    "dgrho",
+    "dgq",
+    "dgpi",
+    "grho_matter",
+    "grho_radiation",
+    "grho_free_streaming",
+)
 """The quantities summed over species.
 
 ``grho`` is the Friedmann density and ``gpres = Sum 8 pi G p_i a^2`` the
@@ -53,7 +62,14 @@ pressure (CAMB's, so the comoving curvature perturbation can divide by
 source the Einstein constraints. ``dgpi = Sum grho_i_t pi_i`` is the
 anisotropic stress the line-of-sight sources' Weyl potential needs. Spatial
 curvature is no fluid and contributes to none of them: the Friedmann equation
-reads it as :meth:`Curvature.Kcurv`."""
+reads it as :meth:`Curvature.Kcurv`.
+
+The last three sort the densities for the initial conditions
+(:class:`AdiabaticMode`): ``grho_matter`` the pressureless species,
+``grho_radiation`` the relativistic ones and ``grho_free_streaming`` those
+of the radiation that stream freely (the neutrinos). A species says what it
+is by contributing its density, so the growing mode counts one added from
+outside the package."""
 
 GRAVITY_INTERFACE = ("adotoa", "z", "sigma")
 """What every species reads of gravity, and a model's gravity components provide:
@@ -106,8 +122,10 @@ class AdiabaticMode(Component):
     """The adiabatic growing mode deep in radiation domination.
 
     CAMB's ``initial()`` series at ``x = k tau << 1``, normalised to unit
-    comoving curvature: the neutrino fraction of the radiation ``Rv``, the
-    matter-radiation parameter ``om`` and their combinations. The host
+    comoving curvature: the free-streaming fraction of the radiation ``Rv``,
+    the matter-radiation parameter ``om`` and their combinations. Both come
+    from sums over the species (``grho_matter``, ``grho_radiation``,
+    ``grho_free_streaming``), ratios in which the scale factor cancels. The host
     evaluates them from the background densities when it assembles the
     initial state, and the states' ``initial`` functions read them by name.
     The primordial spectrum ``A_s (k / k_p)^(n_s - 1)`` scales the mode. The
@@ -121,14 +139,15 @@ class AdiabaticMode(Component):
     def x(self, k, tau):
         return k * tau
 
-    def Rv(self, grhog, grhornomass):
-        return grhornomass / (grhog + grhornomass)
+    def Rv(self, grho_free_streaming, grho_radiation):
+        return grho_free_streaming / grho_radiation
 
     def Rp15(self, Rv):
         return 4.0 * Rv + 15.0
 
-    def om(self, grhob, grhoc, grhog, grhornomass):
-        return (grhob + grhoc) / math.sqrt(3.0 * (grhog + grhornomass))
+    def om(self, grho_matter, grho_radiation):
+        """``grho_m / sqrt(3 grho_r)`` of the densities today: ``a`` cancels between ``1/a`` and ``1/a^2``."""
+        return grho_matter / math.sqrt(3.0 * grho_radiation)
 
     def omtau(self, om, tau):
         return om * tau

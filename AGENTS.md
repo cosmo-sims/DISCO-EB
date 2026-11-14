@@ -220,7 +220,12 @@ The codebase is organized into modular components in `src/discoeb/`:
      `Curvature` (geometry: `Kcurv`, `s2`; in no sum since 2026-11-14),
      `AdiabaticMode` (the growing-mode quantities `x`, `Rv`, `om`
      the initial conditions read) and `SUMS` (`grho`, `gpres`, `dgrho`, `dgq`,
-     `dgpi`, summed over the species a model includes). The density constants
+     `dgpi`, summed over the species a model includes, and `grho_matter`,
+     `grho_radiation`, `grho_free_streaming`, from which `Rv` and `om` are
+     ratios with `a` cancelling, so a new species enters the initial
+     conditions by contributing its density; `MassiveNeutrinos` and `Fluid`
+     contribute to none, as before 2026-11-14 when the four densities were
+     named). The density constants
      (`GRHOM_PER_H0SQ`, ...) live here. Parameters: `H0`, `grhom` on
      `Background`, `A_s`, `n_s`, `k_p` on `AdiabaticMode`, `Omegak`, `grhok`
      on `Curvature`; in `species.py` `Omegam`, `grhoc` on CDM, `Omegab`,
