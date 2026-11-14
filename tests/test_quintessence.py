@@ -164,12 +164,49 @@ def _power(model, cosmology, k):
     return np.asarray(pk), np.asarray(solution["a"])[0, :, -1]
 
 
-@pytest.mark.skipif(not _cuda_available(), reason="needs a CUDA GPU")
-def test_the_solve_matches_lcdm_and_the_fluid_the_field_rolls_like():
+def _growth(model, cosmology):
+    """The matter growth factor today in the model's background: ``delta'' + aH delta' = 4 pi G a^2 rho_m delta``.
+
+    Heun steps in ``ln a`` on the background's own grid, from ``a = 1e-5``.
+    Only the ratio between two models that agree early on is meaningful.
+    """
+
     import jax.numpy as jnp
 
     from discoeb.background import _background_solution, background_model
-    from discoeb.models import W0WACDM
+
+    d = _densities(model, cosmology)
+    a, _, states = _background_solution(d, model)
+    rate = np.asarray(
+        background_model(model).evaluate("adotoa", math=jnp, a=a, **states, **d)
+    )
+    a = np.asarray(a)
+    source = 0.5 * float(d["grhoc"] + d["grhob"]) / a
+    lna = np.log(a)
+    delta, slope = 1.0, 0.0
+    for i in range(int(np.searchsorted(a, 1.0e-5)), len(a) - 1):
+        h = lna[i + 1] - lna[i]
+        f0 = (slope / rate[i], (-rate[i] * slope + source[i] * delta) / rate[i])
+        d1, s1 = delta + h * f0[0], slope + h * f0[1]
+        f1 = (
+            s1 / rate[i + 1],
+            (-rate[i + 1] * s1 + source[i + 1] * d1) / rate[i + 1],
+        )
+        delta += 0.5 * h * (f0[0] + f1[0])
+        slope += 0.5 * h * (f0[1] + f1[1])
+    return delta
+
+
+@pytest.mark.skipif(not _cuda_available(), reason="needs a CUDA GPU")
+def test_the_solve_matches_lcdm_and_the_growth_in_the_fields_background():
+    """A flat potential gives LCDM, and a rolling field suppresses ``P(k)`` as its expansion history says.
+
+    Inside the horizon a field with unit sound speed does not cluster, so
+    the power relative to LCDM is the squared ratio of the growth factors
+    in the two backgrounds, which the host integrates on its own. (A CPL
+    fluid through the field's equation of state would cross ``w = -1`` in
+    the past, which the fluid equations cannot.)
+    """
 
     k = np.geomspace(1.0e-3, 0.3, 8)
     lcdm, _ = _power(LCDM, COSMOLOGY, k)
@@ -181,22 +218,9 @@ def test_the_solve_matches_lcdm_and_the_fluid_the_field_rolls_like():
     field, a_field = _power(QCDM, rolling, k)
     # the kernel's own integration of the field ends today where the host's did
     np.testing.assert_allclose(a_field, 1.0, rtol=1e-4)
-    assert (field < lcdm).all()  # dark energy that sets in earlier: less growth
-
-    # the CPL fluid through the field's equation of state today and at a = 1/2
-    d = _densities(QCDM, rolling)
-    a, _, states = _background_solution(d, QCDM)
-
-    def w_at(i):
-        at = {name: values[i] for name, values in states.items()}
-        grho, gpres = background_model(QCDM).evaluate(
-            "V", "phidot", math=jnp, a=a[i], **at, **d
-        )
-        kinetic, potential = 0.5 * float(gpres) ** 2, float(a[i]) ** 2 * float(grho)
-        return (kinetic - potential) / (kinetic + potential)
-
-    half = int(np.argmin(np.abs(np.asarray(a) - 0.5)))
-    w0 = w_at(-1)
-    wa = (w_at(half) - w0) / (1.0 - float(a[half]))
-    fluid, _ = _power(W0WACDM, {**COSMOLOGY, "w_DE_0": w0, "w_DE_a": wa}, k)
-    np.testing.assert_allclose(field / lcdm, fluid / lcdm, rtol=1e-2)
+    suppression = field / lcdm
+    growth = (_growth(QCDM, rolling) / _growth(LCDM, COSMOLOGY)) ** 2
+    assert 0.9 < growth < 0.99  # dark energy that sets in earlier: less growth
+    np.testing.assert_allclose(suppression[k > 0.01], growth, rtol=1e-3)
+    # near the horizon the field's own perturbation takes part
+    assert suppression[0] > suppression[-1] + 3e-3
