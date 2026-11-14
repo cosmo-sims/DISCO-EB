@@ -1431,37 +1431,34 @@ class Model:
             on = _depends(values[q])
             return bool(on) and on <= elements
 
-        # what the perturbation equations need, and which of it reads the background
-        needed: set[str] = set()
-        stack = [
+        # what the perturbation equations need, directly and through quantities
+        direct = {
             d for name in perturbations for p in derivatives[name] for d in p.params
-        ]
-        sinks: set[str] = set()
-        direct = set(stack)
+        }
+        needed: set[str] = set()
+        stack = list(direct)
         while stack:
             q = stack.pop()
             if q in needed or (q not in producers and q not in contributions):
                 continue
             needed.add(q)
             stack.extend(reads(q))
-        nodes = [
-            n for n in background if n in direct or any(n in reads(q) for q in needed)
-        ]
-        nodes += [q for q in needed if is_background(q)]
-        inside = set(nodes) | set(background)
-        for q in needed - inside:
-            sinks.update(d for d in reads(q) if d in inside)
-        sinks.update(d for d in direct if d in inside)
+        # the graph between the background states and the first readers that
+        # are not background themselves
+        inside = set(background) | {q for q in needed if is_background(q)}
+        sinks = (direct & inside) | {
+            d for q in needed - inside for d in reads(q) if d in inside
+        }
         edges = [
             (d, q)
-            for q in nodes
+            for q in inside
             if q not in self.states
             for d in reads(q)
             if d in inside
         ]
         weight = {n: (self.states[n].size if n in self.states else 1) for n in inside}
         cut = _minimum_vertex_cut(
-            weight, edges, sources=[n for n in background], sinks=sorted(sinks)
+            weight, edges, sources=background, sinks=sorted(sinks)
         )
         vectors = [n for n in cut if n in self.states and self.states[n].shape]
         if vectors:
