@@ -34,7 +34,6 @@ from .kernel import (
 from .models import W0WACDM_MNU, CosmologyBatch, CosmologyModel, _batch_of
 from .recombination import THERMO_ERROR_WEIGHT
 from .sensitivities import _directed_inputs, _kept_values
-from .species import MassiveNeutrinos
 
 
 def solve_perturbation_history_batch(
@@ -327,18 +326,13 @@ def differentiable_parameters(model: CosmologyModel) -> tuple[str, ...]:
 
     Those the model's components declare (:meth:`CosmologyModel.parameter_keys
     <discoeb.models.CosmologyModel.parameter_keys>`): ``w_DE_0`` and
-    ``w_DE_a`` need :class:`~discoeb.species.DarkEnergy`. ``mnu`` needs
-    :class:`~discoeb.species.MassiveNeutrinos`, though the recombination
-    block declares it for every model's background. Differentiating another
-    key raises.
+    ``w_DE_a`` need :class:`~discoeb.species.DarkEnergy` and ``mnu``
+    :class:`~discoeb.species.MassiveNeutrinos`. Differentiating another key
+    raises.
     """
 
     keys = model.parameter_keys()
-    return tuple(
-        key
-        for key in DIFFERENTIABLE_PARAMETERS
-        if key in keys and (key != "mnu" or model.has(MassiveNeutrinos))
-    )
+    return tuple(key for key in DIFFERENTIABLE_PARAMETERS if key in keys)
 
 
 def directed_inputs(cosmologies) -> jax.Array:

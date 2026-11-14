@@ -57,8 +57,6 @@ import math
 import os
 
 from .component import Component, Parameter, State, float32, float64
-from .species import MassiveNeutrinos
-from .util import neutrino_momentum_bins
 
 # RECFAST's physical and atomic constants (PDG 2023 where noted).
 const_mH = 1.67353284e-27  # H atom mass [kg], PDG 2023
@@ -154,9 +152,6 @@ T_1 = 10 ** (5.114)
 # HeI triplet recombination rate fit parameters
 a_trip = 10.0 ** (-16.306)
 b_trip = 0.761
-
-NQ_NU_BACKGROUND = 8
-"""Number of momentum nodes for the massive-neutrino background density in the recombination block."""
 
 Z_H_SAHA_END = 1600.0
 """Redshift below which hydrogen follows the rate equation instead of Saha
@@ -496,9 +491,10 @@ class Recombination(Component):
     :mod:`discocmb.cmb` forms the visibility
     ``kappa'(tau) exp(-(kappa(tau_0) - kappa(tau)))``. The hierarchy reads
     ``a``, ``opacity``
-    (``kappa' = x_e n_H sigma_T a``, with reionization), ``cs2`` (from ``T_m``
-    and its own rate, no spline derivative) and ``rhonu`` (the
-    :data:`NQ_NU_BACKGROUND`-node quadrature).
+    (``kappa' = x_e n_H sigma_T a``, with reionization) and ``cs2`` (from
+    ``T_m`` and its own rate, no spline derivative). Nothing marks these
+    states as the background: their rates read no wave number, and
+    :meth:`Model.stages <discoeb.component.Model.stages>` finds that.
     """
 
     lna = State(initial=lambda lna_start: lna_start)
@@ -506,18 +502,8 @@ class Recombination(Component):
     kappa = State()
 
     # The reionization optical depth sets the solver's column z_re. The
-    # massive-neutrino background ratios read the neutrino mass, so the block
-    # shares its declarations with MassiveNeutrinos, which may be absent. The
     # rates read YHe, Tcmb, H0 and Omegab, which the species declare.
     tau_reio = Parameter(0.0)
-    mnu = MassiveNeutrinos.mnu
-    amnu = MassiveNeutrinos.amnu
-
-    def __init__(self, **settings):
-        super().__init__(**settings)
-        q, w, _ = neutrino_momentum_bins(NQ_NU_BACKGROUND)
-        self.nu_q = tuple(float(x) for x in q)
-        self.nu_w = tuple(float(x) for x in w)
 
     # What the hierarchy reads
 
@@ -533,25 +519,6 @@ class Recombination(Component):
         ``exp`` costs nothing measurable.
         """
         return math.exp(lna)
-
-    def rhonu(self, a, amnu):
-        """``rho_nu / rho_nu(massless)`` of one flavour, 1 if massless."""
-        total = 1.0
-        if amnu > 0.0:
-            total = 0.0
-            for i in range(len(self.nu_q)):
-                total += self.nu_w[i] * math.sqrt(1.0 + (a * amnu / self.nu_q[i]) ** 2)
-        return total
-
-    def pnu(self, a, amnu):
-        """``p_nu / rho_nu(massless)`` of one flavour: ``(rhonu - d rhonu / d ln a) / 3``, 1/3 if massless."""
-        total = 1.0 / 3.0
-        if amnu > 0.0:
-            total = 0.0
-            for i in range(len(self.nu_q)):
-                total += self.nu_w[i] / math.sqrt(1.0 + (a * amnu / self.nu_q[i]) ** 2)
-            total *= 1.0 / 3.0
-        return total
 
     def fHe(self, YHe):
         return YHe / (const_mHe_mH * (1.0 - YHe))

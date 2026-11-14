@@ -1,4 +1,4 @@
-"""The expansion history: density coefficients, the Friedmann sum and the neutrino background.
+"""The expansion history: density coefficients, the Friedmann sum and the conformal time.
 
 The background uses the same species as the perturbations.
 :meth:`~discoeb.component.Model.evaluate` computes the kernel's Friedmann sum
@@ -27,39 +27,6 @@ from .gravity import (  # noqa: F401 (the density constants, re-exported)
 )
 from .models import W0WACDM_MNU, CosmologyModel
 from .recombination import recombination_model
-from .util import neutrino_momentum_bins
-
-# The density coefficients are in CAMB's convention (see discoeb.gravity), and
-# the species declare how each derives from the cosmology's keys.
-
-NQ_NEUTRINO_TABLE = 100
-"""Momentum nodes for the massive-neutrino background density. ``rho_nu(a)``
-and the budget closing both integrate the Fermi-Dirac distribution on
-these."""
-
-
-def neutrino_density_ratio(a, amnu, xp=jnp):
-    """``rho_nu(a) / rho_nu,massless`` of one flavour of mass ``amnu`` (1 when massless).
-
-    Sums the Fermi-Dirac quadrature on ``NQ_NEUTRINO_TABLE`` momentum nodes,
-    which depends only on ``y = amnu * a``. With ``xp=jnp`` (the default) it
-    traces under ``jit``; with ``xp=np`` it runs on the host, for closing the
-    budget of a cosmology given as floats.
-    """
-
-    q, w, _ = neutrino_momentum_bins(NQ_NEUTRINO_TABLE)
-    if xp is np:
-        y = np.asarray(a, dtype=np.float64) * float(amnu)
-        return np.sum(w * np.sqrt(1.0 + (y[..., None] / q) ** 2), axis=-1)
-    y = jnp.asarray(a) * amnu
-    # An elementwise sum over the nodes, not jnp.sum over a trailing node
-    # axis: vmapped over a batch's background grid, XLA emits that reduction
-    # as one unrolled kernel per row block, which ptxas took half an hour to
-    # assemble for 128 cosmologies.
-    ratio = sum(
-        float(wi) * jnp.sqrt(1.0 + (y / float(qi)) ** 2) for qi, wi in zip(q, w)
-    )
-    return jnp.where(amnu > 0.0, ratio, 1.0)
 
 
 def background_model(model: CosmologyModel | None = None) -> Model:
@@ -99,13 +66,8 @@ def density_parameters(param, xp=jnp, model: CosmologyModel | None = None) -> di
     math_module = math if xp is np else jnp
 
     def close(name, values):
-        amnu = values.get("amnu", 0.0)
         without = background.evaluate(
-            "grho",
-            math=math_module,
-            a=1.0,
-            rhonu=neutrino_density_ratio(1.0, amnu, xp),
-            **{**values, name: 0.0},
+            "grho", math=math_module, a=1.0, **{**values, name: 0.0}
         )
         return values["grhom"] - without
 
@@ -116,10 +78,7 @@ def density_parameters(param, xp=jnp, model: CosmologyModel | None = None) -> di
 def expansion_rate(a, densities, model: CosmologyModel | None = None):
     """The conformal Hubble rate ``a'/a = a H`` at scalar ``a``, from the model's ``adotoa``."""
 
-    rhonu = neutrino_density_ratio(a, densities.get("amnu", 0.0))
-    return background_model(model).evaluate(
-        "adotoa", math=jnp, a=a, rhonu=rhonu, **densities
-    )
+    return background_model(model).evaluate("adotoa", math=jnp, a=a, **densities)
 
 
 def dtauda(a, densities, model: CosmologyModel | None = None):
@@ -151,22 +110,93 @@ def density_coefficients(cosmology) -> tuple[float, float, float, float, float]:
     return (d["grhog"], d["grhornomass"], d["grhoc"], d["grhob"], d["grhov"])
 
 
-def _background_tau(d, model: CosmologyModel | None = None):
-    """Return ``(a_grid, tau_grid)`` of the conformal-time quadrature for densities ``d`` (JAX)."""
+A_START = 1.0e-9
+"""The scale factor the background's conformal time is integrated from."""
 
-    a_bg = jnp.geomspace(1.0e-9, 1.0, N_BACKGROUND_GRID)
-    dt = jax.vmap(lambda a: dtauda(a, d, model))(a_bg)
-    steps = 0.5 * (dt[1:] + dt[:-1]) * jnp.diff(a_bg)
-    # the radiation that sets tau at the grid's start
-    radiation = (
-        d["grhog"]
-        + d["grhornomass"]
-        + d.get("grhor_nu", 0.0)
-        * d.get("n_mnu", 0.0)
-        * neutrino_density_ratio(1.0e-9, d.get("amnu", 0.0))
+
+def _background_solution(d, model: CosmologyModel | None = None):
+    """Return ``(a_grid, tau_grid, states)`` of the background for the parameters ``d`` (JAX).
+
+    The grid is geometric in ``a`` from :data:`A_START` to 1, where the
+    time starts at ``1 / (a'/a)``, its value under radiation. If the
+    model's Friedmann rate is a function of ``a`` (every built-in model's),
+    the time is the quadrature of ``d tau / d a`` and ``states`` is empty.
+
+    A model may also evolve background states of its own: a scalar field,
+    a density that decays (:meth:`Model.stages
+    <discoeb.component.Model.stages>` finds them). Their rates in ``ln a``,
+    ``y' / (a'/a)``, are then integrated along the grid with the time by
+    fixed Runge-Kutta steps of 0.005 in ``ln a``, from the states' initial
+    conditions at :data:`A_START`. ``states`` holds each one on the grid.
+    That resolves anything that varies on a Hubble time and not a field
+    oscillating faster.
+    """
+
+    background = background_model(model)
+    names = background.stages()[0]
+    a_bg = jnp.geomspace(A_START, 1.0, N_BACKGROUND_GRID)
+    if not names:
+        dt = jax.vmap(lambda a: dtauda(a, d, model))(a_bg)
+        steps = 0.5 * (dt[1:] + dt[:-1]) * jnp.diff(a_bg)
+        tau_start = 1.0 / expansion_rate(A_START, d, model)
+        tau = jnp.concatenate((jnp.zeros((1,)), jnp.cumsum(steps))) + tau_start
+        return a_bg, tau, {}
+    vectors = [n for n in names if background.states[n].shape]
+    if vectors:
+        raise NotImplementedError(
+            f"the background states {vectors} are vectors; the background "
+            "integrates scalar states"
+        )
+    rate_names = tuple(f"d_{n}" for n in names)
+
+    def rates(lna, y):
+        tau, values = y
+        adotoa, *moving = background.evaluate(
+            "adotoa",
+            *rate_names,
+            math=jnp,
+            a=jnp.exp(lna),
+            tau=tau,
+            **dict(zip(names, values)),
+            **d,
+        )
+        return 1.0 / adotoa, tuple(rate / adotoa for rate in moving)
+
+    def step(y, span):
+        lna, h = span
+
+        def moved(by, slope):
+            return jax.tree.map(lambda v, s: v + by * s, y, slope)
+
+        k1 = rates(lna, y)
+        k2 = rates(lna + 0.5 * h, moved(0.5 * h, k1))
+        k3 = rates(lna + 0.5 * h, moved(0.5 * h, k2))
+        k4 = rates(lna + h, moved(h, k3))
+        new = jax.tree.map(
+            lambda v, a, b, c, e: v + h / 6.0 * (a + 2.0 * b + 2.0 * c + e),
+            y,
+            k1,
+            k2,
+            k3,
+            k4,
+        )
+        return new, new
+
+    lna = jnp.log(a_bg)
+    initial = background.evaluate(
+        *names, "adotoa", math=jnp, a=A_START, lna_start=lna[0], **d
     )
-    taumin = 1.0e-9 / jnp.sqrt(radiation / 3.0)
-    return a_bg, jnp.concatenate((jnp.zeros((1,)), jnp.cumsum(steps))) + taumin
+    y0 = (
+        1.0 / initial[-1],
+        tuple(jnp.asarray(v, dtype=jnp.float64) for v in initial[:-1]),
+    )
+    _, (tau, values) = jax.lax.scan(step, y0, (lna[:-1], jnp.diff(lna)))
+    tau = jnp.concatenate((y0[0][None], tau))
+    states = {
+        name: jnp.concatenate((first[None], rest))
+        for name, first, rest in zip(names, y0[1], values)
+    }
+    return a_bg, tau, states
 
 
 def _reionization_redshift(a_bg, tau_bg, params, tau_reio):
@@ -205,7 +235,7 @@ def _reionization_redshift(a_bg, tau_bg, params, tau_reio):
 
 @functools.partial(jax.jit, static_argnums=(1,))
 def background_endpoints(stacked, model: CosmologyModel | None = None):
-    """Return ``(tau0, lna_start, z_re)`` of stacked background parameters, one vmap lane each.
+    """Return ``(tau0, lna_start, z_re, start)`` of stacked background parameters, one vmap lane each.
 
     ``model`` gives the species (:func:`background_model`).
 
@@ -213,14 +243,19 @@ def background_endpoints(stacked, model: CosmologyModel | None = None):
     ``ln a`` at :data:`TAU_START`, where it starts. ``z_re`` is the reionization
     redshift that gives ``tau_reio`` (0 without reionization). The bisection for
     it runs on the background and neglects the residual ionization left by
-    recombination, which shifts ``tau_reio`` by 2e-4 of itself.
+    recombination, which shifts ``tau_reio`` by 2e-4 of itself. ``start``
+    holds the model's own background states at :data:`TAU_START` by name
+    (:func:`_background_solution`), empty for the built-in models.
     """
 
     def one(params):
-        a_bg, tau_bg = _background_tau(density_parameters(params, model=model), model)
+        a_bg, tau_bg, states = _background_solution(
+            density_parameters(params, model=model), model
+        )
         lna_start = jnp.log(jnp.interp(TAU_START, tau_bg, a_bg))
         z_re = _reionization_redshift(a_bg, tau_bg, params, params["tau_reio"])
-        return tau_bg[-1], lna_start, z_re
+        start = {n: jnp.interp(TAU_START, tau_bg, v) for n, v in states.items()}
+        return tau_bg[-1], lna_start, z_re, start
 
     return jax.vmap(one)(stacked)
 
@@ -234,4 +269,4 @@ def background_history(cosmology):
 @functools.lru_cache(maxsize=64)
 def _background_history(cosmology: _ParamCosmology):
     d = {k: jnp.asarray(v) for k, v in _densities(cosmology).items()}
-    return tuple(np.asarray(x) for x in _background_tau(d))
+    return tuple(np.asarray(x) for x in _background_solution(d)[:2])

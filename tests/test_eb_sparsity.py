@@ -18,7 +18,7 @@ colour_sparsity = pytest.importorskip("modax._sparsity").colour_sparsity
 normalize_sparsity = pytest.importorskip("modax._sparsity").normalize_sparsity
 
 
-ORDER_ONE = dict(a=0.5, opacity=3.0, cs2=0.3, rhonu=2.0)
+ORDER_ONE = dict(a=0.5, opacity=3.0, cs2=0.3)
 """Thermal channels of order one: the finite differences below must resolve
 every coupling, and at a realistic ``cs2 ~ 1e-8`` or ``a ~ 1e-3`` the baryon
 pressure and the dark-energy density fall below the rounding of the rest of

@@ -831,7 +831,7 @@ class _HostValues:
         self.model, self.values, self.names = model, dict(base), names
         self.xp = xp
         self.memo = {} if memo is None else memo
-        self.providers, self.contributions = model._host_providers()
+        self.providers, self.contributions, self.derivatives = model._host_providers()
         self.resolving: list[str] = []
         # trailing axes of every state's value (the wave modes of a vectorised
         # initial state), so a vector state's filler writes rows of them
@@ -863,16 +863,18 @@ class _HostValues:
                 args = [output if p == OUTPUT else self[p] for p in params]
                 filled = self._call(fn, s.component, takes_self, args)
                 result = output.array() if s.shape else filled
-        elif name in self.model.sums:
+        elif name in self.contributions:
             parts = [
                 self._call(p.fn, p.component, p.takes_self, [self[d] for d in p.params])
-                for p in self.contributions.get(name, ())
+                for p in self.contributions[name]
             ]
             if not parts:
                 raise NameError(f"nothing contributes to the sum {name!r}")
             result = parts[0]
             for part in parts[1:]:
                 result = result + part
+        elif name.startswith("d_") and name[2:] in self.model.states:
+            result = self._rate(self.model.states[name[2:]])
         elif name in self.providers:
             p = self.providers[name]
             result = self._call(
@@ -883,6 +885,26 @@ class _HostValues:
         self.resolving.pop()
         self.values[name] = result
         return result
+
+    def _rate(self, s):
+        """A state's derivative: the sum of the contributions the components write."""
+
+        written = self.derivatives[s.name]
+        if not written:
+            raise NameError(f"no component writes the derivative of {s.name!r}")
+        total = None
+        for p in written:
+            if s.shape:
+                output = _Filled(s.shape, self.batch_shape, self.xp)
+                args = [output if n == OUTPUT else self[n] for n in p.signature]
+                self._call(p.fn, p.component, p.takes_self, args)
+                part = output.array()
+            else:
+                part = self._call(
+                    p.fn, p.component, p.takes_self, [self[d] for d in p.params]
+                )
+            total = part if total is None else total + part
+        return total
 
 
 # --- sparsity -------------------------------------------------------------------------
@@ -994,6 +1016,10 @@ _TRACING_NAMES = {
 }
 
 
+MARKED = -1
+"""The pseudo-element a marked input carries through a trace (:meth:`Model.stages`)."""
+
+
 class _TracedValues(_HostValues):
     """The pool of :meth:`Model.sparsity`: every quantity as the state elements it depends on.
 
@@ -1007,7 +1033,7 @@ class _TracedValues(_HostValues):
     switch between regimes) depends on all of its inputs.
     """
 
-    def __init__(self, model):
+    def __init__(self, model, marked: Sequence[str] = ()):
         base = {}
         for s in model.states.values():
             base[s.name] = (
@@ -1016,15 +1042,20 @@ class _TracedValues(_HostValues):
                 else _traced_array(s.shape, s.offset)
             )
         super().__init__(model, base, _TRACING_NAMES)
+        # inputs to follow like a state: each carries the pseudo-element MARKED
+        self.marked = frozenset(marked)
 
     def __getitem__(self, name):
         if (
             name not in self.values
             and name not in self.model.states
-            and name not in self.model.sums
+            and name not in self.contributions
             and name not in self.providers
         ):
-            self.values[name] = _Traced()  # an input
+            # an input
+            self.values[name] = (
+                _Traced(frozenset({MARKED})) if name in self.marked else _Traced()
+            )
         return super().__getitem__(name)
 
     def _call(self, fn, component, takes_self, args):
@@ -1042,6 +1073,67 @@ class _TracedValues(_HostValues):
                 if isinstance(a, np.ndarray) and a.dtype == object and not _depends(a):
                     a[...] = _Traced(on)  # the output buffer it fills
             return _Traced(on)
+
+
+def _minimum_vertex_cut(weight, edges, sources, sinks) -> set:
+    """The lightest set of vertices separating ``sources`` from ``sinks``, nearest the sinks.
+
+    A vertex cut is an edge cut of the graph with every vertex split into an
+    arc of its weight, so this runs Edmonds-Karp on that graph. A source or a
+    sink may itself be cut. Of the minimum cuts it returns the one whose
+    sink side is smallest.
+    """
+
+    INF = float("inf")
+    capacity: dict = {}
+    arcs: dict = {}
+
+    def arc(u, v, c):
+        capacity[u, v] = capacity.get((u, v), 0.0) + c
+        capacity.setdefault((v, u), 0.0)
+        arcs.setdefault(u, set()).add(v)
+        arcs.setdefault(v, set()).add(u)
+
+    for n, w in weight.items():
+        arc(("in", n), ("out", n), float(w))
+    for u, v in edges:
+        arc(("out", u), ("in", v), INF)
+    for n in sources:
+        arc("source", ("in", n), INF)
+    for n in sinks:
+        arc(("out", n), "sink", INF)
+
+    def search(start, forward):
+        parent = {start: None}
+        queue = [start]
+        for u in queue:
+            for v in arcs.get(u, ()):
+                residual = capacity[u, v] if forward else capacity[v, u]
+                if v not in parent and residual > 0.0:
+                    parent[v] = u
+                    queue.append(v)
+        return parent
+
+    while True:
+        parent = search("source", True)
+        if "sink" not in parent:
+            break
+        path, v = [], "sink"
+        while parent[v] is not None:
+            path.append((parent[v], v))
+            v = parent[v]
+        flow = min(capacity[e] for e in path)
+        if flow == INF:
+            raise ValueError("no finite cut separates the sources from the sinks")
+        for u, v in path:
+            capacity[u, v] -= flow
+            capacity[v, u] += flow
+    reaches_sink = search("sink", False)
+    return {
+        n
+        for n in weight
+        if ("out", n) in reaches_sink and ("in", n) not in reaches_sink
+    }
 
 
 class Model:
@@ -1093,10 +1185,10 @@ class Model:
         return self._provider_list
 
     def _host_providers(self):
-        """``(providers by quantity, contributions by sum)`` of a host evaluation, once per model."""
+        """``(providers by quantity, contributions by sum, derivative providers by state)`` of a host evaluation, once per model."""
 
         if not hasattr(self, "_host_provider_table"):
-            self._host_provider_table = self._collect({}, set(), shadow=True)[:2]
+            self._host_provider_table = self._collect({}, set(), shadow=True)
         return self._host_provider_table
 
     # --- the Jacobian's sparsity pattern ---------------------------------------------
@@ -1115,9 +1207,15 @@ class Model:
         solver, not the pattern. Rows come sorted.
         """
 
-        values = _TracedValues(self)
         entries: set[tuple[int, int]] = set()
-        for written in self._collect({}, set(), shadow=True)[2].values():
+        for s, i, on in self._rate_dependencies(_TracedValues(self)):
+            entries.update((s.offset + i, column) for column in on)
+        return np.array(sorted(entries), dtype=np.int64).reshape(-1, 2)
+
+    def _rate_dependencies(self, values):
+        """``(state, element, what it depends on)`` of every contribution to a derivative, traced on ``values``."""
+
+        for written in values.derivatives.values():
             for p in written:
                 s = p.written
                 if s.shape:
@@ -1139,8 +1237,127 @@ class Model:
                         )
                     ]
                 for i, traced in rows:
-                    entries.update((s.offset + i, column) for column in traced.on)
-        return np.array(sorted(entries), dtype=np.int64).reshape(-1, 2)
+                    yield s, i, traced.on
+
+    # --- stages ------------------------------------------------------------------------
+
+    def stages(self, mode: Sequence[str] = ("k",)) -> tuple[tuple[str, ...], ...]:
+        """``(background states, perturbation states)``, read off the equations.
+
+        A state belongs to the background if its derivative depends neither
+        on a ``mode`` input (the wave number) nor on a state that does, so
+        the background is the largest set of states that evolves on its own.
+        Nothing declares the split. The same trace as :meth:`sparsity` finds
+        it, with the mode inputs followed like states: the scale factor, the
+        recombination history and a scalar field's homogeneous value come out
+        as the background of whatever model lists them.
+        """
+
+        key = tuple(mode)
+        cache = self.__dict__.setdefault("_stages_cache", {})
+        if key not in cache:
+            owner = {
+                s.offset + i: s.name
+                for s in self.states.values()
+                for i in range(s.size)
+            }
+            reads: dict[str, set] = {name: set() for name in self.states}
+            for s, _, on in self._rate_dependencies(_TracedValues(self, marked=key)):
+                reads[s.name] |= {MARKED if c == MARKED else owner[c] for c in on}
+            perturbed = {name for name, on in reads.items() if MARKED in on}
+            while True:
+                more = {
+                    n
+                    for n, on in reads.items()
+                    if n not in perturbed and on & perturbed
+                }
+                if not more:
+                    break
+                perturbed |= more
+            cache[key] = (
+                tuple(n for n in self.states if n not in perturbed),
+                tuple(n for n in self.states if n in perturbed),
+            )
+        return cache[key]
+
+    def published(self, mode: Sequence[str] = ("k",)) -> tuple[str, ...]:
+        """The background quantities the perturbation equations take as given, as few as will do.
+
+        The background block of a solve steps ahead of the perturbations and
+        hands them what they read of it. Any set of quantities that
+        separates the background states from the perturbation equations
+        would do. This returns the smallest, counted in numbers handed over
+        (a minimum vertex cut of the dependency graph), and among equals the
+        one nearest the perturbations, so that work a quantity hides (the
+        recombination rates behind the opacity) stays in the background
+        block. A background state the perturbations read directly is
+        published itself.
+        """
+
+        key = tuple(mode)
+        cache = self.__dict__.setdefault("_published_cache", {})
+        if key not in cache:
+            cache[key] = self._published(key)
+        return cache[key]
+
+    def _published(self, mode) -> tuple[str, ...]:
+        background, perturbations = self.stages(mode)
+        if not background or not perturbations:
+            return ()
+        producers, contributions, derivatives = self._host_providers()
+        values = _TracedValues(self, marked=mode)
+        elements = set(self.state_indices(background))
+
+        def reads(q):
+            if q in producers:
+                return producers[q].params
+            return [d for p in contributions.get(q, ()) for d in p.params]
+
+        def is_background(q):
+            """Whether ``q`` depends on background states and on nothing else that varies."""
+            on = _depends(values[q])
+            return bool(on) and on <= elements
+
+        # what the perturbation equations need, and which of it reads the background
+        needed: set[str] = set()
+        stack = [
+            d for name in perturbations for p in derivatives[name] for d in p.params
+        ]
+        sinks: set[str] = set()
+        direct = set(stack)
+        while stack:
+            q = stack.pop()
+            if q in needed or (q not in producers and q not in contributions):
+                continue
+            needed.add(q)
+            stack.extend(reads(q))
+        nodes = [
+            n for n in background if n in direct or any(n in reads(q) for q in needed)
+        ]
+        nodes += [q for q in needed if is_background(q)]
+        inside = set(nodes) | set(background)
+        for q in needed - inside:
+            sinks.update(d for d in reads(q) if d in inside)
+        sinks.update(d for d in direct if d in inside)
+        edges = [
+            (d, q)
+            for q in nodes
+            if q not in self.states
+            for d in reads(q)
+            if d in inside
+        ]
+        weight = {n: (self.states[n].size if n in self.states else 1) for n in inside}
+        cut = _minimum_vertex_cut(
+            weight, edges, sources=[n for n in background], sinks=sorted(sinks)
+        )
+        vectors = [n for n in cut if n in self.states and self.states[n].shape]
+        if vectors:
+            raise NotImplementedError(
+                f"the perturbations read the vector background states {vectors} "
+                "directly; provide the scalars they need as quantities"
+            )
+        rank = {n: i for i, n in enumerate([*self.states, *producers, *contributions])}
+        return tuple(sorted(cut, key=rank.__getitem__))
 
     def evaluate(self, *quantities, math=math, **base):
         """Evaluate ``quantities`` on the host from the ``base`` values.

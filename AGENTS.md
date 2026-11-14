@@ -268,13 +268,18 @@ The codebase is organized into modular components in `src/discoeb/`:
      `background_model(model)`, the model's own species). Without a model
      these use `W0WACDM_MNU`, whose sum equals every built-in model's on the
      cosmologies it accepts (`density_coefficients`, `background_history`,
-     `conformal_ages` of bare dicts). The massive-neutrino
-     density `neutrino_density_ratio`, summed directly over the
-     `NQ_NEUTRINO_TABLE` = 100 momentum nodes. The conformal-time quadrature
-     `_background_tau`; `background_endpoints` vmaps it over a batch for
-     `tau0`, `ln a` at `TAU_START` and `z_re` (`conformal_ages` reads it; the
-     model is a static argument). Nothing is cached per batch: the whole preparation is JAX
-     and traces under `jit`
+     `conformal_ages` of bare dicts). The massive-neutrino density ratio
+     is `MassiveNeutrinos.rhonu`, the same provider on the host and the
+     device (branch-free, `NQ_NU_BACKGROUND` = 8 nodes). `_background_solution`
+     gives `(a, tau, states)` on a geometric grid from `A_START` = 1e-9: the
+     trapezoid quadrature of `d tau / d a` when the model has no background
+     state of its own, else fixed RK4 steps in `ln a` of those states
+     (`background_model(model).stages()[0]`, scalars only) beside the time.
+     `background_endpoints` vmaps it over a batch for `tau0`, `ln a` at
+     `TAU_START`, `z_re` and `start`, the model's own background states at
+     `TAU_START`, which `_pack` writes into the initial state
+     (`conformal_ages` reads it; the model is a static argument). Nothing is
+     cached per batch: the whole preparation is JAX and traces under `jit`
    - The momentum bins (`neutrino_momentum_bins`, cached) live in `util.py`
      beside the Gauss-Laguerre rule
 
@@ -296,8 +301,9 @@ The codebase is organized into modular components in `src/discoeb/`:
    - RECFAST's `(x_H, x_He, T_m)`, `ln a` and the optical depth `kappa` are
      five states of every trajectory, the `Recombination` component, a block
      of a modax `Hierarchy` stepping ahead of the perturbations
-     (`kernel.joint_kernel`) and publishing `a`, `opacity`, `cs2`,
-     `rhonu` (and `pnu`) to them as quintic interpolants. Nothing is tabulated
+     (`kernel.joint_kernel`) and publishing `a`, `opacity` and `cs2` to them
+     as quintic interpolants. Nothing is tabulated, and nothing names these
+     states as the background (see `Model.stages` below)
    - The stand-alone RECFAST solve in `ln a` (`thermodynamics_recfast.py`,
      `thermal_history_batch`, `evolve_background`) was removed on 2026-11-11:
      it served only tests. `tests/test_thermo.py` reads the kernel's block
@@ -336,6 +342,18 @@ The codebase is organized into modular components in `src/discoeb/`:
      (`Model.initial_state(xp=jnp)`, whose fillers write into a recording
      `_Filled` buffer, nothing in place). k must be concrete: it sets the
      launch's shape and order
+   - The two blocks are read off the equations (2026-11-14; before,
+     `THERMAL_STATES` and `THERMAL_QUANTITIES` named them).
+     `Model.stages(mode=("k",))` runs the sparsity trace with the wave number
+     followed like a state: a state whose rate reads neither `k` nor a state
+     that does is background. `Model.published()` is the minimum vertex cut
+     (by numbers handed over, nearest the perturbations among equals)
+     between the background states and what the perturbation rates read:
+     `("a", "opacity", "cs2")` for every built-in model, plus a background
+     state the perturbations read directly (a scalar field). So a component
+     with a state such as `d_t(a) = a` lands in the background block, and
+     `thermal_indices(model)` lists every background state
+     (`tests/test_background_block.py`)
    - The GPU right-hand side is the model's components plus `Recombination`,
      built by `component.Model.build`: a driver with the tuple-return
      signature modax and Enzyme need, calling one device function per

@@ -69,12 +69,10 @@ class ConstantThermalHistory(Component):
     the rounding of the rest of the row.
     """
 
-    def __init__(self, a=1e-3, opacity=50.0, cs2=1e-8, rhonu=3.0, pnu=0.5):
+    def __init__(self, a=1e-3, opacity=50.0, cs2=1e-8):
         self.a = lambda: a
         self.opacity = lambda: opacity
         self.cs2 = lambda: cs2
-        self.rhonu = lambda: rhonu
-        self.pnu = lambda: pnu
 
 
 GPU_MODULES = {"test_perturbations", "test_thermo", "test_reionization"}

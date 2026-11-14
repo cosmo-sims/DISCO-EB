@@ -171,20 +171,14 @@ def joint_model(model: CosmologyModel, extra=()) -> Model:
 
 
 def thermal_indices(model) -> tuple[int, ...]:
-    """Return the flat indices of the five recombination states in ``model``."""
+    """Return the flat indices of the background states in the joint ``model``.
 
-    return tuple(
-        model.index[n] for n in ("lna", "thermo_0", "thermo_1", "thermo_2", "kappa")
-    )
+    They are the states :meth:`Model.stages <discoeb.component.Model.stages>`
+    finds to evolve without the wave number: the five of the recombination
+    block and any a component of the model adds.
+    """
 
-
-THERMAL_STATES = ("lna", "thermo", "kappa")
-"""The recombination block's states, in model order."""
-
-THERMAL_QUANTITIES = ("a", "opacity", "cs2", "rhonu")
-"""What the hierarchy reads of the recombination block: the scale factor, the
-opacity, the baryon sound speed and the massive-neutrino density ratio. The
-block publishes them and modax interpolates them between the block's steps."""
+    return tuple(model.state_indices(model.stages()[0]))
 
 
 def _restrict(pattern: np.ndarray, indices) -> np.ndarray:
@@ -202,14 +196,20 @@ def _restrict(pattern: np.ndarray, indices) -> np.ndarray:
 def joint_kernel(model: CosmologyModel, extra=()):
     """Return ``(joint model, hierarchy)`` of ``model``, cached per resolved model and ``extra``.
 
-    The hierarchy is a modax :class:`~modax.Hierarchy` of two blocks. The
-    recombination block (:data:`THERMAL_STATES`) publishes
-    :data:`THERMAL_QUANTITIES`, and the perturbation block's right-hand side
-    takes them as given. modax steps the recombination block ahead of the
-    perturbations and hands the quantities down as a quintic Hermite
-    interpolant. So the perturbation Jacobian has no thermal columns, and the
-    thermal providers run once per recombination step. The state keeps the
-    joint model's order, thermal states last.
+    The hierarchy is a modax :class:`~modax.Hierarchy` of two blocks, which
+    the equations themselves split (:meth:`Model.stages
+    <discoeb.component.Model.stages>`). The background block holds every
+    state whose rate reads no wave number: ``ln a``, the recombination
+    history, the optical depth, and whatever a model adds, such as a scalar
+    field. It publishes the fewest quantities that separate it from the
+    perturbations (:meth:`Model.published
+    <discoeb.component.Model.published>`: the scale factor, the opacity and
+    the baryon sound speed for the built-in models), and the perturbation
+    block's right-hand side takes them as given. modax steps the background
+    block ahead of the perturbations and hands the quantities down as a
+    quintic Hermite interpolant. So the perturbation Jacobian has no
+    background columns, and the thermal providers run once per background
+    step. The state keeps the joint model's order.
     """
 
     return _joint_kernel(model.resolved(), tuple(extra))
@@ -222,20 +222,21 @@ def _joint_kernel(cosmology_model: CosmologyModel, extra):
     model = joint_model(cosmology_model, extra)
     columns = _parameter_layout(cosmology_model, extra).columns
     pattern = model.sparsity()
-    thermal = model.state_indices(THERMAL_STATES)
-    others = [name for name in model.states if name not in THERMAL_STATES]
+    background, others = model.stages()
+    published = model.published()
+    thermal = model.state_indices(background)
     hierarchy_idx = model.state_indices(others)
     recombination = Block(
-        model.build(columns, states=THERMAL_STATES, name="recombination_rhs"),
+        model.build(columns, states=background, name="recombination_rhs"),
         len(thermal),
         outputs=model.build_function(
-            THERMAL_QUANTITIES,
+            published,
             inputs=("y", "tau"),
             params=columns,
-            states=THERMAL_STATES,
+            states=background,
             name="thermal_quantities",
         ),
-        n_outputs=len(THERMAL_QUANTITIES),
+        n_outputs=len(published),
         sparsity=_restrict(pattern, thermal),
         name="recombination",
     )
@@ -243,7 +244,7 @@ def _joint_kernel(cosmology_model: CosmologyModel, extra):
         model.build(
             columns,
             states=others,
-            quantities=THERMAL_QUANTITIES,
+            quantities=published,
             name="hierarchy_rhs",
         ),
         len(hierarchy_idx),
@@ -337,7 +338,7 @@ def _pack(model: CosmologyModel, extra, k_sorted, columns):
 
     joint, _ = joint_kernel(model, extra)
     layout = parameter_layout(model, extra)
-    tau0, lna_start, z_re = background_endpoints(columns, model)
+    tau0, lna_start, z_re, start = background_endpoints(columns, model)
     n_cosmo, n_k = tau0.shape[0], len(k_sorted)
     values = density_parameters(columns, model=model)
     params = jnp.tile(_rows(layout, values, tau0, z_re), (n_k, 1))
@@ -353,6 +354,10 @@ def _pack(model: CosmologyModel, extra, k_sorted, columns):
         lna_start=jnp.tile(lna_start, n_k),
         **{name: jnp.tile(value, n_k) for name, value in values.items()},
     )
+    # A background state of the model's own starts where the background's
+    # integration from A_START has brought it.
+    for name, value in start.items():
+        y0 = y0.at[:, joint.index[name]].set(jnp.tile(value, n_k))
     return tau0, lna_start, z_re, params, y0
 
 

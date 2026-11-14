@@ -2,12 +2,7 @@
 
 import pytest
 
-from discoeb.kernel import (
-    THERMAL_QUANTITIES,
-    THERMAL_STATES,
-    joint_kernel,
-    thermal_indices,
-)
+from discoeb.kernel import joint_kernel, thermal_indices
 from discoeb.models import LCDM
 
 
@@ -22,9 +17,14 @@ def test_the_recombination_block_publishes_the_thermal_quantities():
         perturbations,
         recombination,
     )  # the thermal states stay last
-    assert recombination.n == 5 and recombination.n_outputs == len(THERMAL_QUANTITIES)
+    # nothing declares the split: the trace finds the states that read no
+    # wave number and the fewest quantities the hierarchy needs of them
+    background, others = model.stages()
+    assert background == ("lna", "thermo", "kappa")
+    assert model.published() == ("a", "opacity", "cs2")
+    assert recombination.n == 5 and recombination.n_outputs == 3
     assert perturbations.n == nvar and perturbations.reads == (recombination,)
-    assert model.state_indices(THERMAL_STATES) == list(thermal_indices(model))
+    assert model.state_indices(background) == list(thermal_indices(model))
     # the hierarchy alone, as the model's sparsity traces it: 173 entries
     # (165 and the slip's reading of z under the radiation streaming approximation), 11 colours
     main = (

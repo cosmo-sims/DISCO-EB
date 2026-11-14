@@ -336,6 +336,10 @@ class MasslessNeutrinos(Species):
             output[ell] = (1.0 - rsa) * output[ell]
 
 
+NQ_NU_BACKGROUND = 8
+"""Momentum nodes of the massive-neutrino background density and pressure."""
+
+
 class MassiveNeutrinos(Species):
     """Massive neutrinos on ``NQMAX`` momentum bins: ``psi[i, l]`` (Ma & Bertschinger).
 
@@ -343,8 +347,8 @@ class MassiveNeutrinos(Species):
     streams freely (:func:`stream`) with ``kv = k v_i``,
     ``v_i = q / sqrt(q^2 + a^2 amnu^2)``. The moments ``Sum w psi0 / v``,
     ``Sum w psi1`` and ``Sum w v psi2`` enter the Einstein sources. The
-    recombination block provides the background density ratio ``rhonu`` and
-    pressure ratio ``pnu``. Deep in radiation domination the neutrinos are
+    background density ratio ``rhonu`` and pressure ratio ``pnu`` integrate
+    the Fermi-Dirac distribution on :data:`NQ_NU_BACKGROUND` nodes. Deep in radiation domination the neutrinos are
     still relativistic, so each bin starts as the massless hierarchy,
     ``psi_l = -(1/4) N_l dlnf0/dlnq``. The quadrature nodes and weights are
     instance constants the providers read through ``self``. Each bin adds
@@ -377,6 +381,27 @@ class MassiveNeutrinos(Species):
         self.inv_q = tuple(1.0 / float(x) for x in q)
         self.weight = tuple(float(x) for x in w)
         self.dlnf0 = tuple(float(x) for x in dlnf0)
+        q, w, _ = neutrino_momentum_bins(NQ_NU_BACKGROUND)
+        self.nu_q = tuple(float(x) for x in q)
+        self.nu_w = tuple(float(x) for x in w)
+
+    def massive(self, amnu):
+        """1 with a mass and 0 without, branch-free so it runs on arrays too."""
+        return min(max(amnu * 1.0e30, 0.0), 1.0)
+
+    def rhonu(self, a, amnu, massive):
+        """``rho_nu / rho_nu(massless)`` of one flavour, 1 if massless."""
+        total = 0.0
+        for i in range(len(self.nu_q)):
+            total += self.nu_w[i] * math.sqrt(1.0 + (a * amnu / self.nu_q[i]) ** 2)
+        return 1.0 + massive * (total - 1.0)
+
+    def pnu(self, a, amnu, massive):
+        """``p_nu / rho_nu(massless)`` of one flavour: ``(rhonu - d rhonu / d ln a) / 3``, 1/3 if massless."""
+        total = 0.0
+        for i in range(len(self.nu_q)):
+            total += self.nu_w[i] / math.sqrt(1.0 + (a * amnu / self.nu_q[i]) ** 2)
+        return (1.0 + massive * (total - 1.0)) * (1.0 / 3.0)
 
     def nu_norm(self, grhor_nu, n_mnu, inv_a2):
         return grhor_nu * n_mnu * inv_a2
@@ -398,7 +423,7 @@ class MassiveNeutrinos(Species):
         return nu_norm * total
 
     def gpres(self, nu_norm, pnu):
-        """The background pressure, from the recombination block's ``pnu = (rhonu - d rhonu / d ln a) / 3``."""
+        """The background pressure, from ``pnu = (rhonu - d rhonu / d ln a) / 3``."""
         return nu_norm * pnu
 
     def dgpi(self, nu_norm, a, amnu, psi):
