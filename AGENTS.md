@@ -250,6 +250,12 @@ The codebase is organized into modular components in `src/discoeb/`:
      (`LMAX_NU`, `NQMAX`; matrix state `psi[bin, l]`, quadrature nodes as tuple
      constants) and `RadiationStreaming` (CLASS's RSA). The free-streaming tail
      is one helper `stream(...)` shared by the three hierarchies
+   - Rules a model keeps (2026-11-14): `ColdDarkMatter.fixes_gauge` states
+     the synchronous gauge's condition and `CosmologyModel` raises without
+     such a species. `RadiationStreaming` names no species: each streaming
+     one contributes to the sum `dgrho_streaming`, and
+     `NoRadiationStreaming` (`rsa = 0`) replaces it for a theory whose
+     constraints the streaming solution does not know
    - `interactions.py`: `ThomsonScattering` (drag, polarization source,
      damping of every higher multipole). An `Interaction` owns no state
    - Truncations are the components' settings: `DISCO_LMAX_G`,
@@ -278,6 +284,12 @@ The codebase is organized into modular components in `src/discoeb/`:
      LCDM.replace(CosmologicalConstant, DarkEnergy)`, `W0WACDM_MNU`.
      `add` appends after `ThomsonScattering`; no sum or state order moves,
      since an interaction contributes to neither
+   - `DEFAULT_MODEL` (= `W0WACDM_MNU`) is the one place a bare cosmology
+     gets a model (`density_coefficients`, `background_history`,
+     `conformal_ages`, `directed_inputs`). Those run its `check_keys`
+     (the first half of `check`, without the components' hooks), so a
+     cosmology that sets a parameter of a component outside it raises
+     instead of being ignored
    - `LCDM(cosmologies)` (`CosmologyModel.__call__`) checks each cosmology
      and returns a `CosmologyBatch(model, cosmologies)`, the one argument a
      solve takes for both (2026-11-13; before, `model=` was a separate

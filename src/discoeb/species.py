@@ -53,6 +53,18 @@ def _needs_octupole(**lmax):
 
 
 class ColdDarkMatter(Species):
+    """Cold dark matter, the species whose rest frame defines the gauge.
+
+    Synchronous gauge leaves the choice of the initial hypersurface open.
+    The equations of :mod:`discoeb.gravity` take the one on which this
+    species is at rest, so it has a density contrast and no velocity
+    (``fixes_gauge``). A model must keep it, at whatever density. Dark
+    matter that feels a force has a velocity of its own and is another
+    species beside it (:class:`Fluid`).
+    """
+
+    fixes_gauge = True
+
     # adiabatic mode: 3/4 of the photon density contrast
     clxc = State(initial=lambda theta: 0.75 * theta[0])
 
@@ -201,6 +213,12 @@ class RadiationStreaming(Component):
     fixed ``tau_free_streaming``, it only turns on: past ``a = RSA_A_LATCH``
     it stays on through reionization. CLASS's Thomson corrections for
     reionization are missing. ``RSA = 0`` (``DISCO_RSA=0``) turns it off.
+
+    It provides the switch ``rsa`` and the streaming solution ``rsa_delta``
+    and ``rsa_q``, and names no species. Each species that follows it reads
+    those and adds its own density to the sum ``dgrho_streaming``. The
+    solution is general relativity's (:class:`NoRadiationStreaming` for
+    another theory).
     """
 
     RSA = Setting(1)
@@ -224,13 +242,24 @@ class RadiationStreaming(Component):
         """The streaming radiation's ``q = 4 theta / (3k)`` with ``theta = -h'/2 = -k z``."""
         return -(4.0 / 3.0) * z
 
-    def dgrho_streaming(self, rsa, rsa_delta, grhog_t, grhor_t):
-        """The streaming photons' and neutrinos' density under the RSA.
 
-        ``dgrho`` (and so ``h'``) leaves it out, but as in CLASS everything
-        else that reads the density includes it.
-        """
-        return rsa * rsa_delta * (grhog_t + grhor_t)
+class NoRadiationStreaming(Component):
+    """The full hierarchies at all times: what :class:`RadiationStreaming` provides, switched off.
+
+    ``LCDM.replace(RadiationStreaming, NoRadiationStreaming, name=...)`` is
+    a model without the approximation, for a theory of gravity whose
+    constraints the streaming solution does not know. The constants fold
+    away when the kernel compiles.
+    """
+
+    def rsa(self):
+        return 0.0
+
+    def rsa_delta(self):
+        return 0.0
+
+    def rsa_q(self):
+        return 0.0
 
 
 # --- radiation ----------------------------------------------------------------------
@@ -330,6 +359,14 @@ class Photons(Species):
     def dgq(self, grhog_t, qg):
         return grhog_t * qg
 
+    def dgrho_streaming(self, rsa, rsa_delta, grhog_t):
+        """The photons' density under the RSA.
+
+        ``dgrho`` (and so ``h'``) leaves it out, but as in CLASS everything
+        else that reads the density includes it.
+        """
+        return rsa * rsa_delta * grhog_t
+
     def gpres(self, grhog_t):
         return grhog_t * (1.0 / 3.0)
 
@@ -404,6 +441,9 @@ class MasslessNeutrinos(Species):
 
     def dgq(self, grhor_t, n, rsa, rsa_q):
         return grhor_t * (n[1] + rsa * (rsa_q - n[1]))
+
+    def dgrho_streaming(self, rsa, rsa_delta, grhor_t):
+        return rsa * rsa_delta * grhor_t
 
     def gpres(self, grhor_t):
         return grhor_t * (1.0 / 3.0)

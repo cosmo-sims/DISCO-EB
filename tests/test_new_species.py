@@ -95,6 +95,20 @@ def test_the_components_check_the_parameter():
         LCDM(_split(COSMOLOGY))
 
 
+def test_a_bare_cosmology_cannot_carry_the_parameter_past_the_default_model():
+    """Without a batch the default model stands in, and it has no such species."""
+
+    from discoeb import conformal_ages, density_coefficients, directed_inputs
+
+    for background_of in (conformal_ages, density_coefficients, directed_inputs):
+        with pytest.raises(ValueError, match="use a model with SecondDarkMatter"):
+            background_of(_split(COSMOLOGY))
+        background_of(COSMOLOGY)
+    assert float(conformal_ages(LCDM_X(_split(COSMOLOGY)))[0]) == pytest.approx(
+        float(conformal_ages(COSMOLOGY)[0]), rel=1e-12
+    )
+
+
 def test_the_background_closes_the_budget_with_the_new_density():
     from discoeb.background import density_parameters
     from discoeb.cosmology import _columns

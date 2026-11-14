@@ -225,9 +225,9 @@ def _columns(
     """
 
     if keys is None:
-        from .models import W0WACDM_MNU
+        from .models import DEFAULT_MODEL
 
-        keys = W0WACDM_MNU.parameter_keys()
+        keys = DEFAULT_MODEL.parameter_keys()
     rows = [_cosmology_dictionary(c) for c in cosmologies]
     keys = dict(keys)
     for row in rows:

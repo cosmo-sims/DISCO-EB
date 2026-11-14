@@ -20,7 +20,7 @@ import numpy as np
 from .background import TAU_START, background_endpoints, density_parameters
 from .component import Model, _compile
 from .cosmology import _as_batch, _columns
-from .models import W0WACDM_MNU, CosmologyModel
+from .models import DEFAULT_MODEL, CosmologyModel
 from .recombination import THERMO_ERROR_WEIGHT, Recombination
 
 PERTURB_RTOL = 1.0e-4
@@ -127,8 +127,8 @@ def _parameter_layout(model: CosmologyModel, extra) -> ParameterLayout:
     return ParameterLayout(columns, tuple(directed), values)
 
 
-DEFAULT_LAYOUT = parameter_layout(W0WACDM_MNU)
-"""The row of :data:`~discoeb.models.W0WACDM_MNU`, whose columns are a superset of
+DEFAULT_LAYOUT = parameter_layout(DEFAULT_MODEL)
+"""The row of :data:`~discoeb.models.DEFAULT_MODEL`, whose columns are a superset of
 every built-in model's. Each model's kernel reads its own
 (:func:`parameter_layout`); a host test may build any built-in model on this one."""
 
@@ -137,7 +137,7 @@ PARAM_COLUMNS = DEFAULT_LAYOUT.columns
 N_PARAM = DEFAULT_LAYOUT.n
 DIRECTED_NAMES = DEFAULT_LAYOUT.directed
 """The inputs a trajectory's sensitivity direction may move in
-:data:`~discoeb.models.W0WACDM_MNU`, a superset of every built-in model's.
+:data:`~discoeb.models.DEFAULT_MODEL`, a superset of every built-in model's.
 The first nine, every model's, are the five background densities and the
 recombination rates' ``YHe``, ``Tcmb``, ``H0`` and ``Omegab``
 (:data:`N_COMMON_DIRECTED`). The others are the curvature density, the
@@ -392,7 +392,7 @@ def make_params(
     k_values: np.ndarray,
     tau_end: float,
     z_re: float = 0.0,
-    model: CosmologyModel = W0WACDM_MNU,
+    model: CosmologyModel = DEFAULT_MODEL,
 ) -> np.ndarray:
     """Return packed parameters for the device right-hand side, one row per wave mode.
 
@@ -417,7 +417,7 @@ def make_initial_states(
     k_values: np.ndarray,
     model,
     lna_start,
-    cosmology_model: CosmologyModel = W0WACDM_MNU,
+    cosmology_model: CosmologyModel = DEFAULT_MODEL,
 ) -> np.ndarray:
     """Return adiabatic initial states plus the fully ionized thermal state, ``(n_k, nvar)``.
 

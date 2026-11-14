@@ -26,14 +26,14 @@ from .gravity import (  # noqa: F401 (the density constants, re-exported)
     GRHOM_PER_H0SQ,
     GRHOR_PER_TCMB4,
 )
-from .models import W0WACDM_MNU, CosmologyModel
+from .models import DEFAULT_MODEL, CosmologyModel
 from .recombination import recombination_model
 
 
 def background_model(model: CosmologyModel | None = None) -> Model:
     """The species of ``model`` whose ``grho`` is the Friedmann sum.
 
-    Without a model it is :data:`~discoeb.models.W0WACDM_MNU`, whose
+    Without a model it is :data:`~discoeb.models.DEFAULT_MODEL`, whose
     components declare every built-in parameter. For a cosmology another
     built-in model accepts, its sum is that model's: at ``w = -1`` the
     dark-energy fluid is the cosmological constant, and a massive-neutrino
@@ -41,7 +41,7 @@ def background_model(model: CosmologyModel | None = None) -> Model:
     affect the background.
     """
 
-    return _background_model(W0WACDM_MNU if model is None else model)
+    return _background_model(DEFAULT_MODEL if model is None else model)
 
 
 @functools.lru_cache(maxsize=None)
@@ -72,7 +72,7 @@ def density_parameters(param, xp=jnp, model: CosmologyModel | None = None) -> di
     (:func:`_background_solution`) and :data:`CLOSURE_STEPS` more secant
     steps, differentiable through the iteration.
 
-    Without a model these are :data:`~discoeb.models.W0WACDM_MNU`'s. Pass
+    Without a model these are :data:`~discoeb.models.DEFAULT_MODEL`'s. Pass
     ``xp=jnp`` for a traced cosmology and ``xp=np`` for one given as floats.
     """
 
@@ -121,7 +121,7 @@ def density_parameters(param, xp=jnp, model: CosmologyModel | None = None) -> di
             before, miss_before, x = x, missed, x - move
         return x
 
-    parameters = (W0WACDM_MNU if model is None else model).parameters()
+    parameters = (DEFAULT_MODEL if model is None else model).parameters()
     return derive_parameters(parameters, param, math=math_module, close=close)
 
 
@@ -149,6 +149,7 @@ def _densities(cosmology) -> dict:
 
 @functools.lru_cache(maxsize=4096)
 def _densities_of(cosmology: _ParamCosmology) -> dict:
+    DEFAULT_MODEL.check_keys(cosmology)
     d = density_parameters(cosmology.to_background_params(), xp=np)
     return {k: float(v) for k, v in d.items()}
 

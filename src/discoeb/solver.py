@@ -31,7 +31,7 @@ from .kernel import (
     _solve_batch,
     parameter_layout,
 )
-from .models import W0WACDM_MNU, CosmologyBatch, CosmologyModel, _batch_of
+from .models import DEFAULT_MODEL, CosmologyBatch, CosmologyModel, _batch_of
 from .recombination import THERMO_ERROR_WEIGHT
 from .sensitivities import _directed_inputs, _kept_values
 
@@ -379,11 +379,18 @@ def state_names(model: CosmologyModel) -> tuple[str, ...]:
 
 
 def _model_of(cosmologies) -> CosmologyModel:
-    """Return a batch's model, or :data:`~discoeb.models.W0WACDM_MNU` for bare cosmologies."""
+    """Return a batch's model, or :data:`~discoeb.models.DEFAULT_MODEL` for bare cosmologies.
+
+    A bare cosmology must not set a parameter of a component outside the
+    default model, which would be ignored
+    (:meth:`~discoeb.models.CosmologyModel.check_keys`).
+    """
 
     if isinstance(cosmologies, CosmologyBatch):
         return cosmologies.model
-    return W0WACDM_MNU
+    for cosmology in _as_batch(cosmologies):
+        DEFAULT_MODEL.check_keys(cosmology)
+    return DEFAULT_MODEL
 
 
 def _cosmologies_of(cosmologies) -> tuple:

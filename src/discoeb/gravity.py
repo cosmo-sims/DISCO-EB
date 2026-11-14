@@ -53,6 +53,7 @@ SUMS = (
     "grho_matter",
     "grho_radiation",
     "grho_free_streaming",
+    "dgrho_streaming",
 )
 """The quantities summed over species.
 
@@ -69,7 +70,9 @@ The last three sort the densities for the initial conditions
 ``grho_radiation`` the relativistic ones and ``grho_free_streaming`` those
 of the radiation that stream freely (the neutrinos). A species says what it
 is by contributing its density, so the growing mode counts one added from
-outside the package."""
+outside the package. ``dgrho_streaming`` is the density perturbation of the
+species under the radiation streaming approximation
+(:class:`~discoeb.species.RadiationStreaming`), which ``dgrho`` leaves out."""
 
 GRAVITY_INTERFACE = ("adotoa", "z", "sigma")
 """What every species reads of gravity, and a model's gravity components provide:

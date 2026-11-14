@@ -27,15 +27,15 @@ from .kernel import (
     _named_error_weights,
     parameter_layout,
 )
-from .models import W0WACDM_MNU
+from .models import DEFAULT_MODEL
 from .recombination import THERMO_ERROR_WEIGHT
 
 
-def _directed_inputs(columns, model=W0WACDM_MNU, extra=()) -> jax.Array:
+def _directed_inputs(columns, model=DEFAULT_MODEL, extra=()) -> jax.Array:
     """Return the ``(n_cosmologies, n_directed)`` directed inputs of ``model`` from a batch's columns, in JAX.
 
     They are the layout's directed parameters (:func:`~discoeb.kernel.parameter_layout`),
-    :data:`~discoeb.kernel.DIRECTED_NAMES` for :data:`~discoeb.models.W0WACDM_MNU`.
+    :data:`~discoeb.kernel.DIRECTED_NAMES` for :data:`~discoeb.models.DEFAULT_MODEL`.
     """
 
     values = density_parameters(columns, model=model)

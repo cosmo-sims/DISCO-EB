@@ -541,6 +541,8 @@ class Component:
     provider.
     """
 
+    fixes_gauge: bool = False
+    """Whether the component's rest frame fixes the gauge the model's equations are written in."""
     _setting_names: tuple[str, ...] = ()
     _renames: Mapping[str, str] = {}
     """Of a :meth:`named` component: the names it declares to those it takes in a model."""

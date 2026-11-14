@@ -9,6 +9,11 @@ from conftest import HOST, ConstantThermalHistory
 from discoeb.component import Component, Gravity, Model, Parameter, State
 from discoeb.gravity import GRAVITY_INTERFACE, Background, Curvature, Metric
 from discoeb.models import LCDM, W0WACDM_MNU
+from discoeb.species import (
+    ColdDarkMatter,
+    NoRadiationStreaming,
+    RadiationStreaming,
+)
 
 COSMOLOGY = {
     "Omegam": 0.3,
@@ -183,3 +188,53 @@ def test_the_metric_rate_is_a_quantity_of_the_model():
     d_etak, adotoa_prime = fn(tuple(y), 100.0, tuple(p))
     assert d_etak == rhs(tuple(y), 100.0, tuple(p))[model.index["etak"]]
     assert adotoa_prime < 0.0  # matter and radiation decelerate
+
+
+def test_the_gauge_needs_its_species_at_rest():
+    assert ColdDarkMatter.fixes_gauge and not Metric.fixes_gauge
+    with pytest.raises(ValueError, match="fixes the synchronous gauge"):
+        LCDM.remove(ColdDarkMatter, name="no CDM")
+    # a copy under another name fixes it as well
+    LCDM.replace(ColdDarkMatter, ColdDarkMatter.named("c"), name="renamed CDM")
+
+
+def test_the_streaming_approximation_is_a_component_a_model_may_drop():
+    """No species names it, and no species is named by it."""
+
+    from discoeb.kernel import N_PARAM, PARAM_COLUMNS
+
+    full = LCDM.replace(RadiationStreaming, NoRadiationStreaming, name="full")
+    assert full.state_names() == LCDM.state_names()
+    assert "RSA" not in {n for cls in full.components for n in cls.setting_names()}
+    with pytest.raises(NameError, match="rsa"):
+        LCDM.remove(RadiationStreaming, name="nothing").build(
+            ConstantThermalHistory()
+        ).build(PARAM_COLUMNS, **HOST)
+
+    def rhs_of(cosmology_model):
+        model = cosmology_model.build(ConstantThermalHistory(opacity=1.0e-6))
+        return model, model.build(PARAM_COLUMNS, **HOST)
+
+    p = np.zeros(N_PARAM)
+    for name, value in dict(
+        grhog=1.5e-7, grhornomass=1.0e-7, grhoc=0.8e-4, grhob=1.9e-5, grhov=2.0e-7
+    ).items():
+        p[PARAM_COLUMNS[f"{name}_nominal"]] = value
+    p[PARAM_COLUMNS["k"]] = 0.5
+    model, rhs = rhs_of(full)
+    y = np.random.default_rng(2).standard_normal(model.nvar)
+    tau = 5000.0  # deep inside the horizon and decoupled: the approximation is on
+    without = np.asarray(rhs(tuple(y), tau, tuple(p)))
+    _, off = rhs_of(LCDM.with_settings(RSA=0))
+    _, on = rhs_of(LCDM)
+    np.testing.assert_array_equal(without, np.asarray(off(tuple(y), tau, tuple(p))))
+    assert not np.array_equal(without, np.asarray(on(tuple(y), tau, tuple(p))))
+
+    # each streaming species adds its own density to the sum
+    streaming = LCDM.build(ConstantThermalHistory()).build_function(
+        ("dgrho_streaming", "tau"), inputs=("y", "tau"), params=PARAM_COLUMNS, **HOST
+    )
+    assert (
+        "dgrho_streaming = Photons__dgrho_streaming(Photons_self, rsa, rsa_delta, grhog_t)"
+        " + MasslessNeutrinos__dgrho_streaming(MasslessNeutrinos_self, rsa, rsa_delta, grhor_t)"
+    ) in streaming._generated_source

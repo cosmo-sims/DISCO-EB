@@ -47,6 +47,7 @@ from .species import (
 )
 
 __all__ = [
+    "DEFAULT_MODEL",
     "LCDM",
     "LCDM_MNU",
     "W0WACDM",
@@ -95,6 +96,11 @@ class CosmologyModel:
                 f"its settings are {sorted(known)}"
             )
         self.parameters()  # raises if two components declare one name differently
+        if not any(cls.fixes_gauge for cls in self.components):
+            raise ValueError(
+                f"{self.name} has no species whose rest frame fixes the "
+                "synchronous gauge: keep ColdDarkMatter, at whatever density"
+            )
         provided = {n for cls in self.components for n in cls.provided_names()}
         missing = [n for n in GRAVITY_INTERFACE if n not in provided]
         if missing:
@@ -279,20 +285,7 @@ class CosmologyModel:
         """
 
         values = _cosmology_dictionary(cosmology)
-        parameters = self.parameters()
-        for key, value in values.items():
-            if key in parameters or not _is_concrete(value):
-                continue
-            owners = [(cls, p) for cls, p in declarations_of(key) if p.is_key]
-            if not owners:
-                continue  # a key no component declares
-            default = owners[0][1].default
-            if default is REQUIRED or float(value) != default:
-                names = ", ".join(sorted({cls.__name__ for cls, _ in owners}))
-                raise ValueError(
-                    f"{self.name} has no component with the parameter {key} "
-                    f"(set to {value}, default {default}); use a model with {names}"
-                )
+        self.check_keys(values)
         keys = self.parameter_keys()
         filled = {**{k: v for k, v in keys.items() if v is not REQUIRED}, **values}
         for cls in (*self.components, Recombination):
@@ -309,6 +302,30 @@ class CosmologyModel:
                 hook(*args)
             except ValueError as e:
                 raise ValueError(f"{self.name}: {e}") from None
+
+    def check_keys(self, cosmology) -> None:
+        """Raise ``ValueError`` if ``cosmology`` sets a parameter of a component this model lacks.
+
+        The first half of :meth:`check`: a key that another component
+        declares and none of this model's must keep its declared default, or
+        the solve would ignore it without a word.
+        """
+
+        values = _cosmology_dictionary(cosmology)
+        parameters = self.parameters()
+        for key, value in values.items():
+            if key in parameters or not _is_concrete(value):
+                continue
+            owners = [(cls, p) for cls, p in declarations_of(key) if p.is_key]
+            if not owners:
+                continue  # a key no component declares
+            default = owners[0][1].default
+            if default is REQUIRED or float(value) != default:
+                names = ", ".join(sorted({cls.__name__ for cls, _ in owners}))
+                raise ValueError(
+                    f"{self.name} has no component with the parameter {key} "
+                    f"(set to {value}, default {default}); use a model with {names}"
+                )
 
 
 @dataclass(frozen=True, eq=False)
@@ -391,3 +408,16 @@ a)`` and sound speed ``cs2_DE``, perturbed. Needs ``w != -1``."""
 
 W0WACDM_MNU = W0WACDM.add(MassiveNeutrinos, name="w0waCDM+mnu")
 """w0waCDM with massive neutrinos."""
+
+DEFAULT_MODEL = W0WACDM_MNU
+"""The model a bare cosmology stands for where no batch names one.
+
+:func:`~discoeb.background.density_coefficients`,
+:func:`~discoeb.background.background_history`,
+:func:`~discoeb.solver.conformal_ages` and
+:func:`~discoeb.solver.directed_inputs` take a parameter dictionary or a
+cosmology object as well as a batch. This model's components declare every
+built-in parameter, and on a cosmology another built-in model accepts its
+background is that model's. A cosmology that sets a parameter of a component
+outside it (one added to a model of your own) raises there
+(:meth:`CosmologyModel.check_keys`): pass the batch, ``MODEL(cosmology)``."""
