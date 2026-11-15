@@ -13,11 +13,12 @@ from conftest import HOST
 
 from discoeb.component import (
     Component,
+    Equations,
     Interaction,
-    Model,
     Setting,
     Species,
     State,
+    contributes,
     cuda,
     float64,
     load_setting,
@@ -107,7 +108,7 @@ def reference(y, tau, p):
 
 
 def toy_model(*extra):
-    return Model(
+    return Equations(
         [
             Background(),
             ColdDarkMatter(),
@@ -210,7 +211,7 @@ class Hierarchy(Species):
 
 def test_vector_states_are_arrays_and_their_output_buffers_are_provided():
     compiled = []
-    model = Model([Hierarchy()])
+    model = Equations([Hierarchy()])
     rhs = model.build(
         {"k": 0}, **{**HOST, "jit": lambda f: compiled.append(f.__name__) or f}
     )
@@ -248,7 +249,7 @@ def finite_difference_pattern(f, y, step=1e-6):
 
 def test_the_jacobian_pattern_is_traced_through_the_providers():
     """``stream`` couples each multipole to its neighbours; nothing declares that."""
-    model = Model([Hierarchy()])
+    model = Equations([Hierarchy()])
     tridiagonal = {
         (0, 1),
         (1, 0),
@@ -273,7 +274,7 @@ def test_the_jacobian_pattern_is_traced_through_the_providers():
         def d_v(k, v, output):
             output[0] = k * v[1]  # v_1 has no derivative of its own: an empty row
 
-    assert pattern(Model([Core(), Hierarchy()])) == {(0, 1)} | {
+    assert pattern(Equations([Core(), Hierarchy()])) == {(0, 1)} | {
         (r + 2, c + 2) for r, c in tridiagonal
     }
 
@@ -321,7 +322,7 @@ def test_a_branch_on_the_state_reads_every_input():
         def d_v(v, u, k):
             return -k * v
 
-    rows = {tuple(e) for e in Model([Switch()]).sparsity()}
+    rows = {tuple(e) for e in Equations([Switch()]).sparsity()}
     assert rows == {(0, 0), (0, 1), (1, 1)}
 
     class Floor(Species):
@@ -332,7 +333,7 @@ def test_a_branch_on_the_state_reads_every_input():
                 max(k, 1e-30) * u
             )  # a branch on an input, inside a provider that reads the state
 
-    assert {tuple(e) for e in Model([Floor()]).sparsity()} == {(0, 0)}
+    assert {tuple(e) for e in Equations([Floor()]).sparsity()} == {(0, 0)}
 
 
 def test_settings_are_class_attributes_loaded_from_the_environment(monkeypatch):
@@ -363,7 +364,9 @@ def test_settings_are_class_attributes_loaded_from_the_environment(monkeypatch):
         EXTRA = Setting("x")
 
     assert Derived.setting_names() == ("LMAX_T", "SCALE", "FLAG", "UNSET", "EXTRA")
-    assert Model([Hierarchy()]).nvar == 4 and Model([Hierarchy(LMAX=6)]).nvar == 7
+    assert (
+        Equations([Hierarchy()]).nvar == 4 and Equations([Hierarchy(LMAX=6)]).nvar == 7
+    )
 
     monkeypatch.setenv("DISCO_LMAX_T", "seven")
     with pytest.raises(ValueError, match="not a int"):
@@ -399,7 +402,7 @@ def test_device_names_are_replaced_when_a_provider_is_compiled():
         seen[f.__name__] = f.__globals__
         return f
 
-    rhs = Model([Scratch()]).build({"k": 0}, **{**HOST, "jit": jit})
+    rhs = Equations([Scratch()]).build({"k": 0}, **{**HOST, "jit": jit})
     np.testing.assert_allclose(rhs((1.0, 2.0, 3.0), 0.0, (2.0,)), (-2.0, -4.0, -6.0))
     assert seen["d_v"]["cuda"] is HOST["cuda"]
     # The module's own globals are untouched.
@@ -414,10 +417,10 @@ def test_partial_writes_of_a_vector_accumulate():
             for ell in range(2, len(x)):
                 output[ell] = -opacity * x[ell]
 
-    model = Model([Hierarchy(), Damping()])
+    model = Equations([Hierarchy(), Damping()])
     rhs = model.build({"k": 0, "opacity": 1}, **HOST)
     k, tau, x, op = 0.7, 3.0, (1.0, 2.0, 4.0, 8.0), 5.0
-    undamped = Model([Hierarchy()]).build({"k": 0}, **HOST)(x, tau, (k,))
+    undamped = Equations([Hierarchy()]).build({"k": 0}, **HOST)(x, tau, (k,))
     np.testing.assert_allclose(
         rhs(x, tau, (k, op)), np.add(undamped, (0.0, 0.0, -op * 4.0, -op * 8.0))
     )
@@ -425,6 +428,47 @@ def test_partial_writes_of_a_vector_accumulate():
     assert lines.index("Hierarchy__d_x(k, x, inv_tau, c_Hierarchy__d_x)") < lines.index(
         "Damping__d_x(opacity, x, c_Damping__d_x)"
     )
+
+
+def test_a_contribution_says_what_it_adds_to():
+    """A method under a name of its own adds to a sum or to another component's derivative.
+
+    So no two components of a model define one method differently, which a
+    type checker would report of the model class that inherits them all.
+    """
+
+    class Source(Component):
+        x = State()
+
+        def d_x(self, k):
+            return k
+
+        @contributes("total")
+        def total_source(self, x):
+            return 2.0 * x
+
+    class Sink(Interaction):
+        @contributes("total")
+        def total_sink(self):
+            return 1.0
+
+        @contributes("d_x")
+        def d_x_sink(self, x, total):
+            return -x * total
+
+    model = Equations([Source(), Sink()], sums=("total",))
+    x, k = 3.0, 0.5
+    rhs = model.build({"k": 0}, **HOST)
+    np.testing.assert_allclose(rhs((x,), 1.0, (k,)), (k - x * (2.0 * x + 1.0),))
+    assert Source.provided_names() == ("total",) and Sink.provided_names() == ("total",)
+
+    class Stray(Component):
+        @contributes("other")
+        def other_stray(self):
+            return 1.0
+
+    with pytest.raises(TypeError, match="neither one of the model's sums"):
+        Equations([Source(), Stray()], sums=("total",)).build({"k": 0}, **HOST)
 
 
 def test_matrix_states_and_tuple_constants():
@@ -461,7 +505,7 @@ def test_matrix_states_and_tuple_constants():
         def d_w(grho):
             return grho
 
-    model = Model([Bins([0.5, 0.25]), Reads()], sums=("grho",))
+    model = Equations([Bins([0.5, 0.25]), Reads()], sums=("grho",))
     rhs = model.build({"k": 0, "a": 1}, **HOST)
     assert model.state == ["psi_0_0", "psi_0_1", "psi_1_0", "psi_1_1", "w"]
     k, a, y = 3.0, 2.0, (1.0, 2.0, 4.0, 8.0, 0.0)
@@ -511,7 +555,7 @@ def test_a_device_function_a_component_holds_is_called_through_a_closure():
         def d_w(root):
             return root
 
-    model = Model([Tables({0: 2.0, 1: -1.0}.get), Reads()])
+    model = Equations([Tables({0: 2.0, 1: -1.0}.get), Reads()])
     rhs = model.build({"i": 0}, **HOST)
     assert rhs((0.0,), 1.0, (0,)) == (math.sqrt(5.0),)
     assert rhs((0.0,), 1.0, (1,)) == (math.sqrt(1e-60 + 1.0),)
@@ -547,7 +591,7 @@ def test_names_that_clash_with_state_elements_are_rejected():
             return x[0]
 
     with pytest.raises(ValueError, match="provides 'x_2', which is a state"):
-        Model([Hierarchy(), Alias()]).build({"k": 0}, **HOST)
+        Equations([Hierarchy(), Alias()]).build({"k": 0}, **HOST)
 
     class Scalar(Species):
         x_1 = State()
@@ -556,7 +600,7 @@ def test_names_that_clash_with_state_elements_are_rejected():
             return x_1
 
     with pytest.raises(ValueError, match="clashes"):
-        Model([Hierarchy(), Scalar()])
+        Equations([Hierarchy(), Scalar()])
 
 
 def test_output_is_only_for_vector_derivatives_and_initial_conditions():
@@ -572,7 +616,7 @@ def test_output_is_only_for_vector_derivatives_and_initial_conditions():
             return k
 
     with pytest.raises(TypeError, match="of a vector takes 'output' and fills it"):
-        Model([Hierarchy(), Returns()]).build({"k": 0}, **HOST)
+        Equations([Hierarchy(), Returns()]).build({"k": 0}, **HOST)
 
     class TakesOutput(Interaction):
         def d_vb(k, output):
@@ -586,7 +630,7 @@ def test_output_is_only_for_vector_derivatives_and_initial_conditions():
             return 1.0 / tau
 
     with pytest.raises(TypeError, match="only a vector state's derivative fills"):
-        Model([Hierarchy(), Quantity()]).build({"k": 0}, **HOST)
+        Equations([Hierarchy(), Quantity()]).build({"k": 0}, **HOST)
 
     class BadInitial(Species):
         v = State(2, initial=lambda k: k)
@@ -595,7 +639,7 @@ def test_output_is_only_for_vector_derivatives_and_initial_conditions():
             output[0] = k
 
     with pytest.raises(TypeError, match="takes 'output' and fills it"):
-        Model([BadInitial()]).initial_state([1.0])
+        Equations([BadInitial()]).initial_state([1.0])
 
 
 def test_cycles_are_reported():
@@ -613,7 +657,7 @@ def test_cycles_are_reported():
             return u
 
     with pytest.raises(ValueError, match="circular dependency"):
-        Model([Loop(), Reads()]).build({}, **HOST)
+        Equations([Loop(), Reads()]).build({}, **HOST)
 
     class Chicken(Species):
         c = State(initial=lambda c: c)
@@ -622,7 +666,7 @@ def test_cycles_are_reported():
             return c
 
     with pytest.raises(ValueError, match="circular dependency on the host"):
-        Model([Chicken()]).initial_state([1.0])
+        Equations([Chicken()]).initial_state([1.0])
 
 
 def test_methods_are_providers_with_or_without_self_or_staticmethod():
@@ -652,7 +696,7 @@ def test_methods_are_providers_with_or_without_self_or_staticmethod():
         def d_w(half):
             return half
 
-    model = Model([Scaled(0.5, SCALE=3.0), Reads()])
+    model = Equations([Scaled(0.5, SCALE=3.0), Reads()])
     rhs = model.build({"k": 0}, **HOST)
     assert rhs((2.0, 0.0), 1.0, (4.0,)) == (3.0 * 2.0 + 0.5 * 4.0, 8.0)
     assert Baryons.d_clxb(2.0) == -2.0
@@ -676,4 +720,4 @@ def test_providers_are_plain_positional_functions():
             return k * x
 
     with pytest.raises(TypeError, match="plain positional parameters"):
-        Model([Defaulted()]).build({"k": 0}, **HOST)
+        Equations([Defaulted()]).build({"k": 0}, **HOST)

@@ -3,7 +3,7 @@
 Each species is a :mod:`discoeb.component` component that owns its
 perturbation variables and states its own equations. A function names what
 it needs in its signature, as in ``d_vb(adotoa, vb, k, cs2, clxb)``, and
-:class:`~discoeb.component.Model` injects it. A species sees another only
+:class:`~discoeb.component.Equations` injects it. A species sees another only
 through the quantities it publishes. Couplings between species live in
 :mod:`discoeb.interactions`, the metric and the Friedmann sum in
 :mod:`discoeb.gravity`. Conventions are CAMB's (see :mod:`discoeb.gravity`).
@@ -29,7 +29,17 @@ from __future__ import annotations
 
 import math
 
-from .component import Component, Parameter, Setting, Species, State
+from jax.typing import ArrayLike
+
+from .component import (
+    Component,
+    Derived,
+    Parameter,
+    Setting,
+    Species,
+    State,
+    contributes,
+)
 from .gravity import C2OK, GRHOG_PER_TCMB4, GRHOR_PER_TCMB4
 from .util import neutrino_momentum_bins
 
@@ -68,21 +78,24 @@ class ColdDarkMatter(Species):
     # adiabatic mode: 3/4 of the photon density contrast
     clxc = State(initial=lambda theta: 0.75 * theta[0])
 
-    Omegam = Parameter()  # CDM and baryons
-    grhoc = Parameter(
-        value=lambda grhom, Omegam, Omegab: grhom * (Omegam - Omegab), directed=True
+    Omegam: ArrayLike = Parameter()  # CDM and baryons
+    grhoc: ArrayLike = Derived(
+        lambda grhom, Omegam, Omegab: grhom * (Omegam - Omegab), directed=True
     )
 
     def grhoc_t(self, grhoc, inv_a):
         return grhoc * inv_a
 
-    def grho(self, grhoc_t):
+    @contributes("grho")
+    def grho_c(self, grhoc_t):
         return grhoc_t
 
-    def grho_matter(self, grhoc_t):
+    @contributes("grho_matter")
+    def grho_matter_c(self, grhoc_t):
         return grhoc_t
 
-    def dgrho(self, grhoc_t, clxc):
+    @contributes("dgrho")
+    def dgrho_c(self, grhoc_t, clxc):
         return grhoc_t * clxc
 
     def d_clxc(self, z, k):
@@ -100,23 +113,27 @@ class Baryons(Species):
     vb = State(initial=lambda theta: 0.75 * theta[1])
 
     # The recombination rates read Omegab and the helium fraction YHe too.
-    Omegab = Parameter(directed=True)
-    YHe = Parameter(directed=True)
-    grhob = Parameter(value=lambda grhom, Omegab: grhom * Omegab, directed=True)
+    Omegab: ArrayLike = Parameter(directed=True)
+    YHe: ArrayLike = Parameter(directed=True)
+    grhob: ArrayLike = Derived(lambda grhom, Omegab: grhom * Omegab, directed=True)
 
     def grhob_t(self, grhob, inv_a):
         return grhob * inv_a
 
-    def grho(self, grhob_t):
+    @contributes("grho")
+    def grho_b(self, grhob_t):
         return grhob_t
 
-    def grho_matter(self, grhob_t):
+    @contributes("grho_matter")
+    def grho_matter_b(self, grhob_t):
         return grhob_t
 
-    def dgrho(self, grhob_t, clxb):
+    @contributes("dgrho")
+    def dgrho_b(self, grhob_t, clxb):
         return grhob_t * clxb
 
-    def dgq(self, grhob_t, vb):
+    @contributes("dgq")
+    def dgq_b(self, grhob_t, vb):
         return grhob_t * vb
 
     def d_clxb(self, z, vb, k):
@@ -153,10 +170,10 @@ class Fluid(Species):
     delta = State(initial=lambda w, clxc: (1.0 + w) * clxc)
     theta = State()
 
-    Omega = Parameter(0.0)
-    w = Parameter(0.0, column=True)
-    cs2 = Parameter(0.0, column=True)
-    grho0 = Parameter(value=lambda grhom, Omega: grhom * Omega, directed=True)
+    Omega: ArrayLike = Parameter(0.0)
+    w: ArrayLike = Parameter(0.0, column=True)
+    cs2: ArrayLike = Parameter(0.0, column=True)
+    grho0: ArrayLike = Derived(lambda grhom, Omega: grhom * Omega, directed=True)
 
     @classmethod
     def check(cls, Omega, w):
@@ -169,16 +186,20 @@ class Fluid(Species):
     def grho_t(self, grho0, a, w):
         return grho0 * a ** (-1.0 - 3.0 * w)
 
-    def grho(self, grho_t):
+    @contributes("grho")
+    def grho_fluid(self, grho_t):
         return grho_t
 
-    def gpres(self, grho_t, w):
+    @contributes("gpres")
+    def gpres_fluid(self, grho_t, w):
         return w * grho_t
 
-    def dgrho(self, grho_t, delta):
+    @contributes("dgrho")
+    def dgrho_fluid(self, grho_t, delta):
         return grho_t * delta
 
-    def dgq(self, grho_t, w, theta, k):
+    @contributes("dgq")
+    def dgq_fluid(self, grho_t, w, theta, k):
         return grho_t * (1.0 + w) * theta / k
 
     def d_delta(self, delta, theta, z, k, adotoa, w, cs2, inv_k2):
@@ -319,8 +340,8 @@ class Photons(Species):
     theta = State(lambda self: self.LMAX_G + 1, initial=_theta_initial)
     e = State(lambda self: self.LMAX_POL - 1)
 
-    Tcmb = Parameter(directed=True)  # K, read by the recombination rates too
-    grhog = Parameter(value=lambda Tcmb: GRHOG_PER_TCMB4 * Tcmb**4, directed=True)
+    Tcmb: ArrayLike = Parameter(directed=True)  # K, read by the recombination rates too
+    grhog: ArrayLike = Derived(lambda Tcmb: GRHOG_PER_TCMB4 * Tcmb**4, directed=True)
 
     def __init__(self, **settings):
         super().__init__(**settings)
@@ -329,10 +350,12 @@ class Photons(Species):
     def grhog_t(self, grhog, inv_a2):
         return grhog * inv_a2
 
-    def grho(self, grhog_t):
+    @contributes("grho")
+    def grho_g(self, grhog_t):
         return grhog_t
 
-    def grho_radiation(self, grhog_t):
+    @contributes("grho_radiation")
+    def grho_radiation_g(self, grhog_t):
         return grhog_t
 
     def clxg(self, theta, rsa, rsa_delta):
@@ -348,7 +371,8 @@ class Photons(Species):
         """The E-mode quadrupole, ``e[0]`` (none under the RSA)."""
         return (1.0 - rsa) * e[0]
 
-    def dgrho(self, grhog_t, theta, rsa):
+    @contributes("dgrho")
+    def dgrho_g(self, grhog_t, theta, rsa):
         """The hierarchy's density, zero under the RSA.
 
         As in CLASS, the ``h'`` that the RSA density reads leaves the
@@ -356,10 +380,12 @@ class Photons(Species):
         """
         return grhog_t * (1.0 - rsa) * theta[0]
 
-    def dgq(self, grhog_t, qg):
+    @contributes("dgq")
+    def dgq_g(self, grhog_t, qg):
         return grhog_t * qg
 
-    def dgrho_streaming(self, rsa, rsa_delta, grhog_t):
+    @contributes("dgrho_streaming")
+    def dgrho_streaming_g(self, rsa, rsa_delta, grhog_t):
         """The photons' density under the RSA.
 
         ``dgrho`` (and so ``h'``) leaves it out, but as in CLASS everything
@@ -367,10 +393,12 @@ class Photons(Species):
         """
         return rsa * rsa_delta * grhog_t
 
-    def gpres(self, grhog_t):
+    @contributes("gpres")
+    def gpres_g(self, grhog_t):
         return grhog_t * (1.0 / 3.0)
 
-    def dgpi(self, grhog_t, pig):
+    @contributes("dgpi")
+    def dgpi_g(self, grhog_t, pig):
         return grhog_t * pig
 
     def d_theta(self, k, z, sigma, theta, inv_tau, rsa, output):
@@ -415,9 +443,9 @@ class MasslessNeutrinos(Species):
 
     n = State(lambda self: self.LMAX_NR + 1, initial=_n_initial)
 
-    Neff = Parameter()
-    grhornomass = Parameter(
-        value=lambda Neff, Tcmb: Neff * (GRHOR_PER_TCMB4 * Tcmb**4), directed=True
+    Neff: ArrayLike = Parameter()
+    grhornomass: ArrayLike = Derived(
+        lambda Neff, Tcmb: Neff * (GRHOR_PER_TCMB4 * Tcmb**4), directed=True
     )
 
     def __init__(self, **settings):
@@ -427,28 +455,36 @@ class MasslessNeutrinos(Species):
     def grhor_t(self, grhornomass, inv_a2):
         return grhornomass * inv_a2
 
-    def grho(self, grhor_t):
+    @contributes("grho")
+    def grho_r(self, grhor_t):
         return grhor_t
 
-    def grho_radiation(self, grhor_t):
+    @contributes("grho_radiation")
+    def grho_radiation_r(self, grhor_t):
         return grhor_t
 
-    def grho_free_streaming(self, grhor_t):
+    @contributes("grho_free_streaming")
+    def grho_free_streaming_r(self, grhor_t):
         return grhor_t
 
-    def dgrho(self, grhor_t, n, rsa):
+    @contributes("dgrho")
+    def dgrho_r(self, grhor_t, n, rsa):
         return grhor_t * (1.0 - rsa) * n[0]
 
-    def dgq(self, grhor_t, n, rsa, rsa_q):
+    @contributes("dgq")
+    def dgq_r(self, grhor_t, n, rsa, rsa_q):
         return grhor_t * (n[1] + rsa * (rsa_q - n[1]))
 
-    def dgrho_streaming(self, rsa, rsa_delta, grhor_t):
+    @contributes("dgrho_streaming")
+    def dgrho_streaming_r(self, rsa, rsa_delta, grhor_t):
         return rsa * rsa_delta * grhor_t
 
-    def gpres(self, grhor_t):
+    @contributes("gpres")
+    def gpres_r(self, grhor_t):
         return grhor_t * (1.0 / 3.0)
 
-    def dgpi(self, grhor_t, n, rsa):
+    @contributes("dgpi")
+    def dgpi_r(self, grhor_t, n, rsa):
         return grhor_t * (1.0 - rsa) * n[2]
 
     def d_n(self, k, z, sigma, n, inv_tau, rsa, output):
@@ -489,11 +525,11 @@ class MassiveNeutrinos(Species):
 
     psi = State(lambda self: (self.NQMAX, self.LMAX_NU + 1), initial=_psi_initial)
 
-    Nmnu = Parameter(0.0)  # flavours
-    mnu = Parameter(0.0)  # eV, each
-    grhor_nu = Parameter(value=lambda Tcmb: GRHOR_PER_TCMB4 * Tcmb**4, directed=True)
-    n_mnu = Parameter(value=lambda Nmnu: Nmnu, column=True)
-    amnu = Parameter(value=lambda mnu, Tcmb: mnu * C2OK / Tcmb, directed=True)
+    Nmnu: ArrayLike = Parameter(0.0)  # flavours
+    mnu: ArrayLike = Parameter(0.0)  # eV, each
+    grhor_nu: ArrayLike = Derived(lambda Tcmb: GRHOR_PER_TCMB4 * Tcmb**4, directed=True)
+    n_mnu: ArrayLike = Derived(lambda Nmnu: Nmnu, column=True)
+    amnu: ArrayLike = Derived(lambda mnu, Tcmb: mnu * C2OK / Tcmb, directed=True)
 
     def __init__(self, **settings):
         super().__init__(**settings)
@@ -527,27 +563,32 @@ class MassiveNeutrinos(Species):
     def nu_norm(self, grhor_nu, n_mnu, inv_a2):
         return grhor_nu * n_mnu * inv_a2
 
-    def grho(self, nu_norm, rhonu):
+    @contributes("grho")
+    def grho_nu(self, nu_norm, rhonu):
         return nu_norm * rhonu
 
-    def dgrho(self, nu_norm, a, amnu, psi):
+    @contributes("dgrho")
+    def dgrho_nu(self, nu_norm, a, amnu, psi):
         total = 0.0
         for i in range(self.NQMAX):
             inv_v = math.sqrt(1.0 + (a * amnu * self.inv_q[i]) ** 2)
             total += self.weight[i] * psi[i, 0] * inv_v
         return nu_norm * total
 
-    def dgq(self, nu_norm, psi):
+    @contributes("dgq")
+    def dgq_nu(self, nu_norm, psi):
         total = 0.0
         for i in range(self.NQMAX):
             total += self.weight[i] * psi[i, 1]
         return nu_norm * total
 
-    def gpres(self, nu_norm, pnu):
+    @contributes("gpres")
+    def gpres_nu(self, nu_norm, pnu):
         """The background pressure, from ``pnu = (rhonu - d rhonu / d ln a) / 3``."""
         return nu_norm * pnu
 
-    def dgpi(self, nu_norm, a, amnu, psi):
+    @contributes("dgpi")
+    def dgpi_nu(self, nu_norm, a, amnu, psi):
         """The shear ``Sum w v psi2``: the pressure weighting ``q/epsilon`` of a massive bin."""
         total = 0.0
         for i in range(self.NQMAX):
@@ -572,9 +613,10 @@ class _DarkEnergyDensity(Species):
     densities sum to the critical one.
     """
 
-    grhov = Parameter(directed=True, closes_budget=True)
+    grhov: ArrayLike = Derived(directed=True, closes_budget=True)
 
-    def grho(self, grhov_t):
+    @contributes("grho")
+    def grho_de(self, grhov_t):
         return grhov_t
 
 
@@ -584,7 +626,8 @@ class CosmologicalConstant(_DarkEnergyDensity):
     def grhov_t(self, grhov, a2):
         return grhov * a2
 
-    def gpres(self, grhov_t):
+    @contributes("gpres")
+    def gpres_lambda(self, grhov_t):
         return -grhov_t
 
 
@@ -606,9 +649,9 @@ class DarkEnergy(_DarkEnergyDensity):
     clxq = State(initial=lambda w_DE_0, clxc: (1.0 + w_DE_0) * clxc)
     thetaq = State()
 
-    w_DE_0 = Parameter(-1.0, directed=True)
-    w_DE_a = Parameter(0.0, directed=True)
-    cs2_DE = Parameter(1.0, directed=True)
+    w_DE_0: ArrayLike = Parameter(-1.0, directed=True)
+    w_DE_a: ArrayLike = Parameter(0.0, directed=True)
+    cs2_DE: ArrayLike = Parameter(1.0, directed=True)
 
     @classmethod
     def check(cls, w_DE_0, w_DE_a):
@@ -631,13 +674,16 @@ class DarkEnergy(_DarkEnergyDensity):
     def grhov_t(self, grhov, rho_Q, a2):
         return grhov * rho_Q * a2
 
-    def gpres(self, grhov_t, w_Q):
+    @contributes("gpres")
+    def gpres_de(self, grhov_t, w_Q):
         return w_Q * grhov_t
 
-    def dgrho(self, grhov_t, clxq):
+    @contributes("dgrho")
+    def dgrho_de(self, grhov_t, clxq):
         return grhov_t * clxq
 
-    def dgq(self, grhov_t, w_Q, thetaq, k):
+    @contributes("dgq")
+    def dgq_de(self, grhov_t, w_Q, thetaq, k):
         return grhov_t * (1.0 + w_Q) * thetaq / k
 
     def w_Q_prime(self, w_DE_a, adotoa, a):

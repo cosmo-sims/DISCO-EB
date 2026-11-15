@@ -26,28 +26,21 @@ from discoeb import LCDM, solve_eb
 
 # Planck 2018 flat LCDM with massless neutrinos.
 h = 0.6732117
-cosmology = {
-    "Omegam": (0.02238280 + 0.1201075) / h**2,
-    "Omegab": 0.02238280 / h**2,
-    "w_DE_0": -1.0,
-    "w_DE_a": 0.0,
-    "cs2_DE": 1.0,
-    "Omegak": 0.0,
-    "A_s": 2.100549e-9,
-    "n_s": 0.9660499,
-    "H0": 100.0 * h,
-    "Tcmb": 2.7255,
-    "YHe": 0.2454006,
-    "Neff": 3.046,
-    "Nmnu": 0.0,
-    "mnu": 0.0,
-    "k_p": 0.05,
-}
+cosmology = LCDM(
+    Omegam=(0.02238280 + 0.1201075) / h**2,
+    Omegab=0.02238280 / h**2,
+    A_s=2.100549e-9,
+    n_s=0.9660499,
+    H0=100.0 * h,
+    Tcmb=2.7255,
+    YHe=0.2454006,
+    Neff=3.046,
+)
 
 k = np.geomspace(1.0e-4, 1.0, 13)  # 1/Mpc
 tau = np.geomspace(1.0, 2.0e4, 200)  # Mpc; the last values lie past tau0
 
-solution = solve_eb(LCDM(cosmology), k, tau, keep=("R",))
+solution = solve_eb(cosmology, k, tau, keep=("R",))
 R = np.asarray(solution["R"][0])  # (n_k, n_tau); one cosmology was passed
 tau0 = float(solution.tau0[0])
 
@@ -72,23 +65,17 @@ print("a mode's R falls away once k tau ~ 1 and the potentials decay inside it."
 # thermal history is held fixed (see solve_eb).
 import jax.numpy as jnp  # noqa: E402
 
-from discoeb.cosmology import DIFFERENTIABLE_PARAMETERS  # noqa: E402
-
-fixed = {
-    key: value
-    for key, value in cosmology.items()
-    if key not in DIFFERENTIABLE_PARAMETERS
-}
+PARAMETERS = ("Omegam", "Omegab", "H0", "Tcmb", "Neff")
 
 
 def r_today(log_theta):
-    param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, jnp.exp(log_theta)))}
-    return jnp.log(solve_eb(LCDM(param), k, tau, keep=("R",))["R"][0, :, -1])
+    moved = cosmology.replace(**dict(zip(PARAMETERS, jnp.exp(log_theta))))
+    return jnp.log(solve_eb(moved, k, tau, keep=("R",))["R"][0, :, -1])
 
 
-log_theta = jnp.log(jnp.asarray([cosmology[key] for key in DIFFERENTIABLE_PARAMETERS]))
+log_theta = jnp.log(jnp.asarray([getattr(cosmology, key) for key in PARAMETERS]))
 jacobian = np.asarray(jax.jacfwd(r_today)(log_theta))
 print()
-print("d ln R(tau0) / d ln " + "".join(f"{n:>12}" for n in DIFFERENTIABLE_PARAMETERS))
+print("d ln R(tau0) / d ln " + "".join(f"{n:>12}" for n in PARAMETERS))
 for ki, kv in enumerate(k):
     print(f"k={kv:8.1e}" + "".join(f"{v:12.4f}" for v in jacobian[ki]))

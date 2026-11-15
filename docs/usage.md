@@ -1,17 +1,23 @@
 # Models
 
-A model is the list of components a solve evolves: the species (`discoeb.species`), the interactions between them (`discoeb.interactions`) and the metric and Friedmann sum (`discoeb.gravity`). Applied to cosmologies (parameter dictionaries) it gives the batch every solve takes, as `solve_eb(LCDM(params), k, tau)`. `discoeb.models` defines `LCDM` and `W0WACDM`, each with a massive-neutrino variant (`LCDM_MNU`, `W0WACDM_MNU`). A model rejects a cosmology it cannot represent, such as `w_DE_0 = -0.9` under `LCDM`.
+A model is a class whose bases are its components: the species it evolves (`discoeb.species`), the interactions between them (`discoeb.interactions`) and the metric and Friedmann sum (`discoeb.gravity`). An instance of a model is a cosmology. `discoeb.models` defines `LCDM` and `W0WACDM`, each with a massive-neutrino variant (`LCDM_MNU`, `W0WACDM_MNU`).
 
-Models derive from each other:
+The components declare the parameters, so a model's constructor takes exactly its own, by keyword. A type checker reads them from the declarations and flags a missing or unknown one, as the constructor does at run time. `help(LCDM)` lists them. A cosmology is immutable: `planck.replace(H0=70.0)` gives a new one. Dictionaries go through `LCDM(**params)`, or `LCDM.from_dict(params)` for one written for another model, whose extra keys must keep their defaults.
+
+A new model is a class statement. A model among the bases stands for its components, and the order of the bases is the state order:
 
 ```python
 from discoeb.models import LCDM
-from discoeb.species import CosmologicalConstant, DarkEnergy, MassiveNeutrinos
+from discoeb.species import MassiveNeutrinos
 
-W0WACDM = LCDM.replace(CosmologicalConstant, DarkEnergy, name="w0waCDM")
-LCDM_MNU = LCDM.add(MassiveNeutrinos, name="LCDM+mnu")
-COARSE = LCDM.with_settings(LMAX_G=10, LMAX_NR=10)  # shorter hierarchies
+class LCDM_MNU(LCDM, MassiveNeutrinos):
+    """LCDM with massive neutrinos."""
+
+class Coarse(LCDM, LMAX_G=10, LMAX_NR=10):  # shorter hierarchies
+    """LCDM with fewer photon and neutrino multipoles."""
 ```
+
+`LCDM.swap(CosmologicalConstant, DarkEnergy, name="w0waCDM")`, `LCDM.add(...)`, `LCDM.remove(...)` and `LCDM.with_settings(...)` derive models at run time, but a type checker only sees the parameters of a model written as a class statement.
 
 # Keeping quantities
 
@@ -27,27 +33,25 @@ Give `Omegam`, `Omegab`, `H0`, `Tcmb` or `Neff` as JAX values and the kept value
 import jax.numpy as jnp
 
 def R_today(omega_m):
-    param = {**cosmology, "Omegam": omega_m}
-    return solve_eb(LCDM(param), k, tau, keep=("R",))["R"][0, :, -1]
+    return solve_eb(planck.replace(Omegam=omega_m), k, tau, keep=("R",))["R"][0, :, -1]
 
-dR = jax.jacfwd(R_today)(jnp.asarray(cosmology["Omegam"]))  # (64,)
+dR = jax.jacfwd(R_today)(jnp.asarray(planck.Omegam))  # (64,)
 ```
 
 The derivative holds the conformal age and the reionization redshift fixed. The other parameters can't be differentiated, and trying raises an error.
 
 ## Under `jit`
 
-`solve_eb` traces under `jax.jit` with every parameter traced, so one compiled function serves every cosmology with the same keys. The wave numbers must be plain numbers, since they set the launch's shape:
+A cosmology is a JAX pytree whose leaves are its parameters, so `jax.jit` traces them and one compiled function serves every cosmology of the model. The wave numbers must be plain numbers, since they set the launch's shape:
 
 ```python
 import jax
 
 @jax.jit
 def power_spectrum(cosmology):
-    batch = LCDM([cosmology])
-    tau0 = conformal_ages(batch)[0]
+    tau0 = conformal_ages(cosmology)[0]
     solution = solve_eb(
-        batch,
+        cosmology,
         k,
         tau0[None],
         keep=("clxc", "clxb", "z", "vb"),
@@ -58,11 +62,11 @@ def power_spectrum(cosmology):
         k,
         **today,
         tau0=tau0,
-        Omegam=cosmology["Omegam"],
-        Omegab=cosmology["Omegab"],
-        A_s=cosmology["A_s"],
-        n_s=cosmology["n_s"],
-        k_p=cosmology["k_p"],
+        Omegam=cosmology.Omegam,
+        Omegab=cosmology.Omegab,
+        A_s=cosmology.A_s,
+        n_s=cosmology.n_s,
+        k_p=cosmology.k_p,
     )
 ```
 
@@ -70,4 +74,4 @@ Under `jit` a model can't check its cosmologies (for instance `w_DE_0 = -1` unde
 
 ## Extending the model
 
-A new species or interaction is a `Component` subclass; add it to a model with `add` or `replace`. To keep quantities a model does not provide, `solve_eb(..., extra=...)` appends your own components. A stateless `Component` subclass declares providers whose parameter names are the quantities they read. DISCO-CMB defines its line-of-sight sources this way, so they compile into the same kernel.
+A new species or interaction is a `Component` subclass; list it among a model's bases. It declares its parameters with an annotation, `Omega_x: ArrayLike = Parameter(0.0)` for a key and `grhox: ArrayLike = Derived(lambda grhom, Omega_x: grhom * Omega_x)` for one derived from others, so that they reach the model's constructor. A method provides the quantity it is named after; a contribution to a sum or to another component's derivative has a name of its own and says what it adds to, `@contributes("dgrho") def dgrho_x(self, ...)`, so that the model class inheriting every component has no clashing methods. To keep quantities a model does not provide, `solve_eb(..., extra=...)` appends your own components. A stateless `Component` subclass declares providers whose parameter names are the quantities they read. DISCO-CMB defines its line-of-sight sources this way, so they compile into the same kernel.

@@ -23,6 +23,7 @@ The benchmark times one warmed :func:`kernel_thermal_history` of the batch.
 
 import numpy as np
 import pytest
+from conftest import cosmologies_of
 from test_perturbations import BATCH_SIZE_CASES, _class_base, _perturbed_cosmologies
 
 THERMAL_KEEP = ("a", "xe", "Tmat", "cs2", "opacity", "kappa")
@@ -50,7 +51,9 @@ def kernel_thermal_history(cosmologies, n_tau: int = N_TAU):
 
     tau0 = np.asarray(conformal_ages(cosmologies))
     tau = np.geomspace(TAU_START, float(tau0.max()), n_tau)
-    solution = solve_eb(LCDM(cosmologies), THERMAL_K, tau, keep=THERMAL_KEEP)
+    solution = solve_eb(
+        cosmologies_of(LCDM, cosmologies), THERMAL_K, tau, keep=THERMAL_KEEP
+    )
     return (
         tau,
         tau0,

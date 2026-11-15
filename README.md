@@ -58,28 +58,27 @@ You need a GPU to run a solve, but not to import the package. modax brings the C
 
 <!-- start:quickstart -->
 
-Every solve names its model. This example keeps the comoving curvature perturbation $\mathcal{R}$ and the CDM density contrast of flat LCDM, for 64 wave modes at 100 conformal times:
+A cosmology is an instance of a model, with the model's parameters as keyword arguments. This example keeps the comoving curvature perturbation $\mathcal{R}$ and the CDM density contrast of flat LCDM, for 64 wave modes at 100 conformal times:
 
 ```python
 import numpy as np
 from discoeb import LCDM, solve_eb
 
 h = 0.6732
-cosmology = {
-    "Omegam": 0.1424 / h**2, "Omegab": 0.02238 / h**2, "H0": 100 * h,
-    "w_DE_0": -1.0, "w_DE_a": 0.0, "cs2_DE": 1.0, "Omegak": 0.0,
-    "A_s": 2.1e-9, "n_s": 0.966, "k_p": 0.05,
-    "Tcmb": 2.7255, "YHe": 0.2454, "Neff": 3.046, "Nmnu": 0.0, "mnu": 0.0,
-}
+planck = LCDM(
+    Omegam=0.1424 / h**2, Omegab=0.02238 / h**2, H0=100 * h,
+    A_s=2.1e-9, n_s=0.966, Tcmb=2.7255, YHe=0.2454, Neff=3.046,
+)
 k = np.geomspace(1e-4, 1.0, 64)      # 1/Mpc
 tau = np.geomspace(1.0, 2e4, 100)    # Mpc, the last times past today
 
-solution = solve_eb(LCDM(cosmology), k, tau, keep=("R", "clxc"))
-R = solution["R"]  # (1, 64, 100): cosmologies, wave modes, times
+solution = solve_eb([planck, planck.replace(H0=70.0)], k, tau, keep=("R", "clxc"))
+R = solution["R"]  # (2, 64, 100): cosmologies, wave modes, times
 ```
 
 `discoeb.models` has `LCDM`, `W0WACDM` (a CPL dark-energy fluid) and their
-massive-neutrino variants `LCDM_MNU` and `W0WACDM_MNU`.
+massive-neutrino variants `LCDM_MNU` and `W0WACDM_MNU`. Each takes exactly
+its own parameters, so a type checker flags a missing or unknown one.
 `examples/flat_lcdm_power_spectrum.py` computes the matter power spectrum of
 Planck 2018 flat LCDM in one jitted function.
 

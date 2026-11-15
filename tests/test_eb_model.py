@@ -68,22 +68,22 @@ def test_the_einstein_sources_sum_over_the_enabled_species():
     model, _ = build(MODELS["flat-lcdm"])
     lines = [ell.strip() for ell in model.source.splitlines()]
     assert (
-        "grho = ColdDarkMatter__grho(ColdDarkMatter_self, grhoc_t) + Baryons__grho(Baryons_self, grhob_t)"
-        " + Photons__grho(Photons_self, grhog_t) + MasslessNeutrinos__grho(MasslessNeutrinos_self, grhor_t) + CosmologicalConstant__grho(CosmologicalConstant_self, grhov_t)"
+        "grho = ColdDarkMatter__grho_c(ColdDarkMatter_self, grhoc_t) + Baryons__grho_b(Baryons_self, grhob_t)"
+        " + Photons__grho_g(Photons_self, grhog_t) + MasslessNeutrinos__grho_r(MasslessNeutrinos_self, grhor_t) + CosmologicalConstant__grho_de(CosmologicalConstant_self, grhov_t)"
     ) in lines
     assert (
-        "dgq = Baryons__dgq(Baryons_self, grhob_t, vb) + Photons__dgq(Photons_self, grhog_t, qg) + MasslessNeutrinos__dgq(MasslessNeutrinos_self, grhor_t, n, rsa, rsa_q)"
+        "dgq = Baryons__dgq_b(Baryons_self, grhob_t, vb) + Photons__dgq_g(Photons_self, grhog_t, qg) + MasslessNeutrinos__dgq_r(MasslessNeutrinos_self, grhor_t, n, rsa, rsa_q)"
         in lines
     )
     assert "rhonu" not in model.source  # the massive-neutrino table is not read
 
     model, _ = build(MODELS["ragged-blocks"])
     assert (
-        "DarkEnergy__grho(DarkEnergy_self, grhov_t) + MassiveNeutrinos__grho(MassiveNeutrinos_self, nu_norm, rhonu)"
+        "DarkEnergy__grho_de(DarkEnergy_self, grhov_t) + MassiveNeutrinos__grho_nu(MassiveNeutrinos_self, nu_norm, rhonu)"
         in model.source
     )
     assert (
-        "DarkEnergy__dgq(DarkEnergy_self, grhov_t, w_Q, thetaq, k) + MassiveNeutrinos__dgq(MassiveNeutrinos_self, nu_norm, psi)"
+        "DarkEnergy__dgq_de(DarkEnergy_self, grhov_t, w_Q, thetaq, k) + MassiveNeutrinos__dgq_nu(MassiveNeutrinos_self, nu_norm, psi)"
         in model.source
     )
     assert "psi = cuda.local.array((2, 10), float64)" in model.source
@@ -98,16 +98,16 @@ def test_thomson_scattering_writes_the_photon_and_baryon_derivatives():
     model, _ = build(MODELS["flat-lcdm"])
     lines = [ell.strip() for ell in model.source.splitlines()]
     assert (
-        "d_vb = Baryons__d_vb(Baryons_self, adotoa, vb, k, cs2, clxb) + ThomsonScattering__d_vb(ThomsonScattering_self, photbar, opacity, slip)"
+        "d_vb = Baryons__d_vb(Baryons_self, adotoa, vb, k, cs2, clxb) + ThomsonScattering__d_vb_thomson(ThomsonScattering_self, photbar, opacity, slip)"
         in lines
     )
     assert lines.index(
         "Photons__d_theta(Photons_self, k, z, sigma, theta, inv_tau, rsa, c_Photons__d_theta)"
     ) < lines.index(
-        "ThomsonScattering__d_theta(ThomsonScattering_self, opacity, slip, polter, theta, rsa, c_ThomsonScattering__d_theta)"
+        "ThomsonScattering__d_theta_thomson(ThomsonScattering_self, opacity, slip, polter, theta, rsa, c_ThomsonScattering__d_theta_thomson)"
     )
     assert (
-        "ThomsonScattering__d_e(ThomsonScattering_self, opacity, polter, e, rsa, c_ThomsonScattering__d_e)"
+        "ThomsonScattering__d_e_thomson(ThomsonScattering_self, opacity, polter, e, rsa, c_ThomsonScattering__d_e_thomson)"
         in lines
     )
     # Neutrinos are collisionless: one writer.
@@ -120,78 +120,126 @@ def test_a_hierarchy_needs_an_octupole():
 
 
 def test_models_derive_from_each_other():
-    from discoeb.models import LCDM, LCDM_MNU, W0WACDM
+    from discoeb.models import LCDM, LCDM_MNU, W0WACDM, Model
     from discoeb.species import CosmologicalConstant
 
-    assert W0WACDM.components.index(DarkEnergy) == LCDM.components.index(
+    assert W0WACDM.spec.components.index(DarkEnergy) == LCDM.spec.components.index(
         CosmologicalConstant
     )
-    assert LCDM_MNU.components == (*LCDM.components, MassiveNeutrinos)
+    # a model among the bases stands for its components
+    assert LCDM_MNU.spec.components == (*LCDM.spec.components, MassiveNeutrinos)
+    assert issubclass(LCDM_MNU, LCDM) and LCDM_MNU.spec.name == "LCDM+mnu"
     assert LCDM.with_settings(LMAX_G=20).setting("LMAX_G") == 20
-    assert LCDM.with_settings(LMAX_G=20) != LCDM and hash(LCDM) == hash(
-        LCDM.with_settings()
-    )
+    assert LCDM.with_settings(LMAX_G=20) is LCDM.with_settings(LMAX_G=20)
+    assert LCDM.with_settings(LMAX_G=20) != LCDM and LCDM.with_settings() is LCDM
     with pytest.raises(ValueError, match="NQMAX"):
         LCDM.with_settings(NQMAX=4)  # LCDM has no massive neutrinos
+    # the run-time derivations are the class statements' equivalents
+    assert LCDM.add(MassiveNeutrinos, name="LCDM+mnu").spec == LCDM_MNU.spec
+    swapped = LCDM.swap(CosmologicalConstant, DarkEnergy, name="w0waCDM")
+    assert swapped.spec == W0WACDM.spec and issubclass(swapped, Model)
+
+    class Coarse(LCDM, LMAX_G=10):
+        """A class keyword sets a setting."""
+
+    assert (
+        Coarse.setting("LMAX_G") == 10
+        and Coarse.spec.components == LCDM.spec.components
+    )
+
+
+BASE = dict(
+    Omegam=0.31,
+    Omegab=0.049,
+    A_s=2.1e-9,
+    n_s=0.966,
+    H0=67.0,
+    Tcmb=2.7255,
+    YHe=0.245,
+    Neff=3.046,
+)
 
 
 def test_a_model_rejects_a_cosmology_it_cannot_represent():
-    from discoeb.cosmology import as_cosmology
     from discoeb.models import LCDM, LCDM_MNU, W0WACDM
 
-    base = dict(
-        Omegam=0.31,
-        Omegab=0.049,
-        A_s=2.1e-9,
-        n_s=0.966,
-        H0=67.0,
-        Tcmb=2.7255,
-        YHe=0.245,
-        Neff=3.046,
-    )
-    LCDM.check(as_cosmology(base))
-    LCDM_MNU.check(as_cosmology({**base, "Nmnu": 1.0, "mnu": 0.06}))
-    W0WACDM.check(as_cosmology({**base, "w_DE_0": -0.9}))
-    with pytest.raises(ValueError, match="DarkEnergy"):
-        LCDM.check(as_cosmology({**base, "w_DE_0": -0.9}))
+    LCDM(**BASE)
+    LCDM_MNU(**BASE, Nmnu=1.0, mnu=0.06)
+    W0WACDM(**BASE, w_DE_0=-0.9)
+    with pytest.raises(TypeError, match="no parameter 'w_DE_0'.*DarkEnergy"):
+        LCDM(**BASE, w_DE_0=-0.9)  # ty: ignore[unknown-argument]
     with pytest.raises(ValueError, match="w != -1"):
-        W0WACDM.check(as_cosmology(base))
-    with pytest.raises(ValueError, match="MassiveNeutrinos"):
-        LCDM.check(as_cosmology({**base, "Nmnu": 1.0, "mnu": 0.06}))
+        W0WACDM(**BASE)
+    with pytest.raises(TypeError, match="no parameter 'Nmnu'.*MassiveNeutrinos"):
+        LCDM(**BASE, Nmnu=1.0)  # ty: ignore[unknown-argument]
+    with pytest.raises(TypeError, match=r"needs the parameters \['H0'\]"):
+        LCDM(**{k: v for k, v in BASE.items() if k != "H0"})
+    with pytest.raises(TypeError, match="by keyword"):
+        LCDM(BASE)  # ty: ignore[too-many-positional-arguments]
+    # from_dict takes a dictionary written for another model, as long as the
+    # keys this model lacks keep their defaults
+    assert LCDM.from_dict({**BASE, "w_DE_0": -1.0, "unknown": 3.0}).H0 == 67.0
+    with pytest.raises(ValueError, match="DarkEnergy"):
+        LCDM.from_dict({**BASE, "w_DE_0": -0.9})
+    # traced, a key the model lacks can't be checked yet: the cosmology holds
+    # it for the solve, which raises if it is differentiated
+    import jax
+
+    from discoeb.models import _batch_of
+
+    held = jax.jit(lambda w: LCDM.from_dict({**BASE, "w_DE_0": w}))(-1.0)
+    assert "w_DE_0" not in held.to_dict() and "w_DE_0" in held._held
+    assert _batch_of(held).cosmologies[0]["w_DE_0"] == -1.0
 
 
-def test_a_model_applied_to_cosmologies_is_the_batch_a_solve_takes():
+def test_a_cosmology_is_an_immutable_pytree_of_its_parameters():
+    import inspect
+
+    import jax
     import jax.numpy as jnp
 
-    from discoeb.models import LCDM, W0WACDM, CosmologyBatch, _batch_of
+    from discoeb.models import LCDM
 
-    base = dict(
-        Omegam=0.31,
-        Omegab=0.049,
-        A_s=2.1e-9,
-        n_s=0.966,
-        H0=67.0,
-        Tcmb=2.7255,
-        YHe=0.245,
-        Neff=3.046,
-    )
-    one = LCDM(base)
-    assert isinstance(one, CosmologyBatch) and one.model is LCDM
-    assert one.cosmologies == (base,) and len(one) == 1
-    many = LCDM([base, {**base, "H0": 70.0}, {**base, "H0": 72.0}])
-    assert len(many) == 3 and many[1].cosmologies[0]["H0"] == 70.0
-    assert len(many[1:]) == 2 and many[1:].model is LCDM
-    # The dictionaries are kept as given, so a JAX value stays differentiable.
-    traced = LCDM({**base, "Omegam": jnp.asarray(0.31)})
-    assert isinstance(traced.cosmologies[0]["Omegam"], type(jnp.asarray(0.31)))
-    with pytest.raises(ValueError, match="DarkEnergy"):
-        LCDM({**base, "w_DE_0": -0.9})
-    with pytest.raises(ValueError, match="w != -1"):
-        W0WACDM([base])
-    with pytest.raises(ValueError, match="at least one"):
-        LCDM([])
-    with pytest.raises(TypeError, match=r"LCDM\(\[params"):
-        _batch_of([base])
+    planck = LCDM(**BASE)
+    assert isinstance(planck, LCDM) and planck.H0 == 67.0 and planck.k_p == 0.05
+    assert planck.to_dict() == {**LCDM.parameter_keys(), **BASE} | {
+        "k_p": 0.05,
+        "Omegak": 0.0,
+        "tau_reio": 0.0,
+    }
+    later = planck.replace(H0=70.0)
+    assert later.H0 == 70.0 and planck.H0 == 67.0
+    with pytest.raises(AttributeError, match="immutable"):
+        planck.H0 = 70.0
+    # JAX values are kept as given, so they stay differentiable
+    traced = planck.replace(Omegam=jnp.asarray(0.31))
+    assert isinstance(traced.Omegam, jax.Array)
+    leaves, tree = jax.tree_util.tree_flatten(planck)
+    assert leaves == list(planck.to_dict().values())
+    doubled = jax.tree_util.tree_unflatten(tree, [2.0 * x for x in leaves])
+    assert isinstance(doubled, LCDM) and doubled.H0 == 134.0
+    # the constructor's signature and docstring list the parameters
+    signature = inspect.signature(LCDM)
+    assert list(signature.parameters) == list(LCDM.parameter_keys())
+    assert signature.parameters["k_p"].default == 0.05
+    assert signature.parameters["H0"].default is inspect.Parameter.empty
+    assert "Parameters" in (LCDM.__doc__ or "") and "\nH0 : " in (LCDM.__doc__ or "")
+
+
+def test_a_solve_takes_cosmologies_of_one_model():
+    from discoeb.models import LCDM, W0WACDM, _batch_of
+
+    planck = LCDM(**BASE)
+    batch = _batch_of([planck, planck.replace(H0=70.0)])
+    assert batch.model == LCDM.spec and batch.model_class is LCDM and len(batch) == 2
+    assert batch.cosmologies[1]["H0"] == 70.0
+    assert len(_batch_of(planck)) == 1
+    with pytest.raises(TypeError, match="share a model"):
+        _batch_of([planck, W0WACDM(**BASE, w_DE_0=-0.9)])
+    with pytest.raises(TypeError, match="non-empty"):
+        _batch_of([])
+    with pytest.raises(TypeError, match=r"LCDM\(H0="):
+        _batch_of([BASE])
 
 
 def test_the_truncations_are_the_components_settings():
@@ -296,8 +344,8 @@ def test_the_pressure_sums_over_the_species_and_gives_the_comoving_curvature():
     )
     lines = [line.strip() for line in fn._generated_source.splitlines()]
     assert (
-        "gpres = Photons__gpres(Photons_self, grhog_t) + MasslessNeutrinos__gpres(MasslessNeutrinos_self, grhor_t)"
-        " + DarkEnergy__gpres(DarkEnergy_self, grhov_t, w_Q) + MassiveNeutrinos__gpres(MassiveNeutrinos_self, nu_norm, pnu)"
+        "gpres = Photons__gpres_g(Photons_self, grhog_t) + MasslessNeutrinos__gpres_r(MasslessNeutrinos_self, grhor_t)"
+        " + DarkEnergy__gpres_de(DarkEnergy_self, grhov_t, w_Q) + MassiveNeutrinos__gpres_nu(MassiveNeutrinos_self, nu_norm, pnu)"
     ) in lines
 
     # Flat LCDM with the fluids at rest: R is the curvature eta alone, and

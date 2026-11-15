@@ -1,9 +1,9 @@
-"""Cosmologies: the parameter dictionary and its hashable form.
+"""Cosmologies as the solver reads them: parameter dictionaries and their hashable form.
 
-A cosmology is a parameter dictionary (``Omegam``, ``Omegab``, ``H0``,
-``Tcmb``, ``YHe``, ``Neff``, ``A_s``, ``n_s``, ...) or the hashable object
-:func:`as_cosmology` returns. It is a point in a model's parameter space; the
-model (:mod:`discoeb.models`) says which species it evolves.
+A cosmology is an instance of a model (:mod:`discoeb.models`), ``LCDM(H0=...,
+...)``. Inside, the solver reads its parameters as a dictionary (``Omegam``,
+``Omegab``, ``H0``, ``Tcmb``, ``YHe``, ``Neff``, ``A_s``, ``n_s``, ...), and
+:func:`as_cosmology` gives a hashable form for caching the background.
 """
 
 import functools
@@ -95,13 +95,15 @@ def _default(key):
 
 
 def _as_cosmology(cosmology):
-    """Return a parameter dictionary as a ``_ParamCosmology``, anything else as is.
+    """Return a cosmology or a parameter dictionary as a ``_ParamCosmology``, anything else as is.
 
     Keys a component declares besides the fields go into ``extra``. A key no
     component declares is dropped, and a field's key left out takes its
     declared default.
     """
 
+    if _is_model_instance(cosmology):
+        cosmology = cosmology.to_dict()
     if not isinstance(cosmology, dict):
         return cosmology
     c = dict(cosmology)
@@ -135,6 +137,14 @@ def _as_cosmology(cosmology):
         tau_reio=float(c["tau_reio"]),
         extra=extra,
     )
+
+
+def _is_model_instance(cosmology) -> bool:
+    """Whether ``cosmology`` is an instance of a :class:`~discoeb.models.Model`."""
+
+    from .models import Model
+
+    return isinstance(cosmology, Model)
 
 
 def _as_batch(cosmologies) -> tuple:
@@ -176,10 +186,12 @@ reads ``A_s``, ``n_s`` and ``k_p``."""
 
 
 def _cosmology_dictionary(cosmology) -> dict:
-    """Return a cosmology's parameter dictionary, given a dictionary or a cosmology object."""
+    """Return a cosmology's parameter dictionary, given a cosmology, a dictionary or a ``_ParamCosmology``."""
 
     if isinstance(cosmology, dict):
         return dict(cosmology)
+    if _is_model_instance(cosmology):
+        return cosmology.to_dict()
     d = cosmology.to_background_params()
     d["k_p"] = cosmology.k_pivot
     return d
@@ -211,8 +223,8 @@ def _columns(
     """Return a batch's parameters as JAX columns ``(n_cosmologies,)`` by key.
 
     ``keys`` maps the keys a model declares to their defaults
-    (:meth:`CosmologyModel.parameter_keys
-    <discoeb.models.CosmologyModel.parameter_keys>`), by default those of
+    (:meth:`ModelSpec.parameter_keys
+    <discoeb.models.ModelSpec.parameter_keys>`), by default those of
     every built-in species. A cosmology may leave out a key with a default.
     Keys other components declare are kept when a cosmology gives them, so
     that differentiating one raises, and keys no component declares are
@@ -225,9 +237,9 @@ def _columns(
     """
 
     if keys is None:
-        from .models import DEFAULT_MODEL
+        from .models import DEFAULT_SPEC
 
-        keys = DEFAULT_MODEL.parameter_keys()
+        keys = DEFAULT_SPEC.parameter_keys()
     rows = [_cosmology_dictionary(c) for c in cosmologies]
     keys = dict(keys)
     for row in rows:
@@ -261,6 +273,7 @@ def _is_concrete(value) -> bool:
 
 
 as_cosmology = _as_cosmology
-"""Normalise a cosmology given as a parameter dictionary (``Omegam``, ``Omegab``,
-``H0``, ``Tcmb``, ``YHe``, ``Neff``, ``A_s``, ``n_s``, ... ) to the solver's
-cosmology object. Returns one already normalised as it is."""
+"""Return a cosmology, or a parameter dictionary (``Omegam``, ``Omegab``, ``H0``,
+``Tcmb``, ``YHe``, ``Neff``, ``A_s``, ``n_s``, ...), in the hashable form the
+background caches on. Returns one already in that form as it is. The form
+keeps the parameters, not the model."""

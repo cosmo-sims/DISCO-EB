@@ -6,23 +6,23 @@
 
 .. autofunction:: discoeb.solve_eb
 
-.. autoclass:: discoeb.CosmologyModel
-   :members: __call__, replace, add, remove, with_settings, setting, check, state_names, sparsity
+.. autoclass:: discoeb.Model
+   :members: from_dict, to_dict, replace, parameter_keys, state_names, setting, swap, add, remove, with_settings
 
-.. autoclass:: discoeb.CosmologyBatch
+.. autoclass:: discoeb.LCDM
    :no-members:
 
-.. autodata:: discoeb.LCDM
-   :no-value:
+.. autoclass:: discoeb.LCDM_MNU
+   :no-members:
 
-.. autodata:: discoeb.LCDM_MNU
-   :no-value:
+.. autoclass:: discoeb.W0WACDM
+   :no-members:
 
-.. autodata:: discoeb.W0WACDM
-   :no-value:
+.. autoclass:: discoeb.W0WACDM_MNU
+   :no-members:
 
-.. autodata:: discoeb.W0WACDM_MNU
-   :no-value:
+.. autoclass:: discoeb.ModelSpec
+   :members: replace, add, remove, with_settings, setting, check, state_names, sparsity
 
 .. autofunction:: discoeb.matter_power_spectrum
 

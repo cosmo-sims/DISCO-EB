@@ -10,9 +10,10 @@ leave the solve unchanged.
 
 import numpy as np
 import pytest
-from conftest import HOST, ConstantThermalHistory, _cuda_available
+from conftest import HOST, ConstantThermalHistory, _cuda_available, cosmologies_of
+from jax.typing import ArrayLike
 
-from discoeb.component import Parameter, Species, State
+from discoeb.component import Derived, Parameter, Species, State
 from discoeb.models import LCDM
 
 
@@ -21,8 +22,8 @@ class SecondDarkMatter(Species):
 
     clxx = State(initial=lambda theta: 0.75 * theta[0])
 
-    Omega_x = Parameter(0.0)
-    grhox = Parameter(value=lambda grhom, Omega_x: grhom * Omega_x, directed=True)
+    Omega_x: ArrayLike = Parameter(0.0)
+    grhox: ArrayLike = Derived(lambda grhom, Omega_x: grhom * Omega_x, directed=True)
 
     @classmethod
     def check(cls, Omega_x):
@@ -86,13 +87,13 @@ def test_the_parameter_reaches_the_dictionary_the_row_and_the_inputs():
 
 
 def test_the_components_check_the_parameter():
-    LCDM_X(_split(COSMOLOGY))
-    LCDM(COSMOLOGY)
-    LCDM(_split(COSMOLOGY, 0.0))  # at its default, the key is harmless
+    cosmologies_of(LCDM_X, _split(COSMOLOGY))
+    cosmologies_of(LCDM, COSMOLOGY)
+    cosmologies_of(LCDM, _split(COSMOLOGY, 0.0))  # at its default, the key is harmless
     with pytest.raises(ValueError, match="must not be negative"):
-        LCDM_X(_split(COSMOLOGY, -0.01))
+        cosmologies_of(LCDM_X, _split(COSMOLOGY, -0.01))
     with pytest.raises(ValueError, match="use a model with SecondDarkMatter"):
-        LCDM(_split(COSMOLOGY))
+        cosmologies_of(LCDM, _split(COSMOLOGY))
 
 
 def test_a_bare_cosmology_cannot_carry_the_parameter_past_the_default_model():
@@ -104,9 +105,9 @@ def test_a_bare_cosmology_cannot_carry_the_parameter_past_the_default_model():
         with pytest.raises(ValueError, match="use a model with SecondDarkMatter"):
             background_of(_split(COSMOLOGY))
         background_of(COSMOLOGY)
-    assert float(conformal_ages(LCDM_X(_split(COSMOLOGY)))[0]) == pytest.approx(
-        float(conformal_ages(COSMOLOGY)[0]), rel=1e-12
-    )
+    assert float(
+        conformal_ages(cosmologies_of(LCDM_X, _split(COSMOLOGY)))[0]
+    ) == pytest.approx(float(conformal_ages(COSMOLOGY)[0]), rel=1e-12)
 
 
 def test_the_background_closes_the_budget_with_the_new_density():
@@ -202,8 +203,8 @@ def test_splitting_the_dark_matter_leaves_the_solve_unchanged():
     from discoeb import directed_inputs, solve_eb
 
     names = ("clxc", "R", "theta_2")
-    plain = solve_eb(LCDM(COSMOLOGY), SOLVE_K, SOLVE_TAU, keep=names)
-    batch = LCDM_X(_split(COSMOLOGY))
+    plain = solve_eb(cosmologies_of(LCDM, COSMOLOGY), SOLVE_K, SOLVE_TAU, keep=names)
+    batch = cosmologies_of(LCDM_X, _split(COSMOLOGY))
     split = solve_eb(batch, SOLVE_K, SOLVE_TAU, keep=(*names, "clxx"))
 
     np.testing.assert_allclose(split.tau0, plain.tau0, rtol=1e-12)

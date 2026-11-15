@@ -12,9 +12,10 @@ import math
 
 import numpy as np
 import pytest
-from conftest import _cuda_available
+from conftest import _cuda_available, cosmologies_of
+from jax.typing import ArrayLike
 
-from discoeb.component import Parameter, Species, State
+from discoeb.component import Derived, Parameter, Species, State
 from discoeb.kernel import joint_model
 from discoeb.models import LCDM
 from discoeb.species import CosmologicalConstant
@@ -33,8 +34,8 @@ class Quintessence(Species):
     dphi = State()
     ddphi = State()
 
-    lam = Parameter(0.0, column=True)
-    V0 = Parameter(directed=True, closes_budget=True)
+    lam: ArrayLike = Parameter(0.0, column=True)
+    V0: ArrayLike = Derived(directed=True, closes_budget=True)
 
     def V(self, V0, lam, phi):
         return V0 * math.exp(-lam * phi)
@@ -70,7 +71,7 @@ class Quintessence(Species):
         return -2.0 * adotoa * ddphi - (k * k + a2 * V_phiphi) * dphi - k * z * phidot
 
 
-QCDM = LCDM.replace(CosmologicalConstant, Quintessence, name="QCDM")
+QCDM = LCDM.swap(CosmologicalConstant, Quintessence, name="QCDM")
 
 COSMOLOGY = {
     "Omegam": (0.02238280 + 0.1201075) / 0.6732117**2,
@@ -149,7 +150,7 @@ def test_shooting_closes_the_budget_of_a_rolling_field():
 def _power(model, cosmology, k):
     from discoeb import conformal_ages, matter_power_spectrum, solve_eb
 
-    batch = model([cosmology])
+    batch = cosmologies_of(model, [cosmology])
     tau0 = conformal_ages(batch)[0]
     solution = solve_eb(
         batch, k, tau0[None], keep=("clxc", "clxb", "z", "vb", "a"), thermo_weight=0.1

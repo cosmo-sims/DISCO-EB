@@ -7,9 +7,9 @@ hold any number of them without a class written for each.
 
 import numpy as np
 import pytest
-from conftest import HOST, ConstantThermalHistory, _cuda_available
+from conftest import HOST, ConstantThermalHistory, _cuda_available, cosmologies_of
 
-from discoeb.component import Component, Model, State
+from discoeb.component import Component, Equations, State
 from discoeb.models import LCDM
 from discoeb.species import ColdDarkMatter, Fluid
 
@@ -64,11 +64,11 @@ def test_two_copies_share_a_model():
 
 
 def test_each_copy_checks_its_own_keys():
-    LCDM_XY({**COSMOLOGY, "x_Omega": 0.01, "y_w": 1.0 / 3.0})
+    cosmologies_of(LCDM_XY, {**COSMOLOGY, "x_Omega": 0.01, "y_w": 1.0 / 3.0})
     with pytest.raises(ValueError, match="w != -1"):
-        LCDM_XY({**COSMOLOGY, "y_w": -1.0})
+        cosmologies_of(LCDM_XY, {**COSMOLOGY, "y_w": -1.0})
     with pytest.raises(ValueError, match="use a model with Fluid_x"):
-        LCDM({**COSMOLOGY, "x_Omega": 0.01})
+        cosmologies_of(LCDM, {**COSMOLOGY, "x_Omega": 0.01})
 
 
 def test_the_background_closes_with_both_densities():
@@ -157,7 +157,7 @@ def test_names_resolve_in_initial_conditions_and_sums():
         def d_level(self, outflow):
             return -outflow
 
-    model = Model([Tank.named("a")(), Tank.named("b")()], sums=("total",))
+    model = Equations([Tank.named("a")(), Tank.named("b")()], sums=("total",))
     assert model.state == ["a_level", "b_level"]
     np.testing.assert_allclose(model.initial_state(np.array([1.0])), [[3.0, 3.0]])
     rhs = model.build({}, **HOST)
@@ -173,9 +173,9 @@ def test_splitting_the_dark_matter_into_a_named_fluid_leaves_the_solve_unchanged
     model = LCDM.add(X, name="LCDM+x")
     k = np.geomspace(1.0e-3, 0.3, 8)
     tau = np.geomspace(1.0, 2.0e4, 16)
-    plain = solve_eb(LCDM(COSMOLOGY), k, tau, keep=("clxc", "R"))
+    plain = solve_eb(cosmologies_of(LCDM, COSMOLOGY), k, tau, keep=("clxc", "R"))
     split = solve_eb(
-        model(
+        model.from_dict(
             {**COSMOLOGY, "Omegam": COSMOLOGY["Omegam"] - OMEGA_X, "x_Omega": OMEGA_X}
         ),
         k,

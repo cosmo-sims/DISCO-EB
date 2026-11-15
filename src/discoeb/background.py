@@ -1,7 +1,7 @@
 """The expansion history: density coefficients, the Friedmann sum and the conformal time.
 
 The background uses the same species as the perturbations.
-:meth:`~discoeb.component.Model.evaluate` computes the kernel's Friedmann sum
+:meth:`~discoeb.component.Equations.evaluate` computes the kernel's Friedmann sum
 ``grho`` on JAX arrays at ``a``, which gives the expansion rate the
 conformal-time quadrature and the thermal history integrate
 (:func:`expansion_rate`, :func:`dtauda`). :func:`density_parameters` closes
@@ -18,7 +18,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .component import Model, derive_parameters
+from .component import Equations, derive_parameters
 from .cosmology import _as_cosmology, _ParamCosmology
 from .gravity import (  # noqa: F401 (the density constants, re-exported)
     C2OK,
@@ -26,11 +26,11 @@ from .gravity import (  # noqa: F401 (the density constants, re-exported)
     GRHOM_PER_H0SQ,
     GRHOR_PER_TCMB4,
 )
-from .models import DEFAULT_MODEL, CosmologyModel
+from .models import DEFAULT_SPEC, ModelSpec
 from .recombination import recombination_model
 
 
-def background_model(model: CosmologyModel | None = None) -> Model:
+def background_model(model: ModelSpec | None = None) -> Equations:
     """The species of ``model`` whose ``grho`` is the Friedmann sum.
 
     Without a model it is :data:`~discoeb.models.DEFAULT_MODEL`, whose
@@ -41,11 +41,11 @@ def background_model(model: CosmologyModel | None = None) -> Model:
     affect the background.
     """
 
-    return _background_model(DEFAULT_MODEL if model is None else model)
+    return _background_model(DEFAULT_SPEC if model is None else model)
 
 
 @functools.lru_cache(maxsize=None)
-def _background_model(model: CosmologyModel) -> Model:
+def _background_model(model: ModelSpec) -> Equations:
     return model.build()
 
 
@@ -53,7 +53,7 @@ CLOSURE_STEPS = 6
 """Secant steps that close the budget of a model with background states of its own."""
 
 
-def density_parameters(param, xp=jnp, model: CosmologyModel | None = None) -> dict:
+def density_parameters(param, xp=jnp, model: ModelSpec | None = None) -> dict:
     """The parameters of ``model`` for a parameter dictionary, keyed as the components name them.
 
     The keys pass through, and every derived parameter comes from its
@@ -121,17 +121,17 @@ def density_parameters(param, xp=jnp, model: CosmologyModel | None = None) -> di
             before, miss_before, x = x, missed, x - move
         return x
 
-    parameters = (DEFAULT_MODEL if model is None else model).parameters()
+    parameters = (DEFAULT_SPEC if model is None else model).parameters()
     return derive_parameters(parameters, param, math=math_module, close=close)
 
 
-def expansion_rate(a, densities, model: CosmologyModel | None = None):
+def expansion_rate(a, densities, model: ModelSpec | None = None):
     """The conformal Hubble rate ``a'/a = a H`` at scalar ``a``, from the model's ``adotoa``."""
 
     return background_model(model).evaluate("adotoa", math=jnp, a=a, **densities)
 
 
-def dtauda(a, densities, model: CosmologyModel | None = None):
+def dtauda(a, densities, model: ModelSpec | None = None):
     """``d tau / d a = 1 / (a^2 H)`` at scalar ``a`` (``jax.vmap`` over an array)."""
 
     return 1.0 / (a * expansion_rate(a, densities, model))
@@ -149,7 +149,7 @@ def _densities(cosmology) -> dict:
 
 @functools.lru_cache(maxsize=4096)
 def _densities_of(cosmology: _ParamCosmology) -> dict:
-    DEFAULT_MODEL.check_keys(cosmology)
+    DEFAULT_SPEC.check_keys(cosmology)
     d = density_parameters(cosmology.to_background_params(), xp=np)
     return {k: float(v) for k, v in d.items()}
 
@@ -165,7 +165,7 @@ A_START = 1.0e-9
 """The scale factor the background's conformal time is integrated from."""
 
 
-def _background_solution(d, model: CosmologyModel | None = None):
+def _background_solution(d, model: ModelSpec | None = None):
     """Return ``(a_grid, tau_grid, states)`` of the background for the parameters ``d`` (JAX).
 
     The grid is geometric in ``a`` from :data:`A_START` to 1, where the
@@ -174,8 +174,8 @@ def _background_solution(d, model: CosmologyModel | None = None):
     the time is the quadrature of ``d tau / d a`` and ``states`` is empty.
 
     A model may also evolve background states of its own: a scalar field,
-    a density that decays (:meth:`Model.stages
-    <discoeb.component.Model.stages>` finds them). Their rates in ``ln a``,
+    a density that decays (:meth:`Equations.stages
+    <discoeb.component.Equations.stages>` finds them). Their rates in ``ln a``,
     ``y' / (a'/a)``, are then integrated along the grid with the time by
     fixed Runge-Kutta steps of 0.005 in ``ln a``, from the states' initial
     conditions at :data:`A_START`. ``states`` holds each one on the grid.
@@ -285,7 +285,7 @@ def _reionization_redshift(a_bg, tau_bg, params, tau_reio):
 
 
 @functools.partial(jax.jit, static_argnums=(1,))
-def background_endpoints(stacked, model: CosmologyModel | None = None):
+def background_endpoints(stacked, model: ModelSpec | None = None):
     """Return ``(tau0, lna_start, z_re, start)`` of stacked background parameters, one vmap lane each.
 
     ``model`` gives the species (:func:`background_model`).

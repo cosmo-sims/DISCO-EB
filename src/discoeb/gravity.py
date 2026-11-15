@@ -25,14 +25,16 @@ from the sums, so another theory replaces :class:`Background` (a modified
 Friedmann equation), :class:`Metric` (modified constraints, with states of
 its own if it needs them) or both, and no species changes::
 
-    BRANS_DICKE = LCDM.replace(Background, BransDickeBackground, name="BD")
+    BRANS_DICKE = LCDM.swap(Background, BransDickeBackground, name="BD")
 """
 
 from __future__ import annotations
 
 import math
 
-from .component import Component, Gravity, Parameter, State
+from jax.typing import ArrayLike
+
+from .component import Component, Derived, Gravity, Parameter, State
 
 # Density coefficients in CAMB's convention, ``8 pi G rho / c^2`` in 1/Mpc^2:
 # ``H^2 = sum_i grho_i / 3`` gives the Hubble rate in 1/Mpc and ``a'/a = a H``
@@ -109,8 +111,8 @@ class Background(Gravity):
     reads it) its own way.
     """
 
-    H0 = Parameter(directed=True)
-    grhom = Parameter(value=lambda H0: GRHOM_PER_H0SQ * H0**2)
+    H0: ArrayLike = Parameter(directed=True)
+    grhom: ArrayLike = Derived(lambda H0: GRHOM_PER_H0SQ * H0**2)
 
     def adotoa(self, grho, Kcurv):
         """The conformal Hubble rate ``a'/a = sqrt(grho / 3 - K)``."""
@@ -135,9 +137,9 @@ class AdiabaticMode(Component):
     solve never reads it, the matter power spectrum does.
     """
 
-    A_s = Parameter()
-    n_s = Parameter()
-    k_p = Parameter(0.05)
+    A_s: ArrayLike = Parameter()
+    n_s: ArrayLike = Parameter()
+    k_p: ArrayLike = Parameter(0.05)
 
     def x(self, k, tau):
         return k * tau
@@ -163,8 +165,8 @@ class Curvature(Gravity):
     ``Kcurv`` and none of the sums.
     """
 
-    Omegak = Parameter(0.0)
-    grhok = Parameter(value=lambda grhom, Omegak: grhom * Omegak, directed=True)
+    Omegak: ArrayLike = Parameter(0.0)
+    grhok: ArrayLike = Derived(lambda grhom, Omegak: grhom * Omegak, directed=True)
 
     def s2(self, grhok, inv_k2):
         """``s2^2 = 1 - 3K/k^2 = 1 + grhok/k^2`` (1 when flat)."""

@@ -6,6 +6,7 @@ differentiable in :data:`~discoeb.cosmology.DIFFERENTIABLE_PARAMETERS`.
 """
 
 import functools
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import jax
@@ -31,14 +32,14 @@ from .kernel import (
     _solve_batch,
     parameter_layout,
 )
-from .models import DEFAULT_MODEL, CosmologyBatch, CosmologyModel, _batch_of
+from .models import DEFAULT_SPEC, CosmologyBatch, Model, ModelSpec, _batch_of, _spec_of
 from .recombination import THERMO_ERROR_WEIGHT
 from .sensitivities import _directed_inputs, _kept_values
 
 
 def solve_perturbation_history_batch(
     k_values,
-    cosmologies: CosmologyBatch,
+    cosmologies,
     *,
     tau_save=None,
     rtol: float = PERTURB_RTOL,
@@ -48,9 +49,8 @@ def solve_perturbation_history_batch(
 ):
     """Solve a batch of cosmologies on a shared ``tau_save`` grid in one launch.
 
-    ``cosmologies`` is a model applied to parameter dictionaries,
-    ``LCDM([params, ...])`` (:class:`~discoeb.models.CosmologyBatch`).
-    One modax launch integrates all ``n_cosmologies * n_k`` trajectories, each
+    ``cosmologies`` is a cosmology, ``LCDM(H0=..., ...)``, or a sequence of
+    cosmologies of one model. One modax launch integrates all ``n_cosmologies * n_k`` trajectories, each
     with its recombination block stepping ahead of its hierarchy
     (:func:`joint_kernel`). Each trajectory stops at its own ``tau0``, and later
     save times hold its final state. Returns ``(history, k_sorted, prepared)``,
@@ -84,9 +84,9 @@ class EBSolution:
     quantity's ``(n_cosmologies, n_k, n_tau)`` block. ``tau0`` is each
     cosmology's conformal age, past which its column holds the state today.
     ``values`` is differentiable in the parameters of
-    :data:`DIFFERENTIABLE_PARAMETERS` given as JAX values. A solution is a JAX
-    pytree, so a jitted function may return one: ``values``, ``tau`` and
-    ``tau0`` are its leaves.
+    :data:`DIFFERENTIABLE_PARAMETERS` given as JAX values. ``model`` is the
+    cosmologies' model class. A solution is a JAX pytree, so a jitted
+    function may return one: ``values``, ``tau`` and ``tau0`` are its leaves.
     """
 
     names: tuple[str, ...]
@@ -94,7 +94,7 @@ class EBSolution:
     tau: jax.Array
     tau0: jax.Array
     values: jax.Array
-    model: CosmologyModel
+    model: type[Model] | ModelSpec
 
     def __getitem__(self, name: str) -> jax.Array:
         if name not in self.names:
@@ -117,7 +117,7 @@ jax.tree_util.register_pytree_node(
 
 
 def solve_eb(
-    cosmologies: CosmologyBatch,
+    cosmologies: Model | Sequence[Model],
     k_values,
     tau,
     *,
@@ -145,12 +145,11 @@ def solve_eb(
     Parameters
     ----------
     cosmologies
-        A cosmological model applied to the cosmologies to solve,
-        ``LCDM([params, ...])`` (:class:`~discoeb.models.CosmologyBatch`). The
-        model says which species and interactions the solve evolves. Each
-        cosmology is a parameter dictionary or a cosmology object. Every value
-        may be a JAX array, traced under ``jit`` or not. Only those of
-        :data:`DIFFERENTIABLE_PARAMETERS` may be differentiated.
+        A cosmology, ``LCDM(H0=..., ...)``, or a sequence of cosmologies of
+        one model. The model says which species and interactions the solve
+        evolves, and one kernel is compiled per model. Every parameter may be
+        a JAX array, traced under ``jit`` or not. Only those of
+        :func:`differentiable_parameters` may be differentiated.
     k_values
         Wave numbers in 1/Mpc, in any order. They must be numbers, not
         traced: they set the launch's shape.
@@ -163,7 +162,7 @@ def solve_eb(
         present-day values of the whole batch.
     keep
         Names of the quantities to record: state elements
-        (:meth:`~discoeb.models.CosmologyModel.state_names`, or the recombination
+        (:meth:`~discoeb.models.Model.state_names`, or the recombination
         block's ``lna``, ``thermo_0``, ``thermo_1``, ``thermo_2``, ``kappa``) or
         quantities the joint model provides, such as the comoving curvature
         perturbation ``R``, the shear ``sigma``, the expansion rate ``adotoa`` or
@@ -304,7 +303,7 @@ def solve_eb(
         tau=tau,
         tau0=prepared.tau0,
         values=of_variables(variables),
-        model=model,
+        model=batch.model_class or model,
     )
 
 
@@ -321,26 +320,26 @@ def _inputs_of(model, extra, given, variables) -> jax.Array:
     return jnp.concatenate([variables["inputs"], implied[:, given:]], axis=1)
 
 
-def differentiable_parameters(model: CosmologyModel) -> tuple[str, ...]:
+def differentiable_parameters(model: type[Model] | ModelSpec) -> tuple[str, ...]:
     """Return the keys of :data:`DIFFERENTIABLE_PARAMETERS` a solve of ``model`` differentiates.
 
-    Those the model's components declare (:meth:`CosmologyModel.parameter_keys
-    <discoeb.models.CosmologyModel.parameter_keys>`): ``w_DE_0`` and
+    Those the model's components declare (:meth:`Model.parameter_keys
+    <discoeb.models.Model.parameter_keys>`): ``w_DE_0`` and
     ``w_DE_a`` need :class:`~discoeb.species.DarkEnergy` and ``mnu``
     :class:`~discoeb.species.MassiveNeutrinos`. Differentiating another key
     raises.
     """
 
-    keys = model.parameter_keys()
+    keys = _spec_of(model).parameter_keys()
     return tuple(key for key in DIFFERENTIABLE_PARAMETERS if key in keys)
 
 
 def directed_inputs(cosmologies) -> jax.Array:
     """Return the ``(n_cosmologies, n_directed)`` directed inputs the cosmologies imply.
 
-    ``cosmologies`` is a :class:`~discoeb.models.CosmologyBatch`, or one
-    cosmology or a sequence of them for :data:`DIRECTED_NAMES`, the superset
-    of the built-in models' inputs. These are the model's directed
+    ``cosmologies`` is a cosmology or a sequence of cosmologies of one model,
+    or parameter dictionaries for :data:`DIRECTED_NAMES`, the superset of the
+    built-in models' inputs (:data:`~discoeb.models.DEFAULT_MODEL`). These are the model's directed
     parameters: the five background densities and the recombination block's
     ``YHe``, ``Tcmb``, ``H0`` and ``Omegab``, then those of the model's other
     components (curvature, dark energy, massive neutrinos): the variables
@@ -359,9 +358,8 @@ def directed_inputs(cosmologies) -> jax.Array:
 def conformal_ages(cosmologies) -> jax.Array:
     """Return each cosmology's conformal age ``tau0`` (Mpc), where its trajectories stop.
 
-    The conformal age depends on the background alone, so ``cosmologies`` may
-    be a :class:`~discoeb.models.CosmologyBatch`, or one cosmology or a
-    sequence of them for a built-in model's background. A JAX array, traceable under ``jit``: the same vmapped quadrature
+    ``cosmologies`` is a cosmology or a sequence of cosmologies of one model,
+    or parameter dictionaries for a built-in model's background. A JAX array, traceable under ``jit``: the same vmapped quadrature
     :func:`solve_eb` runs.
     """
 
@@ -372,30 +370,40 @@ def conformal_ages(cosmologies) -> jax.Array:
     return background_endpoints(columns, model)[0]
 
 
-def state_names(model: CosmologyModel) -> tuple[str, ...]:
+def state_names(model: type[Model] | ModelSpec) -> tuple[str, ...]:
     """Return the perturbation state names of ``model``, for ``keep`` and ``error_weights``."""
 
-    return model.state_names()
+    return _spec_of(model).state_names()
 
 
-def _model_of(cosmologies) -> CosmologyModel:
-    """Return a batch's model, or :data:`~discoeb.models.DEFAULT_MODEL` for bare cosmologies.
+def _model_of(cosmologies) -> ModelSpec:
+    """Return the cosmologies' model, or :data:`~discoeb.models.DEFAULT_MODEL`'s for dictionaries.
 
-    A bare cosmology must not set a parameter of a component outside the
+    A dictionary must not set a parameter of a component outside the
     default model, which would be ignored
-    (:meth:`~discoeb.models.CosmologyModel.check_keys`).
+    (:meth:`~discoeb.models.ModelSpec.check_keys`).
     """
 
-    if isinstance(cosmologies, CosmologyBatch):
-        return cosmologies.model
+    if _of_models(cosmologies):
+        return _batch_of(cosmologies).model
     for cosmology in _as_batch(cosmologies):
-        DEFAULT_MODEL.check_keys(cosmology)
-    return DEFAULT_MODEL
+        DEFAULT_SPEC.check_keys(cosmology)
+    return DEFAULT_SPEC
 
 
 def _cosmologies_of(cosmologies) -> tuple:
-    """Return the cosmologies of a batch, one cosmology or a sequence of them, as a tuple."""
+    """Return one cosmology or a sequence of them as a tuple of what ``_columns`` reads."""
 
-    if isinstance(cosmologies, CosmologyBatch):
-        return cosmologies.cosmologies
+    if _of_models(cosmologies):
+        return _batch_of(cosmologies).cosmologies
     return _as_batch(cosmologies)
+
+
+def _of_models(cosmologies) -> bool:
+    """Whether ``cosmologies`` is a cosmology, a sequence of them or a batch, not dictionaries."""
+
+    if isinstance(cosmologies, (Model, CosmologyBatch)):
+        return True
+    return isinstance(cosmologies, (list, tuple)) and any(
+        isinstance(c, Model) for c in cosmologies
+    )

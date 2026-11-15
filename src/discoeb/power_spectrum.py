@@ -29,10 +29,9 @@ def matter_power_spectrum(
     :func:`~discoeb.solver.solve_eb` at a last time at or past every
     cosmology's conformal age, and pass their values there::
 
-        batch = LCDM([cosmology])
-        tau0 = conformal_ages(batch)
+        tau0 = conformal_ages(cosmology)
         solution = solve_eb(
-            batch,
+            cosmology,
             k,
             tau0.max()[None],
             keep=("clxc", "clxb", "z", "vb"),
@@ -45,11 +44,11 @@ def matter_power_spectrum(
             z=solution["z"][0, :, -1],
             vb=solution["vb"][0, :, -1],
             tau0=tau0[0],
-            Omegam=cosmology["Omegam"],
-            Omegab=cosmology["Omegab"],
-            A_s=cosmology["A_s"],
-            n_s=cosmology["n_s"],
-            k_p=cosmology["k_p"],
+            Omegam=cosmology.Omegam,
+            Omegab=cosmology.Omegab,
+            A_s=cosmology.A_s,
+            n_s=cosmology.n_s,
+            k_p=cosmology.k_p,
         )
 
     Parameters
@@ -69,8 +68,13 @@ def matter_power_spectrum(
         and tilt, and the pivot scale in 1/Mpc, each a number or shape
         ``(...)``.
 
-    Returns ``P(k)`` of shape ``(..., n_k)``.
+    Returns
+    -------
+    jax.Array
+        ``P(k)`` of shape ``(..., n_k)``.
 
+    Notes
+    -----
     Differentiable in :data:`DIFFERENTIABLE_PARAMETERS` given as JAX values,
     as ``solve_eb``'s values are. The derivative is the total one.
     ``solve_eb``'s is at fixed conformal age, so this adds the end-time term

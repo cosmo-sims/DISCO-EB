@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from conftest import cosmologies_of
 from test_perturbations import REFERENCE_COSMOLOGY, _class_base, _matter_power
 
 SWEEP_SEED = 20261113
@@ -73,11 +74,11 @@ def _matter_power_and_steps(model, cosmologies, **options):
 
     from discoeb.kernel import _solve_batch
 
-    batch = model(cosmologies)
+    batch = cosmologies_of(model, cosmologies)
     pk = np.asarray(jax.block_until_ready(_matter_power(SWEEP_K, batch, **options)))
     (_, stats), _, k_sorted = _solve_batch(
-        model,
-        batch.cosmologies,
+        model.spec,
+        cosmologies,
         SWEEP_K,
         thermo_weight=MATTER_THERMO_WEIGHT,
         return_stats=True,

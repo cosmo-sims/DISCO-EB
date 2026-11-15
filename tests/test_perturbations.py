@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from conftest import cosmologies_of
 
 REFERENCE_COSMOLOGY = {
     "Omegam": (0.02238280 + 0.1201075) / 0.6732117**2,
@@ -95,7 +96,7 @@ def _class_linear_pk(param, k_values):
 
 
 def _matter_power(k_values, batch, tau_today=None, **options):
-    """``P(k)`` of a batch as a user computes it: ``solve_eb``, then the spectrum.
+    """``P(k)`` of a cosmology or a list of them as a user computes it: ``solve_eb``, then the spectrum.
 
     ``tau_today`` must lie at or past every conformal age. It defaults to the
     batch's oldest, which needs the parameters as numbers.
@@ -103,11 +104,13 @@ def _matter_power(k_values, batch, tau_today=None, **options):
 
     import jax.numpy as jnp
 
+    from discoeb.models import Model
     from discoeb.power_spectrum import (
         matter_power_spectrum,
     )
     from discoeb.solver import conformal_ages, solve_eb
 
+    cosmologies = [batch] if isinstance(batch, Model) else list(batch)
     tau0 = conformal_ages(batch)
     if tau_today is None:
         tau_today = tau0.max()
@@ -117,7 +120,7 @@ def _matter_power(k_values, batch, tau_today=None, **options):
     )
     today = {name: solution[name][..., -1] for name in solution.names}
     params = {
-        key: jnp.stack([jnp.asarray(c[key]) for c in batch.cosmologies])
+        key: jnp.stack([jnp.asarray(getattr(c, key)) for c in cosmologies])
         for key in ("Omegam", "Omegab", "A_s", "n_s", "k_p")
     }
     return matter_power_spectrum(k_values, **today, tau0=tau0, **params)
@@ -138,7 +141,7 @@ def test_matter_power_spectrum_matches_class(n_cosmologies, benchmark):
 
     pk_ours = benchmark.pedantic(
         run,
-        args=(LCDM(cosmologies),),
+        args=(cosmologies_of(LCDM, cosmologies),),
         rounds=1,
         warmup_rounds=1,
         iterations=1,
@@ -199,7 +202,9 @@ def test_matter_power_spectrum_derivatives(benchmark):
 
     def total_power(t):
         params = {**cosmology, **dict(zip(DIFFERENTIABLE_PARAMETERS, t))}
-        return jnp.sum(_matter_power(MATTER_POWER_K, LCDM(params), tau_today))
+        return jnp.sum(
+            _matter_power(MATTER_POWER_K, cosmologies_of(LCDM, params), tau_today)
+        )
 
     value_and_grad = jax.value_and_grad(total_power)
 
@@ -244,7 +249,7 @@ def test_matter_power_spectrum_under_jit():
 
     def power(cosmology):
         traces.append(cosmology)
-        batch = LCDM([cosmology])
+        batch = cosmologies_of(LCDM, [cosmology])
         tau0 = conformal_ages(batch)[0]
         solution = solve_eb(
             batch,
@@ -305,7 +310,9 @@ def test_solve_eb_keeps_what_the_history_holds():
 
     cosmologies = _perturbed_cosmologies(2)
     names = ("R", "clxc", "clxb", "theta_2", "n_15", "sigma", "adotoa")
-    solution = solve_eb(LCDM(cosmologies), SOLVE_EB_K, SOLVE_EB_TAU, keep=names)
+    solution = solve_eb(
+        cosmologies_of(LCDM, cosmologies), SOLVE_EB_K, SOLVE_EB_TAU, keep=names
+    )
     n_k, n_tau = len(SOLVE_EB_K), len(SOLVE_EB_TAU)
     assert solution.names == names
     assert solution.values.shape == (2, len(names), n_k, n_tau)
@@ -314,7 +321,7 @@ def test_solve_eb_keeps_what_the_history_holds():
 
     hist, k_sorted, prepared = solve_perturbation_history_batch(
         SOLVE_EB_K,
-        LCDM(cosmologies),
+        cosmologies_of(LCDM, cosmologies),
         tau_save=np.concatenate(([TAU_START], SOLVE_EB_TAU)),
     )
     hist = np.asarray(hist)[:, :, 1:, :]  # (n_k, n_c, n_tau, nvar), ascending k
@@ -343,7 +350,7 @@ def test_solve_eb_keeps_what_the_history_holds():
 
     # the same thermal error weight as solve_eb's launch, so the two solves agree bit for bit
     pk_batch = _matter_power(
-        SOLVE_EB_K, LCDM(cosmologies), thermo_weight=THERMO_ERROR_WEIGHT
+        SOLVE_EB_K, cosmologies_of(LCDM, cosmologies), thermo_weight=THERMO_ERROR_WEIGHT
     )
     for ci, cosmology in enumerate(map(as_cosmology, prepared.cosmologies)):
         grhoc, grhob = density_coefficients(cosmology)[2:4]
@@ -376,7 +383,9 @@ def test_solve_eb_comoving_curvature_is_conserved_outside_the_horizon():
 
     k = np.array([1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1])
     tau = np.geomspace(1.0, 2.0e4, 64)
-    solution = solve_eb(LCDM(_perturbed_cosmologies(1)[0]), k, tau, keep=("R",))
+    solution = solve_eb(
+        cosmologies_of(LCDM, _perturbed_cosmologies(1)[0]), k, tau, keep=("R",)
+    )
     assert solution.values.shape == (1, 1, len(k), len(tau))
     R = np.asarray(solution["R"][0])
     assert np.isfinite(R).all()
@@ -435,7 +444,7 @@ def test_solve_eb_derivatives():
     names = ("R", "clxc", "theta_2")
     noise = {"R": 5.0e-6, "clxc": 5.0e-6, "theta_2": 1.0e-4}
 
-    plain = solve_eb(LCDM(cosmology), SOLVE_EB_K, tau, keep=names)
+    plain = solve_eb(cosmologies_of(LCDM, cosmology), SOLVE_EB_K, tau, keep=names)
     prepared = _prepare_solve(LCDM, (cosmology,), SOLVE_EB_K)
     kept = _kept_values(prepared, np.concatenate(([TAU_START], tau)), names, ())
     base = np.asarray(kept(densities))
@@ -500,7 +509,7 @@ def test_solve_eb_derivatives():
     # not carried.
     def of_parameters(theta):
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
-        return solve_eb(LCDM(param), SOLVE_EB_K, tau, keep=names).values
+        return solve_eb(cosmologies_of(LCDM, param), SOLVE_EB_K, tau, keep=names).values
 
     jac_theta = np.asarray(jax.jacfwd(of_parameters)(theta))
     d_densities = np.asarray(jax.jacfwd(lambda t: inputs_of(t)[0])(theta))
@@ -533,7 +542,10 @@ def test_solve_eb_derivatives():
             jax.grad(
                 lambda v, key=key: jnp.sum(
                     solve_eb(
-                        LCDM({**cosmology, key: v}), SOLVE_EB_K, tau, keep=names
+                        cosmologies_of(LCDM, {**cosmology, key: v}),
+                        SOLVE_EB_K,
+                        tau,
+                        keep=names,
                     ).values
                 )
             )(value)
@@ -587,7 +599,7 @@ def test_more_parameters_solve_eb(name):
     tau = np.geomspace(10.0, 1.2e4, 12)  # before every shifted tau0
 
     def values(p, **options):
-        batch = model({**cosmology, name: p})
+        batch = cosmologies_of(model, {**cosmology, name: p})
         return solve_eb(batch, SOLVE_EB_K, tau, keep=MORE_NAMES, **options).values
 
     p0 = jnp.asarray(float(cosmology[name]))
@@ -637,7 +649,7 @@ def test_more_parameters_matter_power(name):
     tau_today = 2.0 * conformal_ages(cosmology).max()
 
     def total_power(p, **options):
-        batch = model({**cosmology, name: p})
+        batch = cosmologies_of(model, {**cosmology, name: p})
         return jnp.sum(_matter_power(MATTER_POWER_K, batch, tau_today, **options))
 
     p0 = jnp.asarray(float(cosmology[name]))

@@ -54,6 +54,19 @@ MODELS = {
 }
 
 
+def cosmologies_of(model, params):
+    """The cosmologies of parameter dictionaries: one for a dictionary, a list for a list.
+
+    Through :meth:`Model.from_dict <discoeb.models.Model.from_dict>`, so a
+    dictionary written for another model passes while its other keys keep
+    their defaults.
+    """
+
+    if isinstance(params, dict):
+        return model.from_dict(params)
+    return [model.from_dict(p) for p in params]
+
+
 def state_index(model) -> dict[str, int]:
     """The perturbation state's indices by element name."""
 

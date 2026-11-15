@@ -18,8 +18,8 @@ times* of a batch of cosmologies and wave modes. The kernel launch evaluates
 them from the solver's dense output and returns those values, never the
 state history:
 
-* :func:`solve_eb` ``(LCDM(cosmologies), k, tau, keep=names,
-  extra=components)``
+* :func:`solve_eb` ``(cosmologies, k, tau, keep=names, extra=components)``,
+  with cosmologies of one model such as ``[LCDM(H0=..., ...), ...]``,
   returns an :class:`EBSolution` whose ``values`` are ``(n_cosmologies,
   len(keep), n_k, n_tau)``, with each cosmology's conformal age ``tau0``.
   Past its own ``tau0``, a cosmology's trajectories hold their state today.
@@ -34,16 +34,24 @@ state history:
   right-hand side.
 * Error weights go by state name (``{"theta_2": f(k)}``), so the caller
   needs neither the state's index order nor the launch order.
-* Differentiation: pass :data:`DIFFERENTIABLE_PARAMETERS` as JAX values
-  (those of :func:`differentiable_parameters` for the model), or the
+* Differentiation: give the cosmologies' :data:`DIFFERENTIABLE_PARAMETERS`
+  as JAX values (those of :func:`differentiable_parameters` for the model),
+  or pass the
   :data:`DIRECTED_NAMES` inputs (:func:`directed_inputs`, the model's, the
   superset or the first nine) as ``inputs``, and ``values`` becomes
   differentiable (``jax.jvp``, ``jax.grad``) through forward sensitivities
   the kernel computes. The derivatives hold ``tau0`` fixed.
 
 :func:`background_history`, :func:`density_coefficients` and
-:func:`conformal_ages` give the background for building grids. A cosmology
-is a parameter dictionary or an object :func:`as_cosmology` returns.
+:func:`conformal_ages` give the background for building grids.
+
+**Models and cosmologies.** A model is a class whose bases are its
+components (:class:`Model`, :mod:`discoeb.models`), and a cosmology an
+instance of it: ``LCDM(H0=67.32, Omegam=0.3158, ...)``. The components
+declare the parameters, so the constructor takes exactly the model's and a
+type checker sees them. ``Model.spec`` is the :class:`ModelSpec` the solver
+caches its kernel on. :func:`as_cosmology` gives a cosmology's parameters in
+a hashable form.
 """
 
 # First: double precision and JAX's GPU memory policy, before anything builds
@@ -65,8 +73,8 @@ from .models import (
     LCDM_MNU,
     W0WACDM,
     W0WACDM_MNU,
-    CosmologyBatch,
-    CosmologyModel,
+    Model,
+    ModelSpec,
 )
 from .power_spectrum import (
     matter_power_spectrum,
@@ -83,8 +91,8 @@ from .solver import (
 
 __all__ = [
     "Component",
-    "CosmologyBatch",
-    "CosmologyModel",
+    "Model",
+    "ModelSpec",
     "DIFFERENTIABLE_PARAMETERS",
     "DIRECTED_NAMES",
     "EBSolution",

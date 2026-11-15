@@ -12,7 +12,8 @@ on**::
         def grhob_t(self, grhob, inv_a):
             return grhob * inv_a
 
-        def dgrho(self, grhob_t, clxb):
+        @contributes("dgrho")
+        def dgrho_b(self, grhob_t, clxb):
             return grhob_t * clxb
 
         def d_vb(self, adotoa, vb, k, cs2, clxb):
@@ -29,7 +30,7 @@ on**::
                 output[l] = k * (l * n[l - 1] - (l + 1) * n[l + 1]) * (1.0 / (2 * l + 1))
             ...
 
-Nothing gets passed explicitly. :meth:`Model.build` reads each provider's
+Nothing gets passed explicitly. :meth:`Equations.build` reads each provider's
 dependencies off its signature (``inspect.signature``), orders the providers
 with ``graphlib.TopologicalSorter`` and generates a driver that calls them in
 that order, injecting each value by name. This happens once, at build time.
@@ -52,30 +53,40 @@ matrix ``psi`` as ``psi_0_0, psi_0_1, ...``.
 A state also carries its *initial condition*, ``State(..., initial=fn)``: a
 lambda for a scalar, or a ``_``-prefixed function defined just above for a
 vector. Its parameters resolve like a provider's, from the quantities
-:meth:`Model.initial_state` gets (``k``, ``tau``, the background densities),
+:meth:`Equations.initial_state` gets (``k``, ``tau``, the background densities),
 from other states' initial values, and from providers the host can evaluate
-(``clxg`` for ``theta[0]``). :meth:`Model.evaluate` does the same resolution
+(``clxg`` for ``theta[0]``). :meth:`Equations.evaluate` does the same resolution
 for any quantity, on floats or JAX arrays. A scalar's initial condition
 returns the value. A vector's takes ``output``, zero-filled, and writes into
 it. A state without one starts at zero.
 
-**Parameters.** ``Omegam = Parameter()`` declares a key of the cosmology
-dictionary, ``w_DE_0 = Parameter(-1.0, column=True)`` one with a default
-that the kernel reads as a column of the parameter row, and ``grhoc =
-Parameter(value=lambda grhom, Omegam, Omegab: grhom * (Omegam - Omegab),
-directed=True)`` a kernel input derived from other parameters by name. A
+A method provides the quantity it is named after. A sum over species
+(``dgrho``) or a state's derivative takes contributions from several
+components, and each such method has a name of its own and says what it
+adds to (:func:`contributes`): a model class inherits every component, and
+two bases defining one method differently is what type checkers report.
+
+**Parameters.** ``Omegam: ArrayLike = Parameter()`` declares a key of the
+cosmology, an argument of every model's constructor whose components
+include the class, ``w_DE_0: ArrayLike = Parameter(-1.0, column=True)`` one
+with a default that the kernel reads as a column of the parameter row, and
+``grhoc: ArrayLike = Derived(lambda grhom, Omegam, Omegab: grhom * (Omegam -
+Omegab), directed=True)`` a kernel input derived from other parameters by
+name, not an argument. :class:`Component` carries ``dataclass_transform``
+with :func:`Parameter` and :func:`Derived` as field specifiers, so a type
+checker reads a model's constructor off these annotated declarations. A
 directed parameter ``x`` is a column ``x_nominal`` and a column ``dir_x``,
 and the component provides ``x = x_nominal + eps * dir_x``, so a
 sensitivity in ``eps`` is the derivative along ``dir``. One parameter
-closes the density budget (``closes_budget=True``, ``grhov`` in the built-in
-models): the background solves for it so that the model expands at ``H0``
+closes the density budget (``Derived(closes_budget=True)``, ``grhov`` in
+the built-in models): the background solves for it so that the model expands at ``H0``
 today (:func:`discoeb.background.density_parameters`).
 Two components of a model may declare one name only through the same
-:class:`Parameter` object. A ``check`` classmethod whose parameters name
+declaration. A ``check`` classmethod whose parameters name
 cosmology keys rejects values the component cannot represent.
 
 **Sparsity.** Nothing declares which states a derivative depends on.
-:meth:`Model.sparsity` reads the Jacobian's pattern off the providers. It
+:meth:`Equations.sparsity` reads the Jacobian's pattern off the providers. It
 resolves the same dependency graph as a build, but on values that carry the
 set of state elements they depend on instead of numbers. A state element
 carries its own index, the time and parameters carry nothing, and every
@@ -113,13 +124,13 @@ On the device ``self`` is a named tuple of the component's constants
 (:meth:`Component.device_self`). The generated driver passes it to each
 provider as a compile-time constant, so ``self.NQMAX`` folds into the loop
 bound and ``self.weight[i]`` into the unrolled sum just like a literal. On the
-host (:meth:`Model.evaluate`) ``self`` is the component itself.
+host (:meth:`Equations.evaluate`) ``self`` is the component itself.
 
 **Device names.** A provider that needs scratch space may use ``cuda`` and
 ``float64`` imported from this module (``cuda.local.array(16, float64)``).
 The size must be a literal, since numba types it before the optimiser folds
 ``self.N``. Both are placeholders. Compiling a provider swaps in the real
-objects, and a host test passes stand-ins to :meth:`Model.build`. So a model
+objects, and a host test passes stand-ins to :meth:`Equations.build`. So a model
 imports nothing from CUDA and runs as plain Python under test.
 
 Each provider compiles to its own ``cuda.jit(device=True)`` function, and the
@@ -144,12 +155,18 @@ import itertools
 import linecache
 import math
 import os
+import sys
 import types
 from collections import namedtuple
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any, Generic, Protocol, TypeVar
+from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar
 
 import numpy as np
+
+if sys.version_info >= (3, 11):
+    from typing import dataclass_transform
+else:
+    from typing_extensions import dataclass_transform
 
 SETTINGS_PREFIX = "DISCO_"
 """Environment variables ``DISCO_<NAME>`` override a component's settings."""
@@ -169,7 +186,7 @@ class _Ambient:
 
     def _unavailable(self, *args, **kwargs):
         raise RuntimeError(
-            f"{self.name} is only available inside a provider compiled by Model.build"
+            f"{self.name} is only available inside a provider compiled by Equations.build"
         )
 
     __call__ = __getattr__ = _unavailable
@@ -254,6 +271,7 @@ def load_setting(name: str, default):
 
 
 T = TypeVar("T", bool, int, float, str)
+F = TypeVar("F")
 
 
 class Setting(Generic[T]):
@@ -314,12 +332,12 @@ class _Required:
 REQUIRED: Any = _Required()
 """The default of a cosmology key every cosmology must give."""
 
-_DECLARED: dict[str, list[tuple[type, Parameter]]] = {}
+_DECLARED: dict[str, list[tuple[type, ParameterDeclaration]]] = {}
 """Every parameter any component class declares, by name: its owners and declarations."""
 
 
-class Parameter:
-    """A cosmological parameter a component declares: ``Omegam = Parameter()``.
+class ParameterDeclaration:
+    """A cosmological parameter a component declares, as :func:`Parameter` and :func:`Derived` make it.
 
     Without ``value`` it is a key of the cosmology dictionary, which may leave
     it out when it has a ``default``. With ``value``, a function whose
@@ -364,8 +382,15 @@ class Parameter:
     def __set_name__(self, owner, name):
         if not name.isidentifier() or name.startswith("_"):
             raise ValueError(f"{owner.__name__}: {name!r} is not a parameter name")
+        if name not in _annotated_names(owner):
+            # Unannotated, a type checker would not see it in a model's
+            # constructor (the dataclass_transform on Component).
+            raise TypeError(
+                f"{owner.__name__}.{name} needs an annotation: "
+                f"{name}: ArrayLike = {'Derived' if not self.is_key else 'Parameter'}(...)"
+            )
         if self.name is not None and self.name != name:
-            raise ValueError(f"one Parameter declared as {self.name!r} and {name!r}")
+            raise ValueError(f"one parameter declared as {self.name!r} and {name!r}")
         self.name = name
         _DECLARED.setdefault(name, []).append((owner, self))
 
@@ -388,10 +413,10 @@ class Parameter:
         exec(compile(source, f"<discoeb parameter {n}>", "exec"), {}, scope)  # noqa: S102
         return scope[n]
 
-    def renamed(self, renames: Mapping[str, str]) -> Parameter:
+    def renamed(self, renames: Mapping[str, str]) -> ParameterDeclaration:
         """A copy for a named component: it reads its component's own parameters under their new names."""
 
-        copy = Parameter(
+        copy = ParameterDeclaration(
             self.default if self.value is None and not self.closes_budget else REQUIRED,
             column=self.column,
             directed=self.directed,
@@ -405,14 +430,67 @@ class Parameter:
         return f"Parameter({self.name})"
 
 
-def declared_parameters(classes) -> dict[str, Parameter]:
+def _annotated_names(cls) -> set[str]:
+    """The names a class body annotates, without evaluating the annotations."""
+
+    if sys.version_info >= (3, 14):
+        import annotationlib
+
+        return set(
+            annotationlib.get_annotations(cls, format=annotationlib.Format.FORWARDREF)
+        )
+    return set(vars(cls).get("__annotations__", {}))
+
+
+def Parameter(
+    default: Any = REQUIRED, *, column: bool = False, directed: bool = False
+) -> Any:
+    """Declare a cosmology key: ``Omegam: ArrayLike = Parameter()``.
+
+    It is an argument of every model whose components include the class:
+    required without a ``default``, optional with one. ``column`` puts it in
+    the kernel's parameter row under its name, for the providers to read, and
+    ``directed`` as ``x_nominal`` and ``dir_x``, so the forward sensitivities
+    may move it (:class:`ParameterDeclaration`). The annotation is required:
+    it is what lets a type checker see the argument (the
+    ``dataclass_transform`` on :class:`Component`).
+    """
+
+    return ParameterDeclaration(default, column=column, directed=directed)
+
+
+def Derived(
+    value: Callable | None = None,
+    *,
+    column: bool = False,
+    directed: bool = False,
+    closes_budget: bool = False,
+    init: Literal[False] = False,
+) -> Any:
+    """Declare a parameter derived from others: ``grhom: ArrayLike = Derived(lambda H0: ...)``.
+
+    ``value`` is a function whose parameter names are other parameters. Or
+    ``closes_budget`` marks the one parameter the background solves for, so
+    that the model expands at ``H0`` today. Either way it is not a
+    constructor argument: ``init`` is there for type checkers, which read
+    its default (``False``) to leave it out of the model's signature.
+    """
+
+    if value is None and not closes_budget:
+        raise TypeError("Derived needs a value function, or closes_budget=True")
+    return ParameterDeclaration(
+        value=value, column=column, directed=directed, closes_budget=closes_budget
+    )
+
+
+def declared_parameters(classes) -> dict[str, ParameterDeclaration]:
     """The parameters the component classes declare, by name, in class and declaration order.
 
     Raises ``ValueError`` if two of them declare one name by different
-    :class:`Parameter` objects.
+    :class:`ParameterDeclaration` objects.
     """
 
-    found: dict[str, Parameter] = {}
+    found: dict[str, ParameterDeclaration] = {}
     owner: dict[str, str] = {}
     for cls in classes:
         for name, parameter in cls.declared_parameters():
@@ -428,14 +506,18 @@ def declared_parameters(classes) -> dict[str, Parameter]:
     return found
 
 
-def declarations_of(name: str) -> list[tuple[type, Parameter]]:
+def declarations_of(name: str) -> list[tuple[type, ParameterDeclaration]]:
     """The component classes declaring the parameter ``name``, with their declarations."""
 
     return list(_DECLARED.get(name, ()))
 
 
 def derive_parameters(
-    parameters: Mapping[str, Parameter], given: Mapping, *, math=math, close=None
+    parameters: Mapping[str, ParameterDeclaration],
+    given: Mapping,
+    *,
+    math=math,
+    close=None,
 ) -> dict:
     """Return the value of every parameter in ``parameters``.
 
@@ -530,23 +612,28 @@ class State:
 # --- components -----------------------------------------------------------------------
 
 
+@dataclass_transform(
+    kw_only_default=True, eq_default=False, field_specifiers=(Parameter, Derived)
+)
 class Component:
     """Provides quantities and may own settings, parameters and state variables (see the module docstring).
 
     A component may define a ``check`` classmethod whose parameters name the
     cosmology keys it validates (``check(cls, w_DE_0, w_DE_a)``), raising
     ``ValueError`` for values it cannot represent.
-    :meth:`CosmologyModel.check <discoeb.models.CosmologyModel.check>` calls
+    :meth:`ModelSpec.check <discoeb.models.ModelSpec.check>` calls
     it with their values, unless one of them is traced. ``check`` is never a
     provider.
     """
 
-    fixes_gauge: bool = False
+    fixes_gauge: ClassVar[bool] = False
     """Whether the component's rest frame fixes the gauge the model's equations are written in."""
-    _setting_names: tuple[str, ...] = ()
-    _renames: Mapping[str, str] = {}
+    _setting_names: ClassVar[tuple[str, ...]] = ()
+    _renames: ClassVar[Mapping[str, str]] = {}
     """Of a :meth:`named` component: the names it declares to those it takes in a model."""
-    _named_parameters: tuple[tuple[str, Parameter], ...] | None = None
+    _named_parameters: ClassVar[tuple[tuple[str, ParameterDeclaration], ...] | None] = (
+        None
+    )
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -577,10 +664,12 @@ class Component:
             if klass in _FRAMEWORK_CLASSES:
                 continue
             for attr, member in vars(klass).items():
-                if attr.startswith(("_", "d_")) or attr == "check":
+                if attr.startswith("_") or attr == "check":
                     continue
                 if isinstance(member, (staticmethod, types.FunctionType)):
-                    found.append(attr)
+                    quantity = _contributed(member, attr)
+                    if not quantity.startswith("d_"):
+                        found.append(quantity)
         return tuple(dict.fromkeys(found))
 
     @classmethod
@@ -619,6 +708,7 @@ class Component:
                     "__module__": cls.__module__,
                     "_renames": types.MappingProxyType(renames),
                     "_named_parameters": tuple(parameters.items()),
+                    "__annotations__": dict.fromkeys(parameters, "ArrayLike"),
                     **parameters,
                 },
             )
@@ -637,15 +727,15 @@ class Component:
         return found
 
     @classmethod
-    def declared_parameters(cls) -> list[tuple[str, Parameter]]:
-        """The ``Parameter`` attributes, in declaration order, base classes first."""
+    def declared_parameters(cls) -> list[tuple[str, ParameterDeclaration]]:
+        """The parameter attributes (:func:`Parameter`, :func:`Derived`), in declaration order, base classes first."""
 
         if cls._named_parameters is not None:
             return list(cls._named_parameters)
         found, seen = [], set()
         for klass in reversed(cls.__mro__):
             for attr, value in vars(klass).items():
-                if isinstance(value, Parameter) and attr not in seen:
+                if isinstance(value, ParameterDeclaration) and attr not in seen:
                     seen.add(attr)
                     found.append((attr, value))
         return found
@@ -774,10 +864,17 @@ class _Provider:
         fn: Callable,
         states: Mapping[str, _State],
         sums: Sequence[str] = (),
+        method: str | None = None,
     ):
         self.component, self.fn = component, fn
-        self.label = f"{component.label}.{attr}"
-        self.symbol = f"{component.label}__{attr}"
+        method = method or attr
+        self.label = f"{component.label}.{method}"
+        self.symbol = f"{component.label}__{method}"
+        if method != attr and not (attr.startswith("d_") or attr in sums):
+            raise TypeError(
+                f"{self.label} contributes to {attr!r}, which is neither one of "
+                f"the model's sums {tuple(sums)} nor a derivative d_<state>"
+            )
         self.self_symbol = f"{component.label}_self"
         self.takes_self, names = _positional_names(fn, self.label)
         # the names as the model knows them: a named component's own carry its prefix
@@ -803,6 +900,38 @@ class _Provider:
         self.signature = tuple(names)
 
 
+def contributes(quantity: str) -> Callable[[F], F]:
+    """Mark a method as a contribution to a sum or a derivative: ``@contributes("dgrho")``.
+
+    A method otherwise provides the quantity it is named after, and a sum
+    (``grho``, ``dgrho``, ...) or a state's derivative ``d_x`` takes a
+    contribution from several components. Under their shared name, those
+    methods would clash in a model class that inherits them all, which type
+    checkers report. So each contribution gets a name of its own and says
+    what it contributes to::
+
+        @contributes("dgrho")
+        def dgrho_b(self, grhob_t, clxb):
+            return grhob_t * clxb
+
+    A method named after the sum still contributes to it at run time.
+    """
+
+    def mark(method: F) -> F:
+        fn = method.__func__ if isinstance(method, staticmethod) else method
+        setattr(fn, "_contributes", quantity)
+        return method
+
+    return mark
+
+
+def _contributed(member, attr: str) -> str:
+    """The quantity a class member provides: what it ``@contributes`` to, else its name."""
+
+    fn = member.__func__ if isinstance(member, staticmethod) else member
+    return getattr(fn, "_contributes", attr)
+
+
 def _model_name(component: Component, name: str, sums: Sequence[str] = ()) -> str:
     """The name a model knows ``name`` by when ``component`` writes it: prefixed if a named component declares it."""
 
@@ -823,11 +952,12 @@ def _providers(
                 continue
             seen.add(attr)
             # Every method not named with a leading underscore is a provider, a
-            # staticmethod one without self.
-            if isinstance(member, staticmethod):
-                found.append(_Provider(component, attr, member.__func__, states, sums))
-            elif isinstance(member, types.FunctionType):
-                found.append(_Provider(component, attr, member, states, sums))
+            # staticmethod one without self. It provides the quantity it is
+            # named after, or the one it @contributes to.
+            if isinstance(member, (staticmethod, types.FunctionType)):
+                fn = member.__func__ if isinstance(member, staticmethod) else member
+                quantity = _contributed(member, attr)
+                found.append(_Provider(component, quantity, fn, states, sums, attr))
     provided = {p.attr for p in found}
     for attr, parameter in type(component).declared_parameters():
         # A directed parameter's provider, unless a subclass overrides it.
@@ -1128,11 +1258,11 @@ _TRACING_NAMES = {
 
 
 MARKED = -1
-"""The pseudo-element a marked input carries through a trace (:meth:`Model.stages`)."""
+"""The pseudo-element a marked input carries through a trace (:meth:`Equations.stages`)."""
 
 
 class _TracedValues(_HostValues):
-    """The pool of :meth:`Model.sparsity`: every quantity as the state elements it depends on.
+    """The pool of :meth:`Equations.sparsity`: every quantity as the state elements it depends on.
 
     The states are the base values, each element carrying its own index. A
     name nothing provides (the time, a parameter, a thermodynamic table) is an
@@ -1247,7 +1377,7 @@ def _minimum_vertex_cut(weight, edges, sources, sinks) -> set:
     }
 
 
-class Model:
+class Equations:
     """Components, their state in declaration order, and the functions built from them."""
 
     def __init__(self, components: Iterable[Component], sums: Sequence[str] = ()):

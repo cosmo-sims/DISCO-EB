@@ -1,29 +1,43 @@
-"""Cosmological models built from the species, interactions and gravity components.
+"""Cosmological models, built from the species, interactions and gravity components.
 
-A model lists the components it evolves (:class:`CosmologyModel`). Called on
-cosmologies (parameter dictionaries) it gives the batch every solve takes
-(:class:`CosmologyBatch`): ``solve_eb(LCDM([params]), k, tau)``. Models
-derive from each other, so a new one is usually a line::
+A model is a class whose bases are its components, and an instance of it is
+a cosmology: the model with values for its parameters. The components declare
+the parameters (:func:`~discoeb.component.Parameter`), so the constructor
+takes exactly the model's, and a type checker sees them::
 
-    W0WACDM = LCDM.replace(CosmologicalConstant, DarkEnergy, name="w0waCDM")
-    LCDM_MNU = LCDM.add(MassiveNeutrinos, name="LCDM+mnu")
-    COARSE = LCDM.with_settings(LMAX_G=10, LMAX_NR=10)
+    class LCDM_MNU(LCDM, MassiveNeutrinos):
+        \"\"\"LCDM with massive neutrinos.\"\"\"
+
+    planck = LCDM(H0=67.32, Omegam=0.3158, Omegab=0.0494, A_s=2.1e-9,
+                  n_s=0.966, Tcmb=2.7255, YHe=0.2454, Neff=3.046)
+    solve_eb([planck, planck.replace(H0=70.0)], k, tau, keep=("R",))
+
+A model's bases are its components in state order, a model among them
+standing for its own components: ``LCDM_MNU`` is LCDM's components, then
+:class:`~discoeb.species.MassiveNeutrinos`. :meth:`Model.swap`,
+:meth:`Model.add`, :meth:`Model.remove` and :meth:`Model.with_settings`
+derive models at run time; a type checker sees only those written as class
+statements.
 """
 
 from __future__ import annotations
 
+import functools
 import inspect
 from dataclasses import dataclass, field
+from typing import Any, ClassVar
+
+import jax
 
 from .component import (
     REQUIRED,
     Component,
-    Model,
-    Parameter,
+    Equations,
+    ParameterDeclaration,
     declarations_of,
     declared_parameters,
 )
-from .cosmology import _as_batch, _cosmology_dictionary, _is_concrete
+from .cosmology import DIFFERENTIABLE_PARAMETERS, _cosmology_dictionary, _is_concrete
 from .gravity import (
     GRAVITY_INTERFACE,
     SUMS,
@@ -52,26 +66,24 @@ __all__ = [
     "LCDM_MNU",
     "W0WACDM",
     "W0WACDM_MNU",
-    "CosmologyBatch",
-    "CosmologyModel",
+    "Model",
+    "ModelSpec",
 ]
 
 
 @dataclass(frozen=True)
-class CosmologyModel:
-    """The components of a cosmological model, in state order, and their settings.
+class ModelSpec:
+    """What the solver reads of a :class:`Model`: its components in state order and their settings.
 
-    A model is a list of component classes: the species it evolves, the
-    interactions between them and the gravity components every model needs.
-    Their order is the state order. A cosmology (a parameter dictionary) is a
-    point in its parameter space, and :meth:`check` rejects one the model
-    cannot represent.
+    Every model class carries one (``LCDM.spec``). It is a value, hashable
+    and compared by its fields, so the solver caches its compiled kernel on
+    it, and :meth:`resolved` makes every setting explicit for that. A
+    cosmology's parameters, as a dictionary, are a point in its parameter
+    space, and :meth:`check` rejects one the model cannot represent.
 
-    Models derive from each other. :meth:`replace` swaps one component for
-    another, :meth:`add` appends components and :meth:`with_settings`
-    changes the hierarchy truncations, so ``LCDM.add(MassiveNeutrinos,
-    name="LCDM+mnu")`` is LCDM with massive neutrinos. A model is hashable and
-    the solver caches its compiled kernel per model.
+    :meth:`replace`, :meth:`add`, :meth:`remove` and :meth:`with_settings`
+    derive specifications as :meth:`Model.swap`, :meth:`Model.add`,
+    :meth:`Model.remove` and :meth:`Model.with_settings` derive models.
 
     ``settings`` overrides component settings by name (``LMAX_G``,
     ``NQMAX``, ...). A setting it leaves out takes the component's own value,
@@ -111,39 +123,39 @@ class CosmologyModel:
             )
 
     def __repr__(self) -> str:
-        return f"CosmologyModel({self.name!r})"
+        return f"ModelSpec({self.name!r})"
 
     # --- deriving models ------------------------------------------------------
 
     def replace(
         self, old: type[Component], new: type[Component], *, name: str
-    ) -> CosmologyModel:
+    ) -> ModelSpec:
         """Return this model with ``new`` in place of ``old``, at its position."""
 
         if old not in self.components:
             raise ValueError(f"{self.name} has no {old.__name__}")
         components = tuple(new if c is old else c for c in self.components)
-        return CosmologyModel(name, components, self._settings_for(components))
+        return ModelSpec(name, components, self._settings_for(components))
 
-    def add(self, *components: type[Component], name: str) -> CosmologyModel:
+    def add(self, *components: type[Component], name: str) -> ModelSpec:
         """Return this model with ``components`` appended."""
 
-        return CosmologyModel(name, self.components + components, self.settings)
+        return ModelSpec(name, self.components + components, self.settings)
 
-    def remove(self, *components: type[Component], name: str) -> CosmologyModel:
+    def remove(self, *components: type[Component], name: str) -> ModelSpec:
         """Return this model without ``components``."""
 
         missing = [c.__name__ for c in components if c not in self.components]
         if missing:
             raise ValueError(f"{self.name} has no {missing}")
         kept = tuple(c for c in self.components if c not in components)
-        return CosmologyModel(name, kept, self._settings_for(kept))
+        return ModelSpec(name, kept, self._settings_for(kept))
 
-    def with_settings(self, **settings) -> CosmologyModel:
+    def with_settings(self, **settings) -> ModelSpec:
         """Return this model with the given component settings (``LMAX_G=20``)."""
 
         merged = {**dict(self.settings), **settings}
-        return CosmologyModel(self.name, self.components, tuple(merged.items()))
+        return ModelSpec(self.name, self.components, tuple(merged.items()))
 
     def _settings_for(self, components) -> tuple[tuple[str, object], ...]:
         known = {n for cls in components for n in cls.setting_names()}
@@ -167,7 +179,7 @@ class CosmologyModel:
                 return getattr(cls, name)
         raise KeyError(f"{self.name} has no setting {name!r}")
 
-    def resolved(self) -> CosmologyModel:
+    def resolved(self) -> ModelSpec:
         """Return this model with every setting explicit, at the components' current values.
 
         The solver caches its kernels on the resolved model, so rebinding a
@@ -176,7 +188,7 @@ class CosmologyModel:
 
         names = {n for cls in self.components for n in cls.setting_names()}
         values = tuple((n, self.setting(n)) for n in sorted(names))
-        return CosmologyModel(self.name, self.components, values)
+        return ModelSpec(self.name, self.components, values)
 
     def instances(self) -> list[Component]:
         """Return the components instantiated with the model's settings."""
@@ -187,8 +199,8 @@ class CosmologyModel:
             for cls in self.components
         ]
 
-    def build(self, thermal_history: Component | None = None, extra=()) -> Model:
-        """Return the component :class:`~discoeb.component.Model` of this cosmological model.
+    def build(self, thermal_history: Component | None = None, extra=()) -> Equations:
+        """Return the component :class:`~discoeb.component.Equations` of this cosmological model.
 
         ``thermal_history`` provides ``a``, ``opacity``, ``cs2``, ``rhonu`` and
         ``pnu`` as functions of ``tau``. In the solve it is the recombination
@@ -202,9 +214,9 @@ class CosmologyModel:
         if thermal_history is not None:
             components.insert(0, thermal_history)
         components.extend(extra)
-        return Model(components, sums=SUMS)
+        return Equations(components, sums=SUMS)
 
-    def parameters(self, extra=()) -> dict[str, Parameter]:
+    def parameters(self, extra=()) -> dict[str, ParameterDeclaration]:
         """Return the parameters the model's components declare, by name.
 
         They include those of the recombination block every solve appends
@@ -237,7 +249,7 @@ class CosmologyModel:
         sweeps rather than ``nvar + 1``. And it orders the pattern,
         factorises it symbolically and compiles a sparse LU and a pair of
         sparse triangular solves for that exact structure.
-        :meth:`Model.sparsity <discoeb.component.Model.sparsity>` traces the
+        :meth:`Equations.sparsity <discoeb.component.Equations.sparsity>` traces the
         pattern through the equations, so the tridiagonal free-streaming
         tails and the Einstein constraints that tie the metric, the fluids
         and the lowest multipoles together come straight from the code that
@@ -253,22 +265,6 @@ class CosmologyModel:
         """
 
         return self.build().sparsity()
-
-    def __call__(self, cosmologies) -> CosmologyBatch:
-        """Return this model with ``cosmologies`` to solve: ``LCDM([params, ...])``.
-
-        ``cosmologies`` is one cosmology (a parameter dictionary or a cosmology
-        object) or a sequence of them. Each is checked against the model
-        (:meth:`check`). Dictionaries are kept as given, so the values of
-        :data:`~discoeb.DIFFERENTIABLE_PARAMETERS` in them may be JAX values.
-        """
-
-        batch = _as_batch(cosmologies)
-        if not batch:
-            raise ValueError(f"{self.name} needs at least one cosmology")
-        for cosmology in batch:
-            self.check(cosmology)
-        return CosmologyBatch(self, batch)
 
     def check(self, cosmology) -> None:
         """Raise ``ValueError`` if ``cosmology`` sets parameters this model ignores.
@@ -328,96 +324,399 @@ class CosmologyModel:
                 )
 
 
-@dataclass(frozen=True, eq=False)
-class CosmologyBatch:
-    """A model with the cosmologies to solve it for, as ``LCDM([params, ...])`` returns.
-
-    Every solve takes one: ``solve_eb(LCDM(params), k, tau)``.
-    ``model`` is the :class:`CosmologyModel`, on which the compiled kernel is
-    cached, and ``cosmologies`` the tuple of cosmologies as given. Indexing
-    gives a batch of the same model: ``batch[0]`` holds the first cosmology,
-    ``batch[2:5]`` three.
-    """
-
-    model: CosmologyModel
-    cosmologies: tuple
-
-    def __len__(self) -> int:
-        return len(self.cosmologies)
-
-    def __getitem__(self, index) -> CosmologyBatch:
-        selected = self.cosmologies[index]
-        if isinstance(index, slice):
-            return CosmologyBatch(self.model, selected)
-        return CosmologyBatch(self.model, (selected,))
-
-    def __repr__(self) -> str:
-        return f"{self.model.name}(<{len(self)} cosmologies>)"
-
-
-def _batch_of(batch, what: str = "cosmologies") -> CosmologyBatch:
-    """Return ``batch`` if it is a :class:`CosmologyBatch`, else raise a ``TypeError`` that says how to make one."""
-
-    if isinstance(batch, CosmologyBatch):
-        return batch
-    raise TypeError(
-        f"{what} must be a model applied to parameter dictionaries, such as "
-        f"LCDM([params, ...]), not {type(batch).__name__}"
-    )
-
-
 _STATE_NAMES: dict = {}
 
 
-def _state_names(model: CosmologyModel) -> tuple[str, ...]:
+def _state_names(model: ModelSpec) -> tuple[str, ...]:
     if model not in _STATE_NAMES:
         _STATE_NAMES[model] = tuple(model.build().state)
     return _STATE_NAMES[model]
 
 
-# --- the models -------------------------------------------------------------
+# --- models as classes ------------------------------------------------------
 
-LCDM = CosmologyModel(
-    "LCDM",
-    (
-        Kinematics,
-        Background,
-        RadiationStreaming,
-        AdiabaticMode,
-        Curvature,
-        Metric,
-        ColdDarkMatter,
-        Baryons,
-        Photons,
-        MasslessNeutrinos,
-        CosmologicalConstant,
-        ThomsonScattering,
-    ),
-)
-"""LCDM with massless neutrinos: CDM, baryons, photons coupled by Thomson
-scattering, ``Neff`` massless neutrino flavours and a cosmological constant.
-Flat unless the cosmology sets ``Omegak``."""
 
-LCDM_MNU = LCDM.add(MassiveNeutrinos, name="LCDM+mnu")
-"""LCDM with ``Nmnu`` massive neutrino flavours of mass ``mnu`` on ``NQMAX``
-momentum bins."""
+class Model(Recombination):
+    """A cosmological model: a class whose bases are its components. Its instances are cosmologies.
 
-W0WACDM = LCDM.replace(CosmologicalConstant, DarkEnergy, name="w0waCDM")
-"""LCDM with a dark-energy fluid of equation of state ``w = w_DE_0 + w_DE_a (1 -
-a)`` and sound speed ``cs2_DE``, perturbed. Needs ``w != -1``."""
+    A model lists its components as bases, in state order, after ``Model``
+    or after a model whose components it extends::
 
-W0WACDM_MNU = W0WACDM.add(MassiveNeutrinos, name="w0waCDM+mnu")
-"""w0waCDM with massive neutrinos."""
+        class LCDM(Model, Kinematics, Background, ..., ThomsonScattering): ...
+        class LCDM_MNU(LCDM, MassiveNeutrinos): ...
+
+    The parameters the components declare are the keyword arguments of its
+    constructor: required without a default, optional with one. A type
+    checker reads them off the declarations (the ``dataclass_transform`` on
+    :class:`~discoeb.component.Component`), and ``help``, IPython and the
+    class docstring list them. Every model has the recombination block,
+    whose ``tau_reio`` it inherits from
+    :class:`~discoeb.recombination.Recombination`.
+
+    Class keywords set component settings, ``class Coarse(LCDM, LMAX_G=10)``,
+    and ``name=`` the name errors and the kernel cache use. ``LCDM.spec`` is
+    the :class:`ModelSpec` the solver reads.
+
+    A cosmology is immutable and a JAX pytree whose leaves are its
+    parameters, so ``jax.jit`` traces them and ``jax.grad`` returns a
+    cosmology of derivatives. Differentiating one outside the model's
+    :func:`~discoeb.solver.differentiable_parameters` raises, so take the
+    gradient in chosen parameters: ``grad(lambda om: f(planck.replace(Omegam=om)))``.
+    """
+
+    spec: ClassVar[ModelSpec]
+    """The components and settings the solver reads, on which it caches the kernel."""
+    _keys: ClassVar[dict[str, Any]] = {}
+    _held: dict[str, Any] = {}
+    """Traced keys of other components :meth:`from_dict` was given, held for the solve."""
+
+    def __init_subclass__(cls, *, name: str | None = None, **settings):
+        super().__init_subclass__()
+        components: list[type[Component]] = []
+        inherited: dict[str, object] = {}
+        for base in cls.__bases__:
+            if base is Model or not issubclass(base, Component):
+                continue
+            if issubclass(base, Model):
+                components += base.spec.components
+                inherited.update(base.spec.settings)
+            else:
+                components.append(base)
+        cls.spec = ModelSpec(
+            name or cls.__name__,
+            tuple(dict.fromkeys(components)),
+            tuple({**inherited, **settings}.items()),
+        )
+        cls._keys = cls.spec.parameter_keys()
+        cls.__signature__ = inspect.Signature(
+            [
+                inspect.Parameter(
+                    key,
+                    inspect.Parameter.KEYWORD_ONLY,
+                    default=inspect.Parameter.empty if default is REQUIRED else default,
+                )
+                for key, default in cls._keys.items()
+            ]
+        )
+        cls.__doc__ = _documented(cls)
+        jax.tree_util.register_pytree_node(
+            cls, _flatten, functools.partial(_unflatten, cls)
+        )
+
+    def __init__(self, *args, **values):
+        cls = type(self)
+        if args:
+            raise TypeError(
+                f"{cls.__name__} takes its parameters by keyword, "
+                f"{cls.__name__}(H0=..., ...); from a dictionary, "
+                f"{cls.__name__}(**params) or {cls.__name__}.from_dict(params)"
+            )
+        unknown = [key for key in values if key not in cls._keys]
+        if unknown:
+            owners = sorted(
+                {owner.__name__ for key in unknown for owner, _ in declarations_of(key)}
+            )
+            hint = f"; it is a parameter of {', '.join(owners)}" if owners else ""
+            raise TypeError(f"{cls.__name__} has no parameter {unknown[0]!r}{hint}")
+        missing = [
+            key
+            for key, default in cls._keys.items()
+            if default is REQUIRED and key not in values
+        ]
+        if missing:
+            raise TypeError(f"{cls.__name__} needs the parameters {missing}")
+        filled = {key: values.get(key, default) for key, default in cls._keys.items()}
+        cls.spec.check(filled)
+        _set(self, filled)
+
+    @classmethod
+    def from_dict(cls, params) -> Model:
+        """Return the cosmology of a parameter dictionary.
+
+        Unlike ``cls(**params)``, it accepts keys this model does not have
+        while they keep their declared default (``w_DE_0 = -1`` for a model
+        without dark energy), and ignores keys no component declares
+        (:meth:`ModelSpec.check_keys`). For a dictionary written for another
+        model. Under ``jit`` such a key's value is traced and can't be
+        checked yet, so the cosmology holds it for the solve, which raises if
+        anything differentiates it rather than return a silent zero.
+        """
+
+        cls.spec.check_keys(params)
+        cosmology = cls(**{key: params[key] for key in cls._keys if key in params})
+        held = {
+            key: value
+            for key, value in params.items()
+            if key not in cls._keys and declarations_of(key) and not _is_concrete(value)
+        }
+        object.__setattr__(cosmology, "_held", held)
+        return cosmology
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the parameters by name, every one of the model's."""
+
+        return {key: getattr(self, key) for key in type(self)._keys}
+
+    def replace(self, **changes) -> Model:
+        """Return this cosmology with ``changes`` to its parameters: ``planck.replace(H0=70.0)``."""
+
+        cosmology = type(self)(**{**self.to_dict(), **changes})
+        object.__setattr__(cosmology, "_held", self._held)
+        return cosmology
+
+    __replace__ = replace
+
+    def __setattr__(self, name, value):
+        raise AttributeError(f"a cosmology is immutable: use replace({name}=...)")
+
+    def __repr__(self) -> str:
+        values = ", ".join(f"{k}={v!r}" for k, v in self.to_dict().items())
+        return f"{type(self).__name__}({values})"
+
+    # --- the model -----------------------------------------------------------
+
+    @classmethod
+    def parameters(cls, extra=()) -> dict[str, ParameterDeclaration]:
+        """Return the parameters the model declares, by name (:meth:`ModelSpec.parameters`)."""
+
+        return cls.spec.parameters(extra)
+
+    @classmethod
+    def parameter_keys(cls) -> dict[str, Any]:
+        """Return the constructor's parameters and their defaults, :data:`REQUIRED` if none."""
+
+        return dict(cls._keys)
+
+    @classmethod
+    def state_names(cls) -> tuple[str, ...]:
+        """Return the perturbation state's element names in index order."""
+
+        return cls.spec.state_names()
+
+    @classmethod
+    def sparsity(cls):
+        """Return the perturbation Jacobian's pattern (:meth:`ModelSpec.sparsity`)."""
+
+        return cls.spec.sparsity()
+
+    @classmethod
+    def setting(cls, name: str):
+        """Return a setting's value: the model's override or the component's own."""
+
+        return cls.spec.setting(name)
+
+    @classmethod
+    def has(cls, component: type[Component]) -> bool:
+        """Whether the model includes ``component`` or a subclass of it."""
+
+        return cls.spec.has(component)
+
+    @classmethod
+    def build(cls, thermal_history: Component | None = None, extra=()) -> Equations:
+        """Return the model's :class:`~discoeb.component.Equations` (:meth:`ModelSpec.build`)."""
+
+        return cls.spec.build(thermal_history, extra)
+
+    # --- models derived at run time --------------------------------------------
+
+    @classmethod
+    def add(cls, *components: type[Component], name: str) -> type[Model]:
+        """Return a model with ``components`` appended, as ``class name(cls, *components)``."""
+
+        return _derived(name, (cls, *components), {})
+
+    @classmethod
+    def swap(
+        cls, old: type[Component], new: type[Component], *, name: str
+    ) -> type[Model]:
+        """Return a model with ``new`` in place of ``old``, at its position."""
+
+        spec = cls.spec.replace(old, new, name=name)
+        return _derived(name, (Model, *spec.components), dict(spec.settings))
+
+    @classmethod
+    def remove(cls, *components: type[Component], name: str) -> type[Model]:
+        """Return a model without ``components``."""
+
+        spec = cls.spec.remove(*components, name=name)
+        return _derived(name, (Model, *spec.components), dict(spec.settings))
+
+    @classmethod
+    def with_settings(cls, **settings) -> type[Model]:
+        """Return this model with the given component settings (``LMAX_G=20``), a subclass."""
+
+        if not settings:
+            return cls
+        return _derived(cls.spec.name, (cls,), settings)
+
+
+_DERIVED: dict[tuple, type[Model]] = {}
+"""The models derived at run time, one class per name, bases and settings."""
+
+
+def _derived(name: str, bases: tuple, settings: dict) -> type[Model]:
+    key = (name, bases, tuple(sorted(settings.items())))
+    if key not in _DERIVED:
+        _DERIVED[key] = type(
+            name, bases, {"__module__": __name__}, name=name, **settings
+        )
+    return _DERIVED[key]
+
+
+def _set(cosmology: Model, values: dict) -> None:
+    for key, value in values.items():
+        object.__setattr__(cosmology, key, value)
+
+
+def _flatten(cosmology: Model):
+    held = cosmology._held
+    values = tuple(getattr(cosmology, key) for key in type(cosmology)._keys)
+    return (*values, *held.values()), tuple(held)
+
+
+def _unflatten(cls: type[Model], held: tuple, leaves) -> Model:
+    # No check: under jit or a transformation the leaves are tracers or
+    # placeholders.
+    cosmology = object.__new__(cls)
+    n = len(cls._keys)
+    _set(cosmology, dict(zip(cls._keys, leaves[:n])))
+    if held:
+        object.__setattr__(cosmology, "_held", dict(zip(held, leaves[n:])))
+    return cosmology
+
+
+def _documented(cls: type[Model]) -> str:
+    """The class's own docstring with its constructor's parameters listed after it."""
+
+    own = inspect.cleandoc(vars(cls).get("__doc__") or "")
+    keys = cls.spec.parameter_keys()
+    lines = ["Parameters", "----------"]
+    for key, default in keys.items():
+        line = "Required." if default is REQUIRED else f"Default {default!r}."
+        if key in DIFFERENTIABLE_PARAMETERS:
+            line += " Differentiable through solve_eb."
+        lines += [f"{key} : float or jax.Array", f"    {line}"]
+    return "\n\n".join(part for part in (own, "\n".join(lines)) if part)
+
+
+class LCDM(
+    Model,
+    Kinematics,
+    Background,
+    RadiationStreaming,
+    AdiabaticMode,
+    Curvature,
+    Metric,
+    ColdDarkMatter,
+    Baryons,
+    Photons,
+    MasslessNeutrinos,
+    CosmologicalConstant,
+    ThomsonScattering,
+):
+    """LCDM with massless neutrinos.
+
+    CDM, baryons, photons coupled by Thomson scattering, ``Neff`` massless
+    neutrino flavours and a cosmological constant. Flat unless ``Omegak`` is
+    given.
+    """
+
+
+class LCDM_MNU(LCDM, MassiveNeutrinos, name="LCDM+mnu"):
+    """LCDM with ``Nmnu`` massive neutrino flavours of mass ``mnu`` on ``NQMAX`` momentum bins."""
+
+
+class W0WACDM(
+    Model,
+    Kinematics,
+    Background,
+    RadiationStreaming,
+    AdiabaticMode,
+    Curvature,
+    Metric,
+    ColdDarkMatter,
+    Baryons,
+    Photons,
+    MasslessNeutrinos,
+    DarkEnergy,
+    ThomsonScattering,
+    name="w0waCDM",
+):
+    """LCDM with a perturbed dark-energy fluid in place of the cosmological constant.
+
+    Its equation of state is ``w = w_DE_0 + w_DE_a (1 - a)`` and its sound
+    speed ``cs2_DE``. Needs ``w != -1``.
+    """
+
+
+class W0WACDM_MNU(W0WACDM, MassiveNeutrinos, name="w0waCDM+mnu"):
+    """w0waCDM with massive neutrinos."""
+
 
 DEFAULT_MODEL = W0WACDM_MNU
-"""The model a bare cosmology stands for where no batch names one.
+"""The model a bare parameter dictionary stands for where nothing names one.
 
 :func:`~discoeb.background.density_coefficients`,
 :func:`~discoeb.background.background_history`,
 :func:`~discoeb.solver.conformal_ages` and
-:func:`~discoeb.solver.directed_inputs` take a parameter dictionary or a
-cosmology object as well as a batch. This model's components declare every
-built-in parameter, and on a cosmology another built-in model accepts its
-background is that model's. A cosmology that sets a parameter of a component
-outside it (one added to a model of your own) raises there
-(:meth:`CosmologyModel.check_keys`): pass the batch, ``MODEL(cosmology)``."""
+:func:`~discoeb.solver.directed_inputs` take a cosmology, or a dictionary
+for this model. Its components declare every built-in parameter, and on a
+cosmology another built-in model accepts, its background is that model's. A
+dictionary that sets a parameter of a component outside it raises there
+(:meth:`ModelSpec.check_keys`)."""
+
+DEFAULT_SPEC = DEFAULT_MODEL.spec
+"""The :class:`ModelSpec` of :data:`DEFAULT_MODEL`."""
+
+
+# --- what a solve takes ---------------------------------------------------------
+
+
+@dataclass(frozen=True, eq=False)
+class CosmologyBatch:
+    """Cosmologies of one model as the solver reads them: the spec and parameter dictionaries.
+
+    ``model`` is the :class:`ModelSpec`, on which the compiled kernel is
+    cached, ``cosmologies`` a tuple of parameter dictionaries (their values
+    JAX arrays or tracers) and ``model_class`` the :class:`Model` they came
+    from.
+    """
+
+    model: ModelSpec
+    cosmologies: tuple
+    model_class: type[Model] | None = None
+
+    def __len__(self) -> int:
+        return len(self.cosmologies)
+
+
+def _batch_of(cosmologies) -> CosmologyBatch:
+    """Return one cosmology or a sequence of cosmologies of one model as a :class:`CosmologyBatch`."""
+
+    if isinstance(cosmologies, CosmologyBatch):
+        return cosmologies
+    batch = (cosmologies,) if isinstance(cosmologies, Model) else tuple(cosmologies)
+    if not batch or not all(isinstance(c, Model) for c in batch):
+        raise TypeError(
+            "cosmologies must be a cosmology, such as LCDM(H0=..., ...), or a "
+            f"non-empty sequence of them, not {type(cosmologies).__name__}"
+        )
+    classes = list(dict.fromkeys(type(c) for c in batch))
+    if len(classes) > 1:
+        raise TypeError(
+            "the cosmologies of one solve share a model, whose kernel it compiles: "
+            f"got {', '.join(c.__name__ for c in classes)}"
+        )
+    return CosmologyBatch(
+        classes[0].spec, tuple({**c._held, **c.to_dict()} for c in batch), classes[0]
+    )
+
+
+def _spec_of(model) -> ModelSpec:
+    """Return a model class's :class:`ModelSpec`, or a spec as it is."""
+
+    if isinstance(model, type) and issubclass(model, Model):
+        return model.spec
+    if isinstance(model, ModelSpec):
+        return model
+    raise TypeError(f"expected a model such as LCDM, not {model!r}")

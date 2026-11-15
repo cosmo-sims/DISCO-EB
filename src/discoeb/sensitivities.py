@@ -27,11 +27,11 @@ from .kernel import (
     _named_error_weights,
     parameter_layout,
 )
-from .models import DEFAULT_MODEL
+from .models import DEFAULT_SPEC
 from .recombination import THERMO_ERROR_WEIGHT
 
 
-def _directed_inputs(columns, model=DEFAULT_MODEL, extra=()) -> jax.Array:
+def _directed_inputs(columns, model=DEFAULT_SPEC, extra=()) -> jax.Array:
     """Return the ``(n_cosmologies, n_directed)`` directed inputs of ``model`` from a batch's columns, in JAX.
 
     They are the layout's directed parameters (:func:`~discoeb.kernel.parameter_layout`),

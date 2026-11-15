@@ -5,8 +5,9 @@ import math
 import numpy as np
 import pytest
 from conftest import HOST, ConstantThermalHistory
+from jax.typing import ArrayLike
 
-from discoeb.component import Component, Gravity, Model, Parameter, State
+from discoeb.component import Component, Equations, Gravity, Parameter, State
 from discoeb.gravity import GRAVITY_INTERFACE, Background, Curvature, Metric
 from discoeb.models import LCDM, W0WACDM_MNU
 from discoeb.species import (
@@ -95,7 +96,7 @@ def test_the_acceleration_equation_is_the_derivative_of_the_friedmann_equation(a
 class ScaledGravity(Background):
     """A Friedmann equation with a rescaled Newton constant: ``H^2 = mu 8 pi G rho / 3 - K``."""
 
-    mu = Parameter(1.0, column=True)
+    mu: ArrayLike = Parameter(1.0, column=True)
 
     def adotoa(self, grho, Kcurv, mu):
         return math.sqrt(mu * grho * (1.0 / 3.0) - Kcurv)
@@ -108,7 +109,7 @@ def test_another_friedmann_equation_replaces_the_background():
 
     from discoeb.background import background_model
 
-    scaled = LCDM.replace(Background, ScaledGravity, name="scaled gravity")
+    scaled = LCDM.swap(Background, ScaledGravity, name="scaled gravity")
     assert scaled.state_names() == LCDM.state_names()
     assert "mu" in scaled.parameter_keys() and "mu" not in LCDM.parameter_keys()
     plain = _densities(LCDM, COSMOLOGY)
@@ -149,7 +150,7 @@ def test_a_rate_is_a_quantity_a_provider_may_read():
         def d_trend(self, falling):
             return falling
 
-    model = Model([Tank(), Refill(), Gauge()])
+    model = Equations([Tank(), Refill(), Gauge()])
     rhs = model.build({}, **HOST)
     assert rhs((3.0, 0.0), 0.0, ()) == (0.5, -0.5)
     # computed once, as a quantity, and returned as the state's rate
@@ -167,7 +168,7 @@ def test_a_rate_is_a_quantity_a_provider_may_read():
             return d_x
 
     with pytest.raises(ValueError, match="circular"):
-        Model([Loop()]).build({}, **HOST)
+        Equations([Loop()]).build({}, **HOST)
 
 
 def test_the_metric_rate_is_a_quantity_of_the_model():
@@ -195,7 +196,7 @@ def test_the_gauge_needs_its_species_at_rest():
     with pytest.raises(ValueError, match="fixes the synchronous gauge"):
         LCDM.remove(ColdDarkMatter, name="no CDM")
     # a copy under another name fixes it as well
-    LCDM.replace(ColdDarkMatter, ColdDarkMatter.named("c"), name="renamed CDM")
+    LCDM.swap(ColdDarkMatter, ColdDarkMatter.named("c"), name="renamed CDM")
 
 
 def test_the_streaming_approximation_is_a_component_a_model_may_drop():
@@ -203,9 +204,9 @@ def test_the_streaming_approximation_is_a_component_a_model_may_drop():
 
     from discoeb.kernel import N_PARAM, PARAM_COLUMNS
 
-    full = LCDM.replace(RadiationStreaming, NoRadiationStreaming, name="full")
+    full = LCDM.swap(RadiationStreaming, NoRadiationStreaming, name="full")
     assert full.state_names() == LCDM.state_names()
-    assert "RSA" not in {n for cls in full.components for n in cls.setting_names()}
+    assert "RSA" not in {n for cls in full.spec.components for n in cls.setting_names()}
     with pytest.raises(NameError, match="rsa"):
         LCDM.remove(RadiationStreaming, name="nothing").build(
             ConstantThermalHistory()
@@ -235,6 +236,6 @@ def test_the_streaming_approximation_is_a_component_a_model_may_drop():
         ("dgrho_streaming", "tau"), inputs=("y", "tau"), params=PARAM_COLUMNS, **HOST
     )
     assert (
-        "dgrho_streaming = Photons__dgrho_streaming(Photons_self, rsa, rsa_delta, grhog_t)"
-        " + MasslessNeutrinos__dgrho_streaming(MasslessNeutrinos_self, rsa, rsa_delta, grhor_t)"
+        "dgrho_streaming = Photons__dgrho_streaming_g(Photons_self, rsa, rsa_delta, grhog_t)"
+        " + MasslessNeutrinos__dgrho_streaming_r(MasslessNeutrinos_self, rsa, rsa_delta, grhor_t)"
     ) in streaming._generated_source

@@ -46,29 +46,22 @@ def cosmologies(n, offset):
         omega_c = 0.1201075 * (1.0 - 0.008 * phase)
         h = 0.6732117 * (1.0 + 0.004 * np.sin(np.pi * phase))
         out.append(
-            {
-                "Omegam": (omega_b + omega_c) / h**2,
-                "Omegab": omega_b / h**2,
-                "w_DE_0": -1.0,
-                "w_DE_a": 0.0,
-                "cs2_DE": 1.0,
-                "Omegak": 0.0,
-                "A_s": 2.100549e-9,
-                "n_s": 0.9660499,
-                "H0": 100.0 * h,
-                "Tcmb": 2.7255,
-                "YHe": 0.2454006,
-                "Neff": 3.046,
-                "Nmnu": 0.0,
-                "mnu": 0.0,
-                "k_p": 0.05,
-            }
+            LCDM(
+                Omegam=(omega_b + omega_c) / h**2,
+                Omegab=omega_b / h**2,
+                A_s=2.100549e-9,
+                n_s=0.9660499,
+                H0=100.0 * h,
+                Tcmb=2.7255,
+                YHe=0.2454006,
+                Neff=3.046,
+            )
         )
     return out
 
 
 def matter_power(k, batch):
-    """``P(k)`` of a batch: one ``solve_eb`` launch, then the spectrum from what it kept."""
+    """``P(k)`` of a list of cosmologies: one ``solve_eb`` launch, then the spectrum from what it kept."""
     tau0 = conformal_ages(batch)
     solution = solve_eb(
         batch,
@@ -81,7 +74,7 @@ def matter_power(k, batch):
     )
     today = {name: solution[name][..., -1] for name in solution.names}
     params = {
-        key: jnp.asarray([c[key] for c in batch.cosmologies])
+        key: jnp.asarray([getattr(c, key) for c in batch])
         for key in ("Omegam", "Omegab", "A_s", "n_s", "k_p")
     }
     pk = matter_power_spectrum(k, **today, tau0=tau0, **params)
@@ -91,13 +84,13 @@ def matter_power(k, batch):
 k = np.geomspace(1.0e-4, 1.0, 128)  # 1/Mpc
 
 t0 = time.perf_counter()
-matter_power(k, LCDM(cosmologies(128, offset=0.0)))
+matter_power(k, cosmologies(128, offset=0.0))
 compile_time = time.perf_counter() - t0
 print(f"compile and first call: {compile_time:.1f} s")
 
 batch = cosmologies(128, offset=0.001)
 t0 = time.perf_counter()
-pk = matter_power(k, LCDM(batch))
+pk = matter_power(k, batch)
 elapsed = time.perf_counter() - t0
 
 print(f"P(k) for {pk.shape[0]} cosmologies x {pk.shape[1]} modes: {elapsed:.3f} s")

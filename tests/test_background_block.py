@@ -1,14 +1,14 @@
 """A background state added from outside: the equations split the blocks themselves.
 
 ``CosmicTime`` integrates ``dt = a dtau``. Its rate reads no wave number, so
-:meth:`Model.stages <discoeb.component.Model.stages>` puts it in the
+:meth:`Equations.stages <discoeb.component.Equations.stages>` puts it in the
 background block beside the recombination history, the host integrates it
 from the start of the background, and the kernel carries it on from there.
 """
 
 import numpy as np
 import pytest
-from conftest import _cuda_available
+from conftest import _cuda_available, cosmologies_of
 
 from discoeb.component import Component, Interaction, State
 from discoeb.kernel import joint_model
@@ -99,8 +99,10 @@ def test_the_kernel_carries_the_state_to_today():
 
     k = np.geomspace(1.0e-3, 0.3, 6)
     tau = np.array([10.0, 300.0, 2.0e4])  # the last lies past tau0
-    with_time = solve_eb(LCDM_T(COSMOLOGY), k, tau, keep=("t", "a", "clxc"))
-    plain = solve_eb(LCDM(COSMOLOGY), k, tau, keep=("a", "clxc"))
+    with_time = solve_eb(
+        cosmologies_of(LCDM_T, COSMOLOGY), k, tau, keep=("t", "a", "clxc")
+    )
+    plain = solve_eb(cosmologies_of(LCDM, COSMOLOGY), k, tau, keep=("a", "clxc"))
     a, tau_bg = background_history(COSMOLOGY)
     age = np.sum(0.5 * (a[1:] + a[:-1]) * np.diff(tau_bg))
     t = np.asarray(with_time["t"])[0]

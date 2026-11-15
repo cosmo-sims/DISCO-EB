@@ -1095,6 +1095,7 @@ dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 
 [package.optional-dependencies]
@@ -1143,6 +1144,7 @@ requires-dist = [
     { name = "modax-solvers", specifier = ">=0.4.0" },
     { name = "numba-enzyme-cuda", specifier = ">=0.3.0" },
     { name = "numpy", specifier = ">=2.2.6" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'", specifier = ">=4.1" },
 ]
 provides-extras = ["cuda12", "cuda13"]
 

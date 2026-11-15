@@ -1,7 +1,7 @@
 """The Jacobian sparsity pattern, and what modax's analysis makes of it.
 
 All host-side: the pattern is traced through the providers of the model's
-component model (:meth:`discoeb.models.CosmologyModel.sparsity`), and the ordering
+component model (:meth:`discoeb.models.ModelSpec.sparsity`), and the ordering
 and symbolic factorisation that turn it into a compiled solver run on the host
 when the kernel is built. Nothing here needs a GPU.
 """

@@ -7,7 +7,7 @@ species by listing the interaction beside them.
 
 from __future__ import annotations
 
-from .component import Interaction
+from .component import Interaction, contributes
 
 
 class ThomsonScattering(Interaction):
@@ -31,17 +31,20 @@ class ThomsonScattering(Interaction):
     def polter(self, pig, E2):
         return pig * (1.0 / 10.0) + 9.0 * E2 * (1.0 / 15.0)
 
-    def d_vb(self, photbar, opacity, slip):
+    @contributes("d_vb")
+    def d_vb_thomson(self, photbar, opacity, slip):
         return -photbar * opacity * slip
 
-    def d_theta(self, opacity, slip, polter, theta, rsa, output):
+    @contributes("d_theta")
+    def d_theta_thomson(self, opacity, slip, polter, theta, rsa, output):
         damp = (1.0 - rsa) * opacity
         output[1] = damp * slip
         output[2] = -damp * (theta[2] - polter)
         for ell in range(3, len(theta)):
             output[ell] = -damp * theta[ell]
 
-    def d_e(self, opacity, polter, e, rsa, output):
+    @contributes("d_e")
+    def d_e_thomson(self, opacity, polter, e, rsa, output):
         damp = (1.0 - rsa) * opacity
         output[0] = -damp * (e[0] - polter)
         for i in range(1, len(e)):
