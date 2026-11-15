@@ -13,10 +13,6 @@ Run from the repository root with the project's environment::
 """
 
 import jax
-
-# Before DISCO-EB builds anything: the solver works in double precision.
-jax.config.update("jax_enable_x64", True)
-
 import numpy as np
 
 from discoeb import (

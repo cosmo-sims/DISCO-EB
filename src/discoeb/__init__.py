@@ -46,8 +46,9 @@ state history:
 is a parameter dictionary or an object :func:`as_cosmology` returns.
 """
 
-# First: sets JAX's GPU memory policy before anything touches the device.
-from . import _jax_memory  # noqa: F401
+# First: double precision and JAX's GPU memory policy, before anything builds
+# an array or touches the device.
+from . import _jax_config  # noqa: F401
 from .background import TAU_START, background_history, density_coefficients
 from .component import Component
 from .cosmology import DIFFERENTIABLE_PARAMETERS, as_cosmology

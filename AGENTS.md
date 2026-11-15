@@ -543,7 +543,8 @@ The typical computation flow is:
 - All code is JAX-compatible (no NumPy unless wrapped)
 - Extensive use of `jax.numpy` instead of `numpy`
 - Compatible with `jax.jit`, `jax.grad`, `jax.vmap` for performance and autodiff
-- Enable 64-bit precision: `jax.config.update("jax_enable_x64", True)` (see conftest.py)
+- 64-bit precision: importing `discoeb` enables `jax_enable_x64` and turns
+  off JAX's GPU preallocation (`_jax_config.py`, imported first)
 
 **Cosmologies:**
 - A cosmology is a parameter dictionary (`Omegam`, `Omegab`, `H0`, `Tcmb`,
@@ -605,7 +606,8 @@ to DISCO-CMB.
 ## Important Notes
 
 - **GPU Required:** Tests expect GPU platform for reasonable performance
-- **JAX 64-bit:** Tests enable 64-bit precision via `jax.config.update("jax_enable_x64", True)`
+- **JAX 64-bit:** `import discoeb` enables `jax_enable_x64`; `conftest.py`
+  also sets it before anything else is imported
 - **Recfast License:** `recombination.py` contains code adapted from Recfast (UBC license, not MIT)
 - **Benchmarks:** See BENCHMARKS.md for reference timings on various hardware.
   The spectrum benchmarks (`test_power_spectra_match_class`,

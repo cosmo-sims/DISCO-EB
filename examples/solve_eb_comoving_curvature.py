@@ -20,9 +20,6 @@ Run from the repository root with the project's environment::
 """
 
 import jax
-
-jax.config.update("jax_enable_x64", True)
-
 import numpy as np
 
 from discoeb import LCDM, solve_eb

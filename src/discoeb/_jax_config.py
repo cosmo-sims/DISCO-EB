@@ -1,7 +1,14 @@
-"""Let JAX's GPU memory pool grow on demand, unless the user chose otherwise."""
+"""Configure JAX for DISCO-EB: double precision and an on-demand GPU memory pool."""
 
 import os
 import warnings
+
+import jax
+
+# The solver works in double precision; in single precision the thermal history
+# returns NaNs and the integration stalls at max_steps. Set before any module
+# of the package builds an array.
+jax.config.update("jax_enable_x64", True)
 
 # The perturbation solver is a numba-CUDA kernel launched beside JAX. The
 # driver reserves its per-thread local memory at launch, outside JAX's pool,

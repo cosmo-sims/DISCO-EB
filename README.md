@@ -61,10 +61,6 @@ You need a GPU to run a solve, but not to import the package. modax brings the C
 Every solve names its model. This example keeps the comoving curvature perturbation $\mathcal{R}$ and the CDM density contrast of flat LCDM, for 64 wave modes at 100 conformal times:
 
 ```python
-import jax
-
-jax.config.update("jax_enable_x64", True)
-
 import numpy as np
 from discoeb import LCDM, solve_eb
 
