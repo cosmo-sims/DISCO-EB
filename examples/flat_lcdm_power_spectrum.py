@@ -12,11 +12,6 @@ Run from the repository root with the project's environment::
     .venv/bin/python examples/flat_lcdm_power_spectrum.py
 """
 
-import os
-
-# The perturbation kernel keeps its own device memory beside JAX's pool.
-os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-
 import jax
 
 # Before DISCO-EB builds anything: the solver works in double precision.

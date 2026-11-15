@@ -24,9 +24,6 @@ import tempfile
 os.environ["NUMBA_CACHE_DIR"] = tempfile.mkdtemp(prefix="discoeb-kernel-cache-")
 atexit.register(shutil.rmtree, os.environ["NUMBA_CACHE_DIR"], ignore_errors=True)
 
-# The perturbation kernel keeps its own device memory beside JAX's pool.
-os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-
 import time
 
 import jax

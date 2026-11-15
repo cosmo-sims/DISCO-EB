@@ -19,11 +19,6 @@ Run from the repository root with the project's environment::
     python examples/solve_eb_comoving_curvature.py
 """
 
-import os
-
-# The perturbation kernel keeps its own device memory beside JAX's pool.
-os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-
 import jax
 
 jax.config.update("jax_enable_x64", True)
