@@ -1,9 +1,6 @@
-"""A right-hand side assembled from components whose functions name what they read.
-
-A model is a list of *components*. A component declares its settings and state
-variables as class attributes and provides *quantities* through ordinary Python
-functions whose **parameter names are the names of the quantities they depend
-on**::
+"""
+A cosmological model in DISCO-EB is comprised of a list of *components*. A component declares its settings and state
+variables as class attributes and provides *quantities* through ordinary Python functions we call *providers*:
 
     class Baryons(Species):
         clxb = State(initial=lambda clxg: 0.75 * clxg)
@@ -19,24 +16,6 @@ on**::
         def d_vb(self, adotoa, vb, k, cs2, clxb):
             return -adotoa * vb + k * cs2 * clxb
 
-    class MasslessNeutrinos(Species):
-        LMAX_NR = Setting(15)                               # DISCO_LMAX_NR overrides
-        n = State(lambda self: self.LMAX_NR + 1)   # N_0 .. N_LMAX_NR
-
-        def d_n(self, k, z, sigma, n, inv_tau, output):
-            output[0] = -k * ((4.0 / 3.0) * z + n[1])
-            ...
-            for l in range(3, self.LMAX_NR):
-                output[l] = k * (l * n[l - 1] - (l + 1) * n[l + 1]) * (1.0 / (2 * l + 1))
-            ...
-
-Nothing gets passed explicitly. :meth:`Equations.build` reads each provider's
-dependencies off its signature (``inspect.signature``), orders the providers
-with ``graphlib.TopologicalSorter`` and generates a driver that calls them in
-that order, injecting each value by name. This happens once, at build time.
-State variables (``y[i]``), parameters (``p[j]``) and the time are the base
-quantities. Everything else is derived.
-
 **Settings.** ``LMAX_G = Setting(15)`` declares a setting with its default.
 The class loads it at creation from the environment variable ``DISCO_<NAME>``
 when set, cast to the default's type. It reads as a plain value on the class
@@ -48,102 +27,23 @@ and its instances, and the constructor takes an override as a keyword
 shape may be a function of the component instance when it depends on its
 settings. The flat state vector holds the components' states in declaration
 order, a vector ``theta`` as the elements ``theta_0, theta_1, ...`` and a
-matrix ``psi`` as ``psi_0_0, psi_0_1, ...``.
+matrix ``psi`` as ``psi_0_0, psi_0_1, ...``. A state also carries its
+*initial condition*, ``State(..., initial=fn)``. Its parameters resolve
+like a provider's.
 
-A state also carries its *initial condition*, ``State(..., initial=fn)``: a
-lambda for a scalar, or a ``_``-prefixed function defined just above for a
-vector. Its parameters resolve like a provider's, from the quantities
-:meth:`Equations.initial_state` gets (``k``, ``tau``, the background densities),
-from other states' initial values, and from providers the host can evaluate
-(``clxg`` for ``theta[0]``). :meth:`Equations.evaluate` does the same resolution
-for any quantity, on floats or JAX arrays. A scalar's initial condition
-returns the value. A vector's takes ``output``, zero-filled, and writes into
-it. A state without one starts at zero.
+**Providers.** Components provide quantities by defining them in methods. Each
+method can take as inputs any other defined quantity. The topological sorting
+algorithm that builds the right-hand side of the Einstein-Boltzmann system will
+call the providers in the order that respects their dependencies. Providers
+of the form ``d_<state>`` define a contribution to that state's derivative.
+A provider may also be decorated with ``@contributes`` to contribute to
+a sum over components, such as ``grho``, ``dgrho`` and ``dgq``.
 
-A method provides the quantity it is named after. A sum over species
-(``dgrho``) or a state's derivative takes contributions from several
-components, and each such method has a name of its own and says what it
-adds to (:func:`contributes`): a model class inherits every component, and
-two bases defining one method differently is what type checkers report.
+**Parameters.** ``Omegam: ArrayLike = Parameter()`` declares a cosmological
+parameter.
 
-**Parameters.** ``Omegam: ArrayLike = Parameter()`` declares a key of the
-cosmology, an argument of every model's constructor whose components
-include the class, ``w_DE_0: ArrayLike = Parameter(-1.0, column=True)`` one
-with a default that the kernel reads as a column of the parameter row, and
-``grhoc: ArrayLike = Derived(lambda grhom, Omegam, Omegab: grhom * (Omegam -
-Omegab), directed=True)`` a kernel input derived from other parameters by
-name, not an argument. :class:`Component` carries ``dataclass_transform``
-with :func:`Parameter` and :func:`Derived` as field specifiers, so a type
-checker reads a model's constructor off these annotated declarations. A
-directed parameter ``x`` is a column ``x_nominal`` and a column ``dir_x``,
-and the component provides ``x = x_nominal + eps * dir_x``, so a
-sensitivity in ``eps`` is the derivative along ``dir``. One parameter
-closes the density budget (``Derived(closes_budget=True)``, ``grhov`` in
-the built-in models): the background solves for it so that the model expands at ``H0``
-today (:func:`discoeb.solver._background.density_parameters`).
-Two components of a model may declare one name only through the same
-declaration. A ``check`` classmethod whose parameters name
-cosmology keys rejects values the component cannot represent.
-
-**Sparsity.** Nothing declares which states a derivative depends on.
-:meth:`Equations.sparsity` reads the Jacobian's pattern off the providers. It
-resolves the same dependency graph as a build, but on values that carry the
-set of state elements they depend on instead of numbers. A state element
-carries its own index, the time and parameters carry nothing, and every
-operation carries the union of its operands'. So
-``output[l] = kv * (l * x[l - 1] - (l + 1) * x[l + 1])`` traces as the
-tridiagonal band it is. The pattern is exact. A data-dependent branch, the
-one construct that could hide a dependency, makes the provider count as
-reading all of its inputs.
-
-**Providers.** Every method of a component is a provider, named after the
-quantity it provides, and so is a function stored on the instance in
-``__init__``. ``self`` is the component. A provider reads its settings and
-other public numeric attributes (a tuple of quadrature weights the
-constructor derived, say) as ``self.NQMAX`` or ``self.weight[i]``. The
-remaining parameters are the quantities it depends on. A method or lambda
-that reads nothing of its component may leave ``self`` out.
-
-Three kinds of name are special. ``d_<state>`` provides a contribution to
-that state's derivative. For a scalar state it returns the contribution. For
-a vector state it takes ``output``, which the framework fills with zeros, and
-writes its contribution into it. A function named in the model's ``sums``
-(``grho``, ``dgrho`` and ``dgq`` for the Einstein-Boltzmann system)
-contributes to that sum over components. Names starting with an underscore
-are private to the component.
-
-Several components may write one state (the baryon Euler equation and the
-Thomson drag both write ``vb``), and the derivative is the sum of their
-contributions. A vector state reaches a provider as a 1-D array (a matrix as
-2-D), so ``len()``, indexing and loops over multipoles work as in plain
-Python. A provider may call a plain module-level helper (``stream``), which
-the build compiles for the device alongside it. Wherever a function fills an
-array instead of returning, that array is its parameter ``output``.
-
-On the device ``self`` is a named tuple of the component's constants
-(:meth:`Component.device_self`). The generated driver passes it to each
-provider as a compile-time constant, so ``self.NQMAX`` folds into the loop
-bound and ``self.weight[i]`` into the unrolled sum just like a literal. On the
-host (:meth:`Equations.evaluate`) ``self`` is the component itself.
-
-**Device names.** A provider that needs scratch space may use ``cuda`` and
-``float64`` imported from this module (``cuda.local.array(16, float64)``).
-The size must be a literal, since numba types it before the optimiser folds
-``self.N``. Both are placeholders. Compiling a provider swaps in the real
-objects, and a host test passes stand-ins to :meth:`Equations.build`. So a model
-imports nothing from CUDA and runs as plain Python under test.
-
-Each provider compiles to its own ``cuda.jit(device=True)`` function, and the
-generated driver is one more. The driver copies ``y`` into a local array per
-state, allocates the contribution buffers, calls the providers and sums the
-contributions into local arrays it returns as a tuple. The primal thus has
-the fixed-size tuple signature the Enzyme-differentiated numba-CUDA kernel
-needs, while the components see arrays. numba-enzyme optimises the primal
-with LLVM's ``O3`` before Enzyme differentiates it. That pass inlines the
-providers, unrolls the loops and promotes every local array to scalars, so
-Enzyme and the kernel see a straight-line right-hand side, as if written by
-hand. The driver keeps its text as ``_generated_source`` and registers it
-with ``linecache`` so numba can read it.
+**Sparsity.** The sparsity pattern of the E-B system is automatically
+determined by tracing the dependencies of the various provider methods.
 """
 
 from __future__ import annotations

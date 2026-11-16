@@ -1,10 +1,7 @@
-"""Components: the framework, and the species, gravity and interactions built on it.
+"""
+Components are the building blocks that define cosmological models in DISCO-EB, including gravity terms, fluid species and interactions between species.
 
-The framework that turns components into right-hand sides is private
-(``_component``); its public names are exported here. :mod:`~discoeb.components.species`,
-:mod:`~discoeb.components.gravity`, :mod:`~discoeb.components.interactions`
-and :mod:`~discoeb.components.recombination` hold the components a model
-lists as its bases.
+This module defines the public API for components.
 """
 
 from . import gravity, interactions, recombination, species

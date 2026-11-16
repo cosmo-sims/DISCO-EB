@@ -1,31 +1,12 @@
-"""Gravity in synchronous gauge: the metric, the Friedmann sum and the initial mode.
+"""
+Gravity in synchronous gauge including the metric, Friedmann sum and initial mode.
 
-Conventions follow CAMB: ``k`` in 1/Mpc, conformal time ``tau`` in Mpc,
-``etak = k eta``, velocities ``q_i = (1 + w_i) theta_i / k`` and density
-coefficients ``grho_i_t = 8 pi G rho_i a^2``. The metric enters the fluid
-equations of :mod:`discoeb.components.species` through ``0.5 h' = k z`` and the shear
-``sigma`` (see :class:`Metric`). The curved-geometry relations follow
-CLASS's ``perturbations.c`` with ``K = -grhok / 3`` and ``s2^2 = 1 - 3K/k^2``.
-
-The components here are neither species nor interactions.
 :class:`Kinematics` holds the powers of the scale factor and the wave number
-every component reads. :class:`Background` is the Friedmann equation: it
-turns the summed density ``grho`` into the expansion rate. :class:`Metric`
+every component reads. :class:`Background` defines the Friedmann equation, turning
+the summed density ``grho`` into the expansion rate. :class:`Metric`
 holds ``etak`` and the Einstein constraints, :class:`Curvature` the spatial
 curvature, and :class:`AdiabaticMode` the growing-mode quantities the
-species' initial conditions read. Every model in :mod:`discoeb.models`
-includes all five.
-
-**The interface.** The species meet gravity in two sets of names. They
-contribute to the sums :data:`SUMS`, which describe the fluids alone. They
-read :data:`GRAVITY_INTERFACE`: the expansion rate ``adotoa`` and the metric
-sources ``z`` and ``sigma``. A theory of gravity is a set of
-:class:`~discoeb.components._component.Gravity` components that provides those three
-from the sums, so another theory replaces :class:`Background` (a modified
-Friedmann equation), :class:`Metric` (modified constraints, with states of
-its own if it needs them) or both, and no species changes::
-
-    BRANS_DICKE = LCDM.swap(Background, BransDickeBackground, name="BD")
+species' initial conditions read.
 """
 
 from __future__ import annotations
