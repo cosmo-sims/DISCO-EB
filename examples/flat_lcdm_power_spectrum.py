@@ -28,18 +28,18 @@ K = np.geomspace(1.0e-4, 1.0, 128)  # wave numbers, 1/Mpc
 
 
 @jax.jit
-def matter_power(offset: jax.Array) -> jax.Array:
+def matter_power(key: jax.Array) -> jax.Array:
     """``P(k)`` in Mpc^3 today, ``(N_COSMOLOGIES, len(K))``, of a batch about Planck 2018.
 
-    The batch spreads ``omega_b``, ``omega_c`` and ``h`` by under a per cent
-    about the Planck 2018 best fit (flat, three massless neutrino flavours).
-    ``offset`` shifts the spread, so each value gives a different batch.
+    The batch draws ``omega_b``, ``omega_c`` and ``h`` uniformly within under
+    a per cent of the Planck 2018 best fit (flat, three massless neutrino
+    flavours), each independently. Each ``key`` gives a different batch.
     """
 
-    phase = jnp.linspace(-1.0, 1.0, N_COSMOLOGIES) + offset
-    omega_b = 0.02238280 * (1.0 + 0.006 * phase)
-    omega_c = 0.1201075 * (1.0 - 0.008 * phase)
-    h = 0.6732117 * (1.0 + 0.004 * jnp.sin(jnp.pi * phase))
+    u = jax.random.uniform(key, (3, N_COSMOLOGIES), minval=-1.0, maxval=1.0)
+    omega_b = 0.02238280 * (1.0 + 0.006 * u[0])
+    omega_c = 0.1201075 * (1.0 + 0.008 * u[1])
+    h = 0.6732117 * (1.0 + 0.004 * u[2])
     cosmologies = [
         LCDM(
             Omegam=(omega_b[i] + omega_c[i]) / h[i] ** 2,
@@ -73,21 +73,22 @@ def matter_power(offset: jax.Array) -> jax.Array:
     return matter_power_spectrum(K, **today, tau0=tau0, **parameters)
 
 
-def timed(offset: float) -> tuple[np.ndarray, float]:
+def timed(key: jax.Array) -> tuple[np.ndarray, float]:
     start = time.perf_counter()
-    pk = jax.block_until_ready(matter_power(jnp.asarray(offset)))
+    pk = jax.block_until_ready(matter_power(key))
     return np.asarray(pk), time.perf_counter() - start
 
 
-_, first = timed(0.0)
-pk, elapsed = timed(0.001)  # a batch not seen before
+warm_up_key, key = jax.random.split(jax.random.key(0))
+_, first = timed(warm_up_key)
+pk, elapsed = timed(key)  # a batch not seen before
 
 print(f"first call, with tracing and the kernel's compile or load: {first:.1f} s")
 print(f"P(k) of {pk.shape[0]} new cosmologies x {pk.shape[1]} modes: {elapsed:.3f} s")
 print()
-print("the central cosmology of the batch:")
+print("the first cosmology of the batch:")
 print(f"{'k [1/Mpc]':>12}  {'P(k) [Mpc^3]':>14}")
-central = pk[N_COSMOLOGIES // 2]
-for kv, pv in zip(K[::8], central[::8]):
+first_pk = pk[0]
+for kv, pv in zip(K[::8], first_pk[::8]):
     print(f"{kv:12.4e}  {pv:14.6e}")
-print(f"P(k) peaks at k = {K[np.argmax(central)]:.4g} 1/Mpc")
+print(f"P(k) peaks at k = {K[np.argmax(first_pk)]:.4g} 1/Mpc")
