@@ -115,10 +115,12 @@ class (`[LCDM(H0=..., ...), ...]`): named quantities evaluated in the kernel at 
 save times, the CMB's sources being a `LineOfSightSources` component passed as
 `extra`; error weights by state name; differentiable in
 `DIFFERENTIABLE_PARAMETERS` (those `differentiable_parameters(model)` keeps)
-or in the model's directed inputs passed as `inputs=`: all of them, the
-15-wide `DIRECTED_NAMES` superset `directed_inputs` gives a dictionary, or
-the first nine every built-in model shares (`N_COMMON_DIRECTED`), which
-DISCO-CMB's `compute_cl` passes. Grids read
+or in the model's directed inputs passed as `inputs=`: all of them, as
+`directed_inputs` gives them, or the nine `DIRECTED_NAMES` every built-in
+model leads with (`N_COMMON_DIRECTED`), which DISCO-CMB's `compute_cl`
+passes. There is no default model (removed 2026-11-16): every function
+takes cosmologies of a model or names the model, and a bare dictionary
+raises `TypeError`. Grids read
 `background_history`, `density_coefficients` and `conformal_ages`. A CMB
 change that seems to need a private name should add to `__init__.py` instead;
 changing `__init__.py` means running DISCO-CMB's tests too.
@@ -299,8 +301,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    - Split on 2026-11-16: `_model.py` has the base classes (`Model`,
      `ModelSpec`, `CosmologyBatch`, `_batch_of`, `_spec_of`), `lcdm.py`
      `LCDM` and `LCDM_MNU`, `w0wacdm.py` `W0WACDM` and `W0WACDM_MNU`, and
-     `models/__init__.py` exports them and defines `DEFAULT_MODEL` and
-     `DEFAULT_SPEC`
+     `models/__init__.py` exports them
    - Since 2026-11-15 a model is a class and a cosmology an instance of it:
      `class LCDM(Model, Kinematics, Background, ..., ThomsonScattering)`,
      `class LCDM_MNU(LCDM, MassiveNeutrinos, name="LCDM+mnu")`, then
@@ -341,12 +342,12 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      bases written out with `DarkEnergy` for `CosmologicalConstant`),
      `W0WACDM_MNU`. Massive neutrinos come after `ThomsonScattering`; no sum
      or state order moves, since an interaction contributes to neither
-   - `DEFAULT_MODEL` (= `W0WACDM_MNU`, `DEFAULT_SPEC` its spec) is the one
-     place a bare parameter dictionary gets a model (`density_coefficients`,
-     `background_history`, `conformal_ages`, `directed_inputs`, which also
-     take cosmologies). Those run its `check_keys` (the first half of
-     `check`, without the components' hooks), so a dictionary that sets a
-     parameter of a component outside it raises instead of being ignored
+   - No model is a default (`DEFAULT_MODEL`, `W0WACDM_MNU`, removed
+     2026-11-16): `density_coefficients`, `background_history`,
+     `conformal_ages` and `directed_inputs` take cosmologies, the model
+     coming from their class, and the background functions, `make_params`,
+     `make_initial_states`, `build_keep_hook` and `_columns` take the model
+     or its layout or keys as a required argument
    - `_batch_of(cosmologies)` turns one cosmology or a sequence of one
      model's into the internal `CosmologyBatch(spec, dicts, model_class)`
      the solver reads; mixed models raise `TypeError`. The dicts' values are
@@ -355,7 +356,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `model.state_names()` or the joint model's `index`
 
 4. **solver/_background.py** - The expansion history
-   - `density_parameters(param, xp, model)` (every parameter the model
+   - `density_parameters(param, model, xp)` (every parameter the model
      declares, derived ones by `derive_parameters`; the `closes_budget`
      parameter is the root of `3 adotoa(a=1)^2 = grhom`, one secant step
      where the rate is linear in it, `CLOSURE_STEPS` = 6 more through
@@ -363,10 +364,9 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      field's `V0` may close the budget: `Quintessence` in `tests/helpers.py`,
      `tests/solver/test_background.py`), `expansion_rate` / `dtauda` (the
      model's `adotoa` via `Equations.evaluate(..., math=jnp)` over
-     `background_model(model)`, the model's own species). Without a model
-     these use `W0WACDM_MNU`, whose sum equals every built-in model's on the
-     cosmologies it accepts (`density_coefficients`, `background_history`,
-     `conformal_ages` of bare dicts). The massive-neutrino density ratio
+     `background_model(model)`, the model's own species). The host-side
+     `density_coefficients` and `background_history` cache on the
+     cosmology's spec and its parameters as floats. The massive-neutrino density ratio
      is `MassiveNeutrinos.rhonu`, the same provider on the host and the
      device (branch-free, `NQ_NU_BACKGROUND` = 8 nodes). `_background_solution`
      gives `(a, tau, states)` on a geometric grid from `A_START` = 1e-9: the
@@ -467,9 +467,9 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `grhor_nu` and `amnu` are directed (2026-11-13); `amnu` is one
      declaration `MassiveNeutrinos` and `Recombination` share, and
      `Equations._collect` lets two components bring the same generated provider. `_rows` and the
-     initial state iterate over the declarations. `PARAM_COLUMNS`, `N_PARAM`,
-     `DIRECTED_COLUMNS` are `W0WACDM_MNU`'s row (`DEFAULT_LAYOUT`), a superset
-     of every built-in model's, for host tests and `make_params`
+     initial state iterate over the declarations. Host tests that build any
+     built-in model on one row use `helpers.PARAM_COLUMNS` and `N_PARAM`,
+     `W0WACDM_MNU`'s row, a superset of every built-in model's
    - `build_keep_hook(model, names)` is the save hook: a `(y, tau, p) ->
      tuple` function of state elements copied from the state and provided
      quantities such as `R` compiled by `Equations.build_function`, cached per

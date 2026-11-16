@@ -7,6 +7,8 @@ from helpers import (
     HOST,
     LCDM_X,
     MODELS,
+    N_PARAM,
+    PARAM_COLUMNS,
     ConstantThermalHistory,
     _split,
     build_rhs,
@@ -23,7 +25,6 @@ from helpers import (
 
 from discoeb.components.species import DarkEnergy, MassiveNeutrinos
 from discoeb.models import LCDM
-from discoeb.solver._kernel import N_PARAM, PARAM_COLUMNS
 
 # --- The Einstein-Boltzmann component model, on the host.
 

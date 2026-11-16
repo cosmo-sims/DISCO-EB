@@ -19,7 +19,6 @@ import numpy as np
 
 from ..components._component import Equations, _compile
 from ..components.recombination import THERMO_ERROR_WEIGHT, Recombination
-from ..models import DEFAULT_SPEC
 from ..models._cosmology import _as_batch, _columns
 from ..models._model import Model, ModelSpec, _spec_of
 from ._background import TAU_START, background_endpoints, density_parameters
@@ -35,7 +34,7 @@ integration span, the wave number, the cosmology's index in the batch, the
 save counter and the reionization redshift the background finds for
 ``tau_reio``."""
 
-_BUILT_IN_DIRECTED = (
+DIRECTED_NAMES = (
     "grhog",
     "grhornomass",
     "grhoc",
@@ -46,8 +45,14 @@ _BUILT_IN_DIRECTED = (
     "H0",
     "Omegab",
 )
-"""The public order of the built-in directed parameters (:data:`DIRECTED_NAMES`).
-A model's other directed parameters follow them in component order."""
+"""The directed inputs every built-in model leads with: the five background
+densities and the recombination rates' ``YHe``, ``Tcmb``, ``H0`` and
+``Omegab``. A model's others (the curvature density, the dark-energy
+parameters, the massive neutrinos' density and mass) follow in component
+order (:func:`parameter_layout`)."""
+N_COMMON_DIRECTED = len(DIRECTED_NAMES)
+"""The number of :data:`DIRECTED_NAMES`, which ``solve_eb`` also takes alone
+as ``inputs``."""
 
 
 @dataclass(frozen=True)
@@ -105,9 +110,7 @@ def _parameter_layout(model: ModelSpec, extra) -> ParameterLayout:
     directed = [n for n, p in parameters.items() if p.directed]
     directed.sort(
         key=lambda n: (
-            _BUILT_IN_DIRECTED.index(n)
-            if n in _BUILT_IN_DIRECTED
-            else len(_BUILT_IN_DIRECTED)
+            DIRECTED_NAMES.index(n) if n in DIRECTED_NAMES else len(DIRECTED_NAMES)
         )
     )
     others = [n for n, p in parameters.items() if p.column and not p.directed]
@@ -127,28 +130,6 @@ def _parameter_layout(model: ModelSpec, extra) -> ParameterLayout:
     )
     return ParameterLayout(columns, tuple(directed), values)
 
-
-DEFAULT_LAYOUT = parameter_layout(DEFAULT_SPEC)
-"""The row of :data:`~discoeb.models.DEFAULT_MODEL`, whose columns are a superset of
-every built-in model's. Each model's kernel reads its own
-(:func:`parameter_layout`); a host test may build any built-in model on this one."""
-
-PARAM_COLUMNS = DEFAULT_LAYOUT.columns
-"""The default row's columns by the names the providers take them under."""
-N_PARAM = DEFAULT_LAYOUT.n
-DIRECTED_NAMES = DEFAULT_LAYOUT.directed
-"""The inputs a trajectory's sensitivity direction may move in
-:data:`~discoeb.models.DEFAULT_MODEL`, a superset of every built-in model's.
-The first nine, every model's, are the five background densities and the
-recombination rates' ``YHe``, ``Tcmb``, ``H0`` and ``Omegab``
-(:data:`N_COMMON_DIRECTED`). The others are the curvature density, the
-dark-energy parameters and the massive neutrinos' density and mass; each
-model has those of its components (:func:`parameter_layout`)."""
-N_COMMON_DIRECTED = len(_BUILT_IN_DIRECTED)
-"""The directed inputs every built-in model leads with, which ``solve_eb``
-also takes alone as ``inputs``."""
-DIRECTED_COLUMNS = DEFAULT_LAYOUT.directed_columns
-"""The nominal columns of :data:`DIRECTED_NAMES` in the default row."""
 
 TRAJECTORIES_PER_BLOCK = 32
 """Wave modes packed into one CUDA block by modax's thread-local Rodas5P kernel."""
@@ -393,12 +374,12 @@ def make_params(
     k_values: np.ndarray,
     tau_end: float,
     z_re: float = 0.0,
-    model: ModelSpec = DEFAULT_SPEC,
+    *,
+    model: ModelSpec,
 ) -> np.ndarray:
     """Return packed parameters for the device right-hand side, one row per wave mode.
 
-    The row is ``model``'s (:func:`parameter_layout`), by default
-    :data:`PARAM_COLUMNS`.
+    The row is ``model``'s (:func:`parameter_layout`).
     """
 
     columns = _columns((cosmology,), held=False, keys=model.parameter_keys())
@@ -418,7 +399,7 @@ def make_initial_states(
     k_values: np.ndarray,
     model,
     lna_start,
-    cosmology_model: ModelSpec = DEFAULT_SPEC,
+    cosmology_model: ModelSpec,
 ) -> np.ndarray:
     """Return adiabatic initial states plus the fully ionized thermal state, ``(n_k, nvar)``.
 
@@ -586,7 +567,7 @@ def _solve_batch(
     return solution, prepared, prepared.k_sorted
 
 
-def build_keep_hook(model, names, layout: ParameterLayout = DEFAULT_LAYOUT):
+def build_keep_hook(model, names, layout: ParameterLayout):
     """Return a modax save hook ``(y, tau, p) -> tuple`` of the quantities ``names``.
 
     A name is a state element or a quantity the joint model provides. State

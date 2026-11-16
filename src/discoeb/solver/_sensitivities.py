@@ -1,7 +1,7 @@
 """Derivatives of kept quantities: forward sensitivities along the directed inputs.
 
 The model reads each input a derivative may move (its directed parameters,
-:data:`~discoeb.solver._kernel.DIRECTED_NAMES` for the built-in models) as
+led by :data:`~discoeb.solver._kernel.DIRECTED_NAMES`) as
 ``x_nominal + eps dir_x``. A sensitivity launch replicates every
 trajectory once per differentiated variable, with the direction ``dx / dv``
 of that variable, and differentiates the launch in ``eps``, a leaf of the
@@ -17,7 +17,6 @@ import numpy as np
 from jax.custom_derivatives import SymbolicZero
 
 from ..components.recombination import THERMO_ERROR_WEIGHT
-from ..models import DEFAULT_SPEC
 from ._background import density_parameters
 from ._kernel import (
     PERTURB_ATOL,
@@ -31,11 +30,10 @@ from ._kernel import (
 )
 
 
-def _directed_inputs(columns, model=DEFAULT_SPEC, extra=()) -> jax.Array:
+def _directed_inputs(columns, model, extra=()) -> jax.Array:
     """Return the ``(n_cosmologies, n_directed)`` directed inputs of ``model`` from a batch's columns, in JAX.
 
-    They are the layout's directed parameters (:func:`~discoeb.solver._kernel.parameter_layout`),
-    :data:`~discoeb.solver._kernel.DIRECTED_NAMES` for :data:`~discoeb.models.DEFAULT_MODEL`.
+    They are the layout's directed parameters (:func:`~discoeb.solver._kernel.parameter_layout`).
     """
 
     values = density_parameters(columns, model=model)

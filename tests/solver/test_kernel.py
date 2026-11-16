@@ -78,7 +78,9 @@ def test_make_initial_states_uses_the_model():
     from discoeb.solver._kernel import joint_model
 
     model = joint_model(LCDM)
-    y0 = make_initial_states(cosmology, np.array([1e-2, 1e-1]), model, lna_start=-15.0)
+    y0 = make_initial_states(
+        cosmology, np.array([1e-2, 1e-1]), model, -15.0, cosmology_model=LCDM.spec
+    )
     assert y0.shape == (2, 55) and np.isfinite(y0).all()
     np.testing.assert_allclose(y0[:, 0], [-1e-2, -1e-1], rtol=1e-3)  # etak ~ -k
     np.testing.assert_allclose(
@@ -317,7 +319,7 @@ def test_the_kernel_carries_the_state_to_today():
         cosmologies_of(LCDM_T, COSMOLOGY), k, tau, keep=("t", "a", "clxc")
     )
     plain = solve_eb(cosmologies_of(LCDM, COSMOLOGY), k, tau, keep=("a", "clxc"))
-    a, tau_bg = background_history(COSMOLOGY)
+    a, tau_bg = background_history(LCDM.from_dict(COSMOLOGY))
     age = np.sum(0.5 * (a[1:] + a[:-1]) * np.diff(tau_bg))
     t = np.asarray(with_time[0, 0])  # keep order: t, a, clxc
     np.testing.assert_allclose(t[:, -1], age, rtol=1e-4)

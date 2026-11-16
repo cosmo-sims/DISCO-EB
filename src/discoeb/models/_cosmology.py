@@ -168,7 +168,8 @@ DIFFERENTIABLE_PARAMETERS = (
 )
 """The cosmology-dictionary keys :func:`solve_eb` differentiates with respect to.
 
-They reach the solve through the directed inputs (:data:`DIRECTED_NAMES`):
+They reach the solve through the directed inputs
+(:data:`~discoeb.solver.DIRECTED_NAMES` and those of the model's components):
 the background densities, the recombination block's thermal inputs, the
 curvature density, the massive neutrinos' density and mass and the
 dark-energy equation of state. The forward sensitivities carry them through
@@ -218,14 +219,13 @@ def _not_differentiable_jvp(name, primals, tangents):
 
 
 def _columns(
-    cosmologies, held: bool = True, keys=None, differentiable=DIFFERENTIABLE_PARAMETERS
+    cosmologies, keys, held: bool = True, differentiable=DIFFERENTIABLE_PARAMETERS
 ) -> dict:
     """Return a batch's parameters as JAX columns ``(n_cosmologies,)`` by key.
 
     ``keys`` maps the keys a model declares to their defaults
     (:meth:`ModelSpec.parameter_keys
-    <discoeb.models.ModelSpec.parameter_keys>`), by default those of
-    every built-in species. A cosmology may leave out a key with a default.
+    <discoeb.models.ModelSpec.parameter_keys>`). A cosmology may leave out a key with a default.
     Keys other components declare are kept when a cosmology gives them, so
     that differentiating one raises, and keys no component declares are
     dropped. The cosmologies are dictionaries or cosmology objects, their
@@ -236,10 +236,6 @@ def _columns(
     zero.
     """
 
-    if keys is None:
-        from . import DEFAULT_SPEC
-
-        keys = DEFAULT_SPEC.parameter_keys()
     rows = [_cosmology_dictionary(c) for c in cosmologies]
     keys = dict(keys)
     for row in rows:

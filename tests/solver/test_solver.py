@@ -219,9 +219,8 @@ def test_solve_eb_keeps_what_the_history_holds():
 
     from discoeb.components.recombination import THERMO_ERROR_WEIGHT
     from discoeb.models import LCDM
-    from discoeb.models._cosmology import as_cosmology
     from discoeb.solver._background import TAU_START, density_coefficients
-    from discoeb.solver._kernel import PARAM_COLUMNS, make_params
+    from discoeb.solver._kernel import make_params, parameter_layout
     from discoeb.solver._solver import (
         conformal_ages,
         solve_eb,
@@ -257,8 +256,11 @@ def test_solve_eb_keeps_what_the_history_holds():
 
         # The hook sees the time clamped to the trajectory's own tau0.
         tau = np.minimum(SOLVE_EB_TAU, float(prepared.tau0[ci]))[None, :]
-        row = make_params(cosmology, k_sorted, float(prepared.tau0[ci]))
-        base = {name: row[:, col][:, None] for name, col in PARAM_COLUMNS.items()}
+        row = make_params(
+            cosmology, k_sorted, float(prepared.tau0[ci]), model=LCDM.spec
+        )
+        columns = parameter_layout(LCDM).columns
+        base = {name: row[:, col][:, None] for name, col in columns.items()}
         base.update(model.state_values(hist[:, ci]))
         base.update(tau=tau, k=k_sorted[:, None])
         R, sigma, adotoa = model.evaluate("R", "sigma", "adotoa", math=np, **base)
@@ -270,7 +272,7 @@ def test_solve_eb_keeps_what_the_history_holds():
     pk_batch = _matter_power(
         SOLVE_EB_K, cosmologies_of(LCDM, cosmologies), thermo_weight=THERMO_ERROR_WEIGHT
     )
-    for ci, cosmology in enumerate(map(as_cosmology, prepared.cosmologies)):
+    for ci, cosmology in enumerate(cosmologies_of(LCDM, cosmologies)):
         grhoc, grhob = density_coefficients(cosmology)[2:4]
         clxc = np.asarray(values[ci, names.index("clxc"), :, -1])
         clxb = np.asarray(values[ci, names.index("clxb"), :, -1])

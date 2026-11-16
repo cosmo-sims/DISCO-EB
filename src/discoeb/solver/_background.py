@@ -26,23 +26,16 @@ from ..components.gravity import (  # noqa: F401 (the density constants, re-expo
     GRHOR_PER_TCMB4,
 )
 from ..components.recombination import recombination_model
-from ..models import DEFAULT_SPEC
-from ..models._cosmology import _as_cosmology, _ParamCosmology
-from ..models._model import ModelSpec
+from ..models._model import Model, ModelSpec
 
 
-def background_model(model: ModelSpec | None = None) -> Equations:
+def background_model(model: ModelSpec) -> Equations:
     """The species of ``model`` whose ``grho`` is the Friedmann sum.
 
-    Without a model it is :data:`~discoeb.models.DEFAULT_MODEL`, whose
-    components declare every built-in parameter. For a cosmology another
-    built-in model accepts, its sum is that model's: at ``w = -1`` the
-    dark-energy fluid is the cosmological constant, and a massive-neutrino
-    density with ``n_mnu = 0`` vanishes. The hierarchy truncations don't
-    affect the background.
+    The hierarchy truncations don't affect the background.
     """
 
-    return _background_model(DEFAULT_SPEC if model is None else model)
+    return _background_model(model)
 
 
 @functools.lru_cache(maxsize=None)
@@ -54,7 +47,7 @@ CLOSURE_STEPS = 6
 """Secant steps that close the budget of a model with background states of its own."""
 
 
-def density_parameters(param, xp=jnp, model: ModelSpec | None = None) -> dict:
+def density_parameters(param, model: ModelSpec, xp=jnp) -> dict:
     """The parameters of ``model`` for a parameter dictionary, keyed as the components name them.
 
     The keys pass through, and every derived parameter comes from its
@@ -73,8 +66,7 @@ def density_parameters(param, xp=jnp, model: ModelSpec | None = None) -> dict:
     (:func:`_background_solution`) and :data:`CLOSURE_STEPS` more secant
     steps, differentiable through the iteration.
 
-    Without a model these are :data:`~discoeb.models.DEFAULT_MODEL`'s. Pass
-    ``xp=jnp`` for a traced cosmology and ``xp=np`` for one given as floats.
+    Pass ``xp=jnp`` for a traced cosmology and ``xp=np`` for one given as floats.
     """
 
     background = background_model(model)
@@ -122,17 +114,17 @@ def density_parameters(param, xp=jnp, model: ModelSpec | None = None) -> dict:
             before, miss_before, x = x, missed, x - move
         return x
 
-    parameters = (DEFAULT_SPEC if model is None else model).parameters()
+    parameters = model.parameters()
     return derive_parameters(parameters, param, math=math_module, close=close)
 
 
-def expansion_rate(a, densities, model: ModelSpec | None = None):
+def expansion_rate(a, densities, model: ModelSpec):
     """The conformal Hubble rate ``a'/a = a H`` at scalar ``a``, from the model's ``adotoa``."""
 
     return background_model(model).evaluate("adotoa", math=jnp, a=a, **densities)
 
 
-def dtauda(a, densities, model: ModelSpec | None = None):
+def dtauda(a, densities, model: ModelSpec):
     """``d tau / d a = 1 / (a^2 H)`` at scalar ``a`` (``jax.vmap`` over an array)."""
 
     return 1.0 / (a * expansion_rate(a, densities, model))
@@ -142,21 +134,35 @@ N_BACKGROUND_GRID = 4096
 TAU_START = 0.1
 
 
+def _hashable(cosmology) -> tuple[ModelSpec, tuple]:
+    """Return a cosmology's model and its parameters as floats, a cache key."""
+
+    if not isinstance(cosmology, Model):
+        raise TypeError(
+            "expected a cosmology of a model, such as LCDM(H0=..., ...), not "
+            f"{type(cosmology).__name__}"
+        )
+    values = tuple(sorted((k, float(v)) for k, v in cosmology.to_dict().items()))
+    return type(cosmology).spec, values
+
+
 def _densities(cosmology) -> dict:
     """Return :func:`density_parameters` of a cosmology as floats, memoised."""
 
-    return _densities_of(_as_cosmology(cosmology))
+    return _densities_of(*_hashable(cosmology))
 
 
 @functools.lru_cache(maxsize=4096)
-def _densities_of(cosmology: _ParamCosmology) -> dict:
-    DEFAULT_SPEC.check_keys(cosmology)
-    d = density_parameters(cosmology.to_background_params(), xp=np)
+def _densities_of(model: ModelSpec, values: tuple) -> dict:
+    d = density_parameters(dict(values), model, xp=np)
     return {k: float(v) for k, v in d.items()}
 
 
 def density_coefficients(cosmology) -> tuple[float, float, float, float, float]:
-    """Return ``(grhog, grhornomass, grhoc, grhob, grhov)`` of :func:`density_parameters`."""
+    """Return ``(grhog, grhornomass, grhoc, grhob, grhov)`` of :func:`density_parameters`.
+
+    ``cosmology`` is a cosmology of a model, ``LCDM(H0=..., ...)``.
+    """
 
     d = _densities(cosmology)
     return (d["grhog"], d["grhornomass"], d["grhoc"], d["grhob"], d["grhov"])
@@ -166,7 +172,7 @@ A_START = 1.0e-9
 """The scale factor the background's conformal time is integrated from."""
 
 
-def _background_solution(d, model: ModelSpec | None = None):
+def _background_solution(d, model: ModelSpec):
     """Return ``(a_grid, tau_grid, states)`` of the background for the parameters ``d`` (JAX).
 
     The grid is geometric in ``a`` from :data:`A_START` to 1, where the
@@ -286,7 +292,7 @@ def _reionization_redshift(a_bg, tau_bg, params, tau_reio):
 
 
 @functools.partial(jax.jit, static_argnums=(1,))
-def background_endpoints(stacked, model: ModelSpec | None = None):
+def background_endpoints(stacked, model: ModelSpec):
     """Return ``(tau0, lna_start, z_re, start)`` of stacked background parameters, one vmap lane each.
 
     ``model`` gives the species (:func:`background_model`).
@@ -313,12 +319,15 @@ def background_endpoints(stacked, model: ModelSpec | None = None):
 
 
 def background_history(cosmology):
-    """Return ``(a, tau)`` of one cosmology's background quadrature, host arrays ending at ``tau0``."""
+    """Return ``(a, tau)`` of one cosmology's background quadrature, host arrays ending at ``tau0``.
 
-    return _background_history(_as_cosmology(cosmology))
+    ``cosmology`` is a cosmology of a model, ``LCDM(H0=..., ...)``.
+    """
+
+    return _background_history(*_hashable(cosmology))
 
 
 @functools.lru_cache(maxsize=64)
-def _background_history(cosmology: _ParamCosmology):
-    d = {k: jnp.asarray(v) for k, v in _densities(cosmology).items()}
-    return tuple(np.asarray(x) for x in _background_solution(d)[:2])
+def _background_history(model: ModelSpec, values: tuple):
+    d = {k: jnp.asarray(v) for k, v in _densities_of(model, values).items()}
+    return tuple(np.asarray(x) for x in _background_solution(d, model)[:2])

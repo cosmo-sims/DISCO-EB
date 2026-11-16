@@ -153,7 +153,7 @@ def test_matter_power_spectrum_derivatives(benchmark):
     cosmology = _perturbed_cosmologies(1)[0]
     theta = jnp.asarray([cosmology[name] for name in DIFFERENTIABLE_PARAMETERS])
     # past the age of every shifted cosmology; the parameters are traced
-    tau_today = 2.0 * conformal_ages(cosmology).max()
+    tau_today = 2.0 * conformal_ages(LCDM.from_dict(cosmology)).max()
 
     def total_power(t):
         params = {**cosmology, **dict(zip(DIFFERENTIABLE_PARAMETERS, t))}
@@ -259,7 +259,7 @@ def test_more_parameters_matter_power(name):
     from discoeb.solver._solver import conformal_ages
 
     model, cosmology, step = _more_parameter_case(name)
-    tau_today = 2.0 * conformal_ages(cosmology).max()
+    tau_today = 2.0 * conformal_ages(model.from_dict(cosmology)).max()
 
     def total_power(p, **options):
         batch = cosmologies_of(model, {**cosmology, name: p})

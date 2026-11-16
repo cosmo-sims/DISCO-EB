@@ -6,18 +6,25 @@ from helpers import COSMOLOGY, LCDM_X, _split, cosmologies_of
 # --- A species with a parameter of its own, added without touching the package.
 
 
-def test_a_bare_cosmology_cannot_carry_the_parameter_past_the_default_model():
-    """Without a batch the default model stands in, and it has no such species."""
+def test_a_dictionary_names_no_model():
+    """No model stands in for a bare dictionary: the caller names one."""
 
-    from discoeb import conformal_ages, density_coefficients, directed_inputs
+    from discoeb import (
+        LCDM,
+        background_history,
+        conformal_ages,
+        density_coefficients,
+        directed_inputs,
+    )
 
-    for background_of in (conformal_ages, density_coefficients, directed_inputs):
-        with pytest.raises(ValueError, match="use a model with SecondDarkMatter"):
-            background_of(_split(COSMOLOGY))
-        background_of(COSMOLOGY)
+    functions = (conformal_ages, density_coefficients, directed_inputs)
+    for background_of in (*functions, background_history):
+        with pytest.raises(TypeError, match="LCDM"):
+            background_of(COSMOLOGY)
+    lcdm = cosmologies_of(LCDM, COSMOLOGY)
     assert float(
         conformal_ages(cosmologies_of(LCDM_X, _split(COSMOLOGY)))[0]
-    ) == pytest.approx(float(conformal_ages(COSMOLOGY)[0]), rel=1e-12)
+    ) == pytest.approx(float(conformal_ages(lcdm)[0]), rel=1e-12)
 
 
 # --- The columns of a batch, and the keys the solve holds fixed.
@@ -51,11 +58,13 @@ def test_a_held_key_raises_when_differentiated():
     import jax
     from helpers import REFERENCE_COSMOLOGY
 
+    from discoeb.models import LCDM
     from discoeb.models._cosmology import _columns
 
     def column(key):
         def of(value):
-            return _columns([{**REFERENCE_COSMOLOGY, key: value}])[key][0]
+            cosmology = {**REFERENCE_COSMOLOGY, key: value}
+            return _columns([cosmology], LCDM.parameter_keys())[key][0]
 
         return jax.grad(of)(REFERENCE_COSMOLOGY[key])
 

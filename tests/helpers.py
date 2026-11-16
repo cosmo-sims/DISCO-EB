@@ -25,7 +25,13 @@ from discoeb.components.species import (
     MassiveNeutrinos,
 )
 from discoeb.models import LCDM, LCDM_MNU, W0WACDM, W0WACDM_MNU
-from discoeb.solver._kernel import PARAM_COLUMNS
+from discoeb.solver._kernel import parameter_layout
+
+WIDEST_LAYOUT = parameter_layout(W0WACDM_MNU)
+"""The parameter row of W0WACDM_MNU, whose columns are a superset of every
+built-in model's: a host test may build any built-in model on it."""
+PARAM_COLUMNS = WIDEST_LAYOUT.columns
+N_PARAM = WIDEST_LAYOUT.n
 
 
 def _cuda_available() -> bool:

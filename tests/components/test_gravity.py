@@ -9,6 +9,8 @@ from helpers import (
     HOST,
     LCDM_X,
     MODELS,
+    N_PARAM,
+    PARAM_COLUMNS,
     ConstantThermalHistory,
     _split,
     build_rhs,
@@ -30,7 +32,7 @@ from discoeb.components.species import (
     RadiationStreaming,
 )
 from discoeb.models import LCDM, W0WACDM_MNU
-from discoeb.solver._kernel import N_PARAM, PARAM_COLUMNS, make_initial_states
+from discoeb.solver._kernel import make_initial_states
 
 # --- The Einstein-Boltzmann component model, on the host.
 
@@ -267,8 +269,6 @@ def test_a_rate_is_a_quantity_a_provider_may_read():
 
 
 def test_the_metric_rate_is_a_quantity_of_the_model():
-    from discoeb.solver._kernel import N_PARAM, PARAM_COLUMNS
-
     model = LCDM.build(ConstantThermalHistory())
     rhs = model.build(PARAM_COLUMNS, **HOST)
     fn = model.build_function(
@@ -296,8 +296,6 @@ def test_the_gauge_needs_its_species_at_rest():
 
 def test_the_streaming_approximation_is_a_component_a_model_may_drop():
     """No species names it, and no species is named by it."""
-
-    from discoeb.solver._kernel import N_PARAM, PARAM_COLUMNS
 
     full = LCDM.swap(RadiationStreaming, NoRadiationStreaming, name="full")
     assert full.state_names() == LCDM.state_names()

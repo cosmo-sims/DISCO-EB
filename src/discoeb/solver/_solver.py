@@ -14,18 +14,15 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..components.recombination import THERMO_ERROR_WEIGHT
-from ..models import DEFAULT_SPEC
 from ..models._cosmology import (
     DIFFERENTIABLE_PARAMETERS,
     UNUSED_BY_THE_SOLVE,
-    _as_batch,
     _columns,
     _is_concrete,
 )
-from ..models._model import CosmologyBatch, Model, ModelSpec, _batch_of, _spec_of
+from ..models._model import Model, ModelSpec, _batch_of, _spec_of
 from ._background import TAU_START, background_endpoints
 from ._kernel import (
-    DIRECTED_NAMES,
     N_COMMON_DIRECTED,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
@@ -231,13 +228,6 @@ def solve_eb(
         x = jnp.asarray(inputs, dtype=jnp.float64)
         directed = parameter_layout(model, extra).directed
         if (
-            x.ndim == 2
-            and x.shape[1] == len(DIRECTED_NAMES) != len(directed)
-            and set(directed) <= set(DIRECTED_NAMES)
-        ):
-            # the superset directed_inputs gives a dictionary: take the model's
-            x = x[:, [DIRECTED_NAMES.index(name) for name in directed]]
-        if (
             x.ndim != 2
             or x.shape[0] != n_cosmo
             or x.shape[1]
@@ -299,9 +289,8 @@ def differentiable_parameters(model: type[Model] | ModelSpec) -> tuple[str, ...]
 def directed_inputs(cosmologies) -> jax.Array:
     """Return the ``(n_cosmologies, n_directed)`` directed inputs the cosmologies imply.
 
-    ``cosmologies`` is a cosmology or a sequence of cosmologies of one model,
-    or parameter dictionaries for :data:`DIRECTED_NAMES`, the superset of the
-    built-in models' inputs (:data:`~discoeb.models.DEFAULT_MODEL`). These are the model's directed
+    ``cosmologies`` is a cosmology or a sequence of cosmologies of one
+    model. These are the model's directed
     parameters: the five background densities and the recombination block's
     ``YHe``, ``Tcmb``, ``H0`` and ``Omegab``, then those of the model's other
     components (curvature, dark energy, massive neutrinos): the variables
@@ -310,62 +299,25 @@ def directed_inputs(cosmologies) -> jax.Array:
     under ``jit``.
     """
 
-    model = _model_of(cosmologies)
-    columns = _columns(
-        _cosmologies_of(cosmologies), held=False, keys=model.parameter_keys()
-    )
-    return _directed_inputs(columns, model)
+    batch = _batch_of(cosmologies)
+    columns = _columns(batch.cosmologies, keys=batch.model.parameter_keys(), held=False)
+    return _directed_inputs(columns, batch.model)
 
 
 def conformal_ages(cosmologies) -> jax.Array:
     """Return each cosmology's conformal age ``tau0`` (Mpc), where its trajectories stop.
 
-    ``cosmologies`` is a cosmology or a sequence of cosmologies of one model,
-    or parameter dictionaries for a built-in model's background. A JAX array, traceable under ``jit``: the same vmapped quadrature
+    ``cosmologies`` is a cosmology or a sequence of cosmologies of one
+    model. A JAX array, traceable under ``jit``: the same vmapped quadrature
     :func:`solve_eb` runs.
     """
 
-    model = _model_of(cosmologies)
-    columns = _columns(
-        _cosmologies_of(cosmologies), held=False, keys=model.parameter_keys()
-    )
-    return background_endpoints(columns, model)[0]
+    batch = _batch_of(cosmologies)
+    columns = _columns(batch.cosmologies, keys=batch.model.parameter_keys(), held=False)
+    return background_endpoints(columns, batch.model)[0]
 
 
 def state_names(model: type[Model] | ModelSpec) -> tuple[str, ...]:
     """Return the perturbation state names of ``model``, for ``keep`` and ``error_weights``."""
 
     return _spec_of(model).state_names()
-
-
-def _model_of(cosmologies) -> ModelSpec:
-    """Return the cosmologies' model, or :data:`~discoeb.models.DEFAULT_MODEL`'s for dictionaries.
-
-    A dictionary must not set a parameter of a component outside the
-    default model, which would be ignored
-    (:meth:`~discoeb.models.ModelSpec.check_keys`).
-    """
-
-    if _of_models(cosmologies):
-        return _batch_of(cosmologies).model
-    for cosmology in _as_batch(cosmologies):
-        DEFAULT_SPEC.check_keys(cosmology)
-    return DEFAULT_SPEC
-
-
-def _cosmologies_of(cosmologies) -> tuple:
-    """Return one cosmology or a sequence of them as a tuple of what ``_columns`` reads."""
-
-    if _of_models(cosmologies):
-        return _batch_of(cosmologies).cosmologies
-    return _as_batch(cosmologies)
-
-
-def _of_models(cosmologies) -> bool:
-    """Whether ``cosmologies`` is a cosmology, a sequence of them or a batch, not dictionaries."""
-
-    if isinstance(cosmologies, (Model, CosmologyBatch)):
-        return True
-    return isinstance(cosmologies, (list, tuple)) and any(
-        isinstance(c, Model) for c in cosmologies
-    )

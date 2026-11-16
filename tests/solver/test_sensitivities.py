@@ -54,7 +54,7 @@ def test_solve_eb_derivatives():
 
     def inputs_of(theta):
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
-        return _directed_inputs(_columns([param]), LCDM)
+        return _directed_inputs(_columns([param], LCDM.parameter_keys()), LCDM)
 
     densities = inputs_of(theta)
     tau = np.geomspace(10.0, 2.0e4, 12)
