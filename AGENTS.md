@@ -749,9 +749,10 @@ the old notebooks on 2026-11-16 (the CMB one moved to DISCO-CMB):
 - `setup_n_body_ics` - initial conditions for an N-body run
 
 `solve_eb` saves at scale factors and differentiates at fixed scale factor,
-so a derivative at fixed redshift is what it returns. **The notebooks still
-use the conformal-time API of before 2026-11-17** (`conformal_ages`, `tau`
-grids, `Omegam`/`H0` constructors) and need porting and rerunning.
+so a derivative at fixed redshift is what it returns: the notebooks save at
+their redshifts (ported 2026-11-17; before, they kept `a` at a few
+conformal times and interpolated). They build cosmologies with
+`from_density_parameters`, and those that need a distance keep `tau`.
 
 ## Contributing
 
