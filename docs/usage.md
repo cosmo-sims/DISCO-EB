@@ -33,7 +33,7 @@ Give `Omegam`, `Omegab`, `H0`, `Tcmb` or `Neff` as JAX values and the kept value
 import jax.numpy as jnp
 
 def R_today(omega_m):
-    return solve_eb(planck.replace(Omegam=omega_m), k, tau, keep=("R",))["R"][0, :, -1]
+    return solve_eb(planck.replace(Omegam=omega_m), k, tau, keep=("R",))[0, 0, :, -1]
 
 dR = jax.jacfwd(R_today)(jnp.asarray(planck.Omegam))  # (64,)
 ```
@@ -50,17 +50,20 @@ import jax
 @jax.jit
 def power_spectrum(cosmology):
     tau0 = conformal_ages(cosmology)[0]
-    solution = solve_eb(
+    values = solve_eb(  # (cosmology, name, k, tau)
         cosmology,
         k,
-        tau0[None],
+        tau0.reshape(1),
         keep=("clxc", "clxb", "z", "vb"),
         thermo_weight=0.1,  # a looser recombination history suffices for P(k)
     )
-    today = {name: solution[name][0, :, -1] for name in solution.names}
+    clxc, clxb, z, vb = jnp.unstack(values[0, :, :, -1])
     return matter_power_spectrum(
         k,
-        **today,
+        clxc=clxc,
+        clxb=clxb,
+        z=z,
+        vb=vb,
         tau0=tau0,
         Omegam=cosmology.Omegam,
         Omegab=cosmology.Omegab,

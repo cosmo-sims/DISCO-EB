@@ -19,7 +19,7 @@
 :end-before: <!-- end:quickstart -->
 ```
 
-Pass a list of dictionaries to solve a batch of cosmologies in the same launch. A time past a cosmology's conformal age holds its values today, which `solution.tau0` reports.
+Pass a list of dictionaries to solve a batch of cosmologies in the same launch. A time past a cosmology's conformal age holds its values today, which `conformal_ages(cosmologies)` gives.
 
 ## Where to go next?
 

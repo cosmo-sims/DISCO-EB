@@ -319,11 +319,11 @@ def test_the_kernel_carries_the_state_to_today():
     plain = solve_eb(cosmologies_of(LCDM, COSMOLOGY), k, tau, keep=("a", "clxc"))
     a, tau_bg = background_history(COSMOLOGY)
     age = np.sum(0.5 * (a[1:] + a[:-1]) * np.diff(tau_bg))
-    t = np.asarray(with_time["t"])[0]
+    t = np.asarray(with_time[0, 0])  # keep order: t, a, clxc
     np.testing.assert_allclose(t[:, -1], age, rtol=1e-4)
     assert 4000.0 < age < 4500.0  # 13.8 Gyr in Mpc
     np.testing.assert_allclose(
-        np.asarray(with_time["clxc"]), np.asarray(plain["clxc"]), rtol=1e-3
+        np.asarray(with_time[:, 2]), np.asarray(plain[:, 1]), rtol=1e-3
     )
 
 

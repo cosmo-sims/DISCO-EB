@@ -14,9 +14,8 @@ from helpers import (
     _perturbed_cosmologies,
     _qcdm_densities,
     _split,
+    by_name,
     cosmologies_of,
-    ty_errors,
-    ty_executable,
 )
 
 from discoeb.models import LCDM
@@ -30,28 +29,28 @@ OMEGA_FLUID = 0.08
 @pytest.mark.slow
 @pytest.mark.gpu
 def test_splitting_the_dark_matter_into_a_named_fluid_leaves_the_solve_unchanged():
-    from discoeb import solve_eb
+    from discoeb import conformal_ages, solve_eb
 
     model = LCDM.add(X, name="LCDM+x")
     k = np.geomspace(1.0e-3, 0.3, 8)
     tau = np.geomspace(1.0, 2.0e4, 16)
-    plain = solve_eb(cosmologies_of(LCDM, COSMOLOGY), k, tau, keep=("clxc", "R"))
-    split = solve_eb(
-        model.from_dict(
-            {
-                **COSMOLOGY,
-                "Omegam": COSMOLOGY["Omegam"] - OMEGA_FLUID,
-                "x_Omega": OMEGA_FLUID,
-            }
-        ),
-        k,
-        tau,
-        keep=("clxc", "R", "x_delta"),
+    lcdm = cosmologies_of(LCDM, COSMOLOGY)
+    with_fluid = model.from_dict(
+        {
+            **COSMOLOGY,
+            "Omegam": COSMOLOGY["Omegam"] - OMEGA_FLUID,
+            "x_Omega": OMEGA_FLUID,
+        }
     )
-    np.testing.assert_allclose(split.tau0, plain.tau0, rtol=1e-12)
+    plain = by_name(solve_eb(lcdm, k, tau, keep=("clxc", "R")), ("clxc", "R"))
+    keep = ("clxc", "R", "x_delta")
+    split = by_name(solve_eb(with_fluid, k, tau, keep=keep), keep)
+    np.testing.assert_allclose(
+        conformal_ages(with_fluid), conformal_ages(lcdm), rtol=1e-12
+    )
     np.testing.assert_allclose(split["x_delta"], split["clxc"], rtol=1e-5)
     for name in ("clxc", "R"):
-        a, b = np.asarray(split[name]), np.asarray(plain[name])
+        a, b = split[name], plain[name]
         assert np.abs(a - b).max() < 1e-3 * np.abs(b).max(), name
 
 
@@ -78,14 +77,16 @@ def test_splitting_the_dark_matter_leaves_the_solve_unchanged():
     import jax
     import jax.numpy as jnp
 
-    from discoeb import directed_inputs, solve_eb
+    from discoeb import conformal_ages, directed_inputs, solve_eb
 
     names = ("clxc", "R", "theta_2")
-    plain = solve_eb(cosmologies_of(LCDM, COSMOLOGY), SOLVE_K, SOLVE_TAU, keep=names)
+    lcdm = cosmologies_of(LCDM, COSMOLOGY)
+    plain = by_name(solve_eb(lcdm, SOLVE_K, SOLVE_TAU, keep=names), names)
     batch = cosmologies_of(LCDM_X, _split(COSMOLOGY))
-    split = solve_eb(batch, SOLVE_K, SOLVE_TAU, keep=(*names, "clxx"))
+    keep = (*names, "clxx")
+    split = by_name(solve_eb(batch, SOLVE_K, SOLVE_TAU, keep=keep), keep)
 
-    np.testing.assert_allclose(split.tau0, plain.tau0, rtol=1e-12)
+    np.testing.assert_allclose(conformal_ages(batch), conformal_ages(lcdm), rtol=1e-12)
     # The same equations and initial state; the fp32 LU tells the columns apart.
     np.testing.assert_allclose(split["clxx"], split["clxc"], rtol=1e-5)
     # The initial states agree (the growing mode's om sums grho_matter, which
@@ -93,7 +94,7 @@ def test_splitting_the_dark_matter_leaves_the_solve_unchanged():
     # the smooth quantities to 1e-3, the oscillating photon quadrupole,
     # stepped differently by a system one state larger, to a few times that.
     for name, gate in (("clxc", 1e-3), ("R", 1e-3), ("theta_2", 5e-3)):
-        a, b = np.asarray(split[name]), np.asarray(plain[name])
+        a, b = split[name], plain[name]
         assert np.abs(a - b).max() < gate * np.abs(b).max(), name
 
     from discoeb.solver._kernel import parameter_layout
@@ -103,7 +104,7 @@ def test_splitting_the_dark_matter_leaves_the_solve_unchanged():
     assert x.shape == (1, len(directed))
 
     def kept(inputs):
-        return solve_eb(batch, SOLVE_K, SOLVE_TAU, keep=names, inputs=inputs).values
+        return solve_eb(batch, SOLVE_K, SOLVE_TAU, keep=names, inputs=inputs)
 
     jac = np.asarray(jax.jacfwd(kept)(jnp.asarray(x)))[..., 0, :]
     assert np.isfinite(jac).all()
@@ -121,17 +122,17 @@ def _power(model, cosmology, k):
 
     batch = cosmologies_of(model, [cosmology])
     tau0 = conformal_ages(batch)[0]
-    solution = solve_eb(
-        batch, k, tau0[None], keep=("clxc", "clxb", "z", "vb", "a"), thermo_weight=0.1
-    )
-    today = {n: solution[n][0, :, -1] for n in ("clxc", "clxb", "z", "vb")}
+    keep = ("clxc", "clxb", "z", "vb", "a")
+    values = solve_eb(batch, k, tau0.reshape(1), keep=keep, thermo_weight=0.1)
+    today = {n: v[0, :, -1] for n, v in by_name(values, keep).items()}
+    a_today = today.pop("a")
     pk = matter_power_spectrum(
         k,
         **today,
         tau0=tau0,
         **{n: cosmology[n] for n in ("Omegam", "Omegab", "A_s", "n_s", "k_p")},
     )
-    return np.asarray(pk), np.asarray(solution["a"])[0, :, -1]
+    return np.asarray(pk), a_today
 
 
 def _growth(model, cosmology):
@@ -221,18 +222,20 @@ def test_solve_eb_keeps_what_the_history_holds():
     from discoeb.models._cosmology import as_cosmology
     from discoeb.solver._background import TAU_START, density_coefficients
     from discoeb.solver._kernel import PARAM_COLUMNS, make_params
-    from discoeb.solver._solver import solve_eb, solve_perturbation_history_batch
+    from discoeb.solver._solver import (
+        conformal_ages,
+        solve_eb,
+        solve_perturbation_history_batch,
+    )
 
     cosmologies = _perturbed_cosmologies(2)
     names = ("R", "clxc", "clxb", "theta_2", "n_15", "sigma", "adotoa")
-    solution = solve_eb(
+    values = solve_eb(
         cosmologies_of(LCDM, cosmologies), SOLVE_EB_K, SOLVE_EB_TAU, keep=names
     )
     n_k, n_tau = len(SOLVE_EB_K), len(SOLVE_EB_TAU)
-    assert solution.names == names
-    assert solution.values.shape == (2, len(names), n_k, n_tau)
-    assert solution["R"].shape == (2, n_k, n_tau)
-    assert np.all(solution.tau0 < SOLVE_EB_TAU[-1])
+    assert values.shape == (2, len(names), n_k, n_tau)
+    assert np.all(conformal_ages(cosmologies_of(LCDM, cosmologies)) < SOLVE_EB_TAU[-1])
 
     hist, k_sorted, prepared = solve_perturbation_history_batch(
         SOLVE_EB_K,
@@ -241,7 +244,7 @@ def test_solve_eb_keeps_what_the_history_holds():
     )
     hist = np.asarray(hist)[:, :, 1:, :]  # (n_k, n_c, n_tau, nvar), ascending k
     order = np.argsort(SOLVE_EB_K)
-    kept = np.asarray(solution.values)[:, :, order, :]  # ascending k too
+    kept = np.asarray(values)[:, :, order, :]  # ascending k too
     model = (
         prepared.model
     )  # the joint model: the thermal quantities come from the thermal states
@@ -269,8 +272,8 @@ def test_solve_eb_keeps_what_the_history_holds():
     )
     for ci, cosmology in enumerate(map(as_cosmology, prepared.cosmologies)):
         grhoc, grhob = density_coefficients(cosmology)[2:4]
-        clxc = np.asarray(solution["clxc"][ci, :, -1])
-        clxb = np.asarray(solution["clxb"][ci, :, -1])
+        clxc = np.asarray(values[ci, names.index("clxc"), :, -1])
+        clxb = np.asarray(values[ci, names.index("clxb"), :, -1])
         delta_m = (grhoc * clxc + grhob * clxb) / (grhoc + grhob)
         k = np.asarray(SOLVE_EB_K)
         pk = (
@@ -300,11 +303,11 @@ def test_solve_eb_comoving_curvature_is_conserved_outside_the_horizon():
 
     k = np.array([1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1])
     tau = np.geomspace(1.0, 2.0e4, 64)
-    solution = solve_eb(
+    values = solve_eb(
         cosmologies_of(LCDM, _perturbed_cosmologies(1)[0]), k, tau, keep=("R",)
     )
-    assert solution.values.shape == (1, 1, len(k), len(tau))
-    R = np.asarray(solution["R"][0])
+    assert values.shape == (1, 1, len(k), len(tau))
+    R = np.asarray(values[0, 0])
     assert np.isfinite(R).all()
 
     assert abs(R[0, 0] - 1.0) < 1.0e-6  # k tau = 1e-4
@@ -314,32 +317,3 @@ def test_solve_eb_comoving_curvature_is_conserved_outside_the_horizon():
     ).max()
     # k = 0.1 Mpc^-1 entered the horizon long before today and R has decayed.
     assert abs(R[-1, -1]) < 0.5
-
-
-TYPED_KEEP = """
-from discoeb import LCDM, solve_eb
-
-planck = LCDM(
-    Omegam=0.31, Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
-    Tcmb=2.7255, YHe=0.245, Neff=3.046,
-)
-kept = solve_eb(planck, [0.1], [100.0], keep=("R", "clxc"))
-kept["R"]
-kept["clxc"]
-kept["z"]  # not kept
-names = [name for name in ("R", "z")]
-dynamic = solve_eb(planck, [0.1], [100.0], keep=names)
-dynamic["anything"]
-everything = solve_eb(planck, [0.1], [100.0])
-everything["clxb"]
-"""
-
-
-@pytest.mark.skipif(ty_executable() is None, reason="needs ty (the dev group)")
-def test_a_type_checker_sees_the_kept_names(tmp_path):
-    """Literal names in ``keep`` type the solution; names built at run time do not."""
-    found, output = ty_errors(TYPED_KEEP, tmp_path)
-    not_kept = next(
-        i for i, text in enumerate(TYPED_KEEP.splitlines(), 1) if "# not kept" in text
-    )
-    assert {row for row, _ in found} == {not_kept}, output

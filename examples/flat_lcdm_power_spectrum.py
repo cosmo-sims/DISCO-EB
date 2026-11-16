@@ -56,16 +56,17 @@ def matter_power(key: jax.Array) -> jax.Array:
     ]
 
     tau0 = conformal_ages(cosmologies)
-    solution = solve_eb(
+    keep = ("clxc", "clxb", "z", "vb")
+    values = solve_eb(  # (cosmology, name, k, tau)
         cosmologies,
         K,
-        tau0.max()[None],  # today: each trajectory stops at its own age
-        keep=("clxc", "clxb", "z", "vb"),
+        tau0.max().reshape(1),  # today: each trajectory stops at its own age
+        keep=keep,
         # recombination ten times looser than the hierarchy: moves P(k) by
         # under 6e-4 and takes 150 steps per trajectory instead of 225
         thermo_weight=0.1,
     )
-    today = {name: solution[name][..., -1] for name in solution.names}
+    today = dict(zip(keep, jnp.unstack(values[..., -1], axis=1)))
     parameters = {
         key: jnp.stack([jnp.asarray(getattr(c, key)) for c in cosmologies])
         for key in ("Omegam", "Omegab", "A_s", "n_s", "k_p")

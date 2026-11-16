@@ -66,7 +66,7 @@ def test_solve_eb_derivatives():
     kept = _kept_values(prepared, np.concatenate(([TAU_START], tau)), names, ())
     base = np.asarray(kept(densities))
     # The same launch, from densities formed in JAX rather than as floats.
-    np.testing.assert_allclose(np.asarray(plain.values), base, rtol=1e-12)
+    np.testing.assert_allclose(np.asarray(plain), base, rtol=1e-12)
     scale = np.abs(base).max(axis=(2, 3), keepdims=True)
 
     # The joint launch's primal: the fp64 LU in place of the plain fp32 one,
@@ -126,7 +126,7 @@ def test_solve_eb_derivatives():
     # not carried.
     def of_parameters(theta):
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
-        return solve_eb(cosmologies_of(LCDM, param), SOLVE_EB_K, tau, keep=names).values
+        return solve_eb(cosmologies_of(LCDM, param), SOLVE_EB_K, tau, keep=names)
 
     jac_theta = np.asarray(jax.jacfwd(of_parameters)(theta))
     d_densities = np.asarray(jax.jacfwd(lambda t: inputs_of(t)[0])(theta))
@@ -163,7 +163,7 @@ def test_solve_eb_derivatives():
                         SOLVE_EB_K,
                         tau,
                         keep=names,
-                    ).values
+                    )
                 )
             )(value)
 
@@ -202,7 +202,7 @@ def test_more_parameters_solve_eb(name):
 
     def values(p, **options):
         batch = cosmologies_of(model, {**cosmology, name: p})
-        return solve_eb(batch, SOLVE_EB_K, tau, keep=MORE_NAMES, **options).values
+        return solve_eb(batch, SOLVE_EB_K, tau, keep=MORE_NAMES, **options)
 
     p0 = jnp.asarray(float(cosmology[name]))
     _, tangent = jax.jvp(values, (p0,), (jnp.ones_like(p0),))

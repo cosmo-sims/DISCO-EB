@@ -53,14 +53,11 @@ def kernel_thermal_history(cosmologies, n_tau: int = N_TAU):
 
     tau0 = np.asarray(conformal_ages(cosmologies))
     tau = np.geomspace(TAU_START, float(tau0.max()), n_tau)
-    solution = solve_eb(
+    values = solve_eb(
         cosmologies_of(LCDM, cosmologies), THERMAL_K, tau, keep=THERMAL_KEEP
     )
-    return (
-        tau,
-        tau0,
-        {name: np.asarray(solution[name])[:, 0, :] for name in THERMAL_KEEP},
-    )
+    kept = np.asarray(values)[:, :, 0, :]  # one wave mode
+    return tau, tau0, {name: kept[:, i] for i, name in enumerate(THERMAL_KEEP)}
 
 
 def _class_thermodynamics(param):

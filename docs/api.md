@@ -26,9 +26,6 @@
 
 .. autofunction:: discoeb.matter_power_spectrum
 
-.. autoclass:: discoeb.Solution
-   :no-members:
-
 .. autofunction:: discoeb.state_names
 
 .. autofunction:: discoeb.conformal_ages

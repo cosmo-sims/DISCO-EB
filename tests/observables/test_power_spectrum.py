@@ -174,14 +174,11 @@ def test_matter_power_spectrum_under_jit():
         traces.append(cosmology)
         batch = cosmologies_of(LCDM, [cosmology])
         tau0 = conformal_ages(batch)[0]
-        solution = solve_eb(
-            batch,
-            SOLVE_EB_K,
-            tau0[None],
-            keep=("clxc", "clxb", "z", "vb"),
-            thermo_weight=0.1,
+        keep = ("clxc", "clxb", "z", "vb")
+        values = solve_eb(
+            batch, SOLVE_EB_K, tau0.reshape(1), keep=keep, thermo_weight=0.1
         )
-        today = {name: solution[name][0, :, -1] for name in solution.names}
+        today = dict(zip(keep, jnp.unstack(values[0, :, :, -1])))
         params = {
             key: cosmology[key] for key in ("Omegam", "Omegab", "A_s", "n_s", "k_p")
         }

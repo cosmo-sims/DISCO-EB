@@ -30,19 +30,20 @@ def matter_power_spectrum(
     cosmology's conformal age, and pass their values there::
 
         tau0 = conformal_ages(cosmology)
-        solution = solve_eb(
+        values = solve_eb(
             cosmology,
             k,
-            tau0.max()[None],
+            tau0.max().reshape(1),
             keep=("clxc", "clxb", "z", "vb"),
             thermo_weight=0.1,
         )
+        clxc, clxb, z, vb = jnp.unstack(values[0, :, :, -1])
         pk = matter_power_spectrum(
             k,
-            clxc=solution["clxc"][0, :, -1],
-            clxb=solution["clxb"][0, :, -1],
-            z=solution["z"][0, :, -1],
-            vb=solution["vb"][0, :, -1],
+            clxc=clxc,
+            clxb=clxb,
+            z=z,
+            vb=vb,
             tau0=tau0[0],
             Omegam=cosmology.Omegam,
             Omegab=cosmology.Omegab,
@@ -79,8 +80,8 @@ def matter_power_spectrum(
     as ``solve_eb``'s values are. The derivative is the total one.
     ``solve_eb``'s is at fixed conformal age, so this adds the end-time term
     ``y'(tau0) d tau0``, zero in value. The rates are ``clxc' = -k z`` and
-    ``clxb' = -k (z + vb)``. Pass ``tau0`` from ``conformal_ages``:
-    ``solution.tau0`` carries no derivative, and with it the term drops out.
+    ``clxb' = -k (z + vb)``. Pass ``tau0`` from ``conformal_ages``: a
+    ``tau0`` under ``stop_gradient`` drops the term silently.
     The reionization redshift and the initial state stay fixed.
     """
 

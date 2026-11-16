@@ -6,10 +6,8 @@ differentiable in :data:`~discoeb.models._cosmology.DIFFERENTIABLE_PARAMETERS`.
 """
 
 import functools
-import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Generic, TypeVar, overload
+from typing import Annotated
 
 import jax
 import jax.numpy as jnp
@@ -78,78 +76,6 @@ def solve_perturbation_history_batch(
     return hist, k_sorted, prepared
 
 
-if sys.version_info >= (3, 11):
-    from typing import LiteralString
-else:
-    from typing_extensions import LiteralString
-
-Name = TypeVar("Name", bound=str)
-_Kept = TypeVar("_Kept", bound=LiteralString)
-
-
-@dataclass(frozen=True)
-class Solution(Generic[Name]):
-    """What :func:`solve_eb` kept: the selected quantities on the requested grid.
-
-    ``values`` is a device array ``(n_cosmologies, len(names), n_k, n_tau)``
-    with wave modes and times in the caller's order. ``solution[name]`` is that
-    quantity's ``(n_cosmologies, n_k, n_tau)`` block. ``tau0`` is each
-    cosmology's conformal age, past which its column holds the state today.
-    ``values`` is differentiable in the parameters of
-    :data:`DIFFERENTIABLE_PARAMETERS` given as JAX values. ``model`` is the
-    cosmologies' model class. A solution is a JAX pytree, so a jitted
-    function may return one: ``values``, ``tau`` and ``tau0`` are its leaves.
-
-    A type checker knows the names: ``solve_eb(..., keep=("R", "clxc"))``
-    returns a ``Solution[Literal["R", "clxc"]]``, whose ``solution["z"]`` is
-    an error. Names built at run time, or ``keep=None``, give a
-    ``Solution[str]`` that takes any name and raises ``KeyError`` as before.
-    """
-
-    names: tuple[Name, ...]
-    k: np.ndarray
-    tau: jax.Array
-    tau0: jax.Array
-    values: jax.Array
-    model: type[Model] | ModelSpec
-
-    def __getitem__(self, name: Name) -> jax.Array:
-        if name not in self.names:
-            raise KeyError(f"{name!r} was not kept; the solution holds {self.names}")
-        return self.values[:, self.names.index(name)]
-
-
-jax.tree_util.register_pytree_node(
-    Solution,
-    lambda s: ((s.values, s.tau, s.tau0), (s.names, tuple(s.k.tolist()), s.model)),
-    lambda aux, leaves: Solution(
-        names=aux[0],
-        k=np.asarray(aux[1], dtype=np.float64),
-        tau=leaves[1],
-        tau0=leaves[2],
-        values=leaves[0],
-        model=aux[2],
-    ),
-)
-
-
-@overload
-def solve_eb(
-    cosmologies: Model | Sequence[Model],
-    k_values,
-    tau,
-    *,
-    keep: Sequence[_Kept],
-    extra=(),
-    inputs=None,
-    rtol: float = PERTURB_RTOL,
-    atol: float = PERTURB_ATOL,
-    first_step: float = PERTURB_FIRST_STEP,
-    max_steps: int = PERTURB_MAX_STEPS,
-    error_weights=None,
-    thermo_weight: float = THERMO_ERROR_WEIGHT,
-) -> Solution[_Kept]: ...
-@overload
 def solve_eb(
     cosmologies: Model | Sequence[Model],
     k_values,
@@ -164,22 +90,7 @@ def solve_eb(
     max_steps: int = PERTURB_MAX_STEPS,
     error_weights=None,
     thermo_weight: float = THERMO_ERROR_WEIGHT,
-) -> Solution[str]: ...
-def solve_eb(
-    cosmologies: Model | Sequence[Model],
-    k_values,
-    tau,
-    *,
-    keep: Sequence[str] | None = None,
-    extra=(),
-    inputs=None,
-    rtol: float = PERTURB_RTOL,
-    atol: float = PERTURB_ATOL,
-    first_step: float = PERTURB_FIRST_STEP,
-    max_steps: int = PERTURB_MAX_STEPS,
-    error_weights=None,
-    thermo_weight: float = THERMO_ERROR_WEIGHT,
-) -> Solution[str]:
+) -> Annotated[jax.Array, ("cosmology", "name", "k", "tau")]:
     """Solve the Einstein-Boltzmann system of ``cosmologies`` and keep ``keep`` at ``tau``.
 
     Like :func:`solve_perturbation_history_batch`, this runs one modax Rodas5P
@@ -240,6 +151,15 @@ def solve_eb(
         function of the trajectories' wave numbers that returns one per
         trajectory, and unnamed states keep weight one.
 
+    Returns
+    -------
+    jax.Array
+        The kept quantities, ``(n_cosmologies, len(keep), n_k, n_tau)``:
+        cosmologies in the order given, quantities in ``keep`` order (the
+        model's :func:`state_names` without ``keep``), wave modes and times
+        in the caller's order. ``jnp.unstack(values, axis=1)`` splits it
+        into one ``(n_cosmologies, n_k, n_tau)`` array per name.
+
     Notes
     -----
     The hook compiles once per batch shape and set of names, like the
@@ -248,7 +168,7 @@ def solve_eb(
     (:func:`~discoeb.solver._kernel._pack`), so ``solve_eb`` traces under ``jit``, and
     the whole solve then runs on the device. Under ``jit`` the cosmologies are
     not checked against the model, since their ``w_DE_*`` and ``Nmnu`` have no
-    values yet. The returned ``values`` are differentiable in the
+    values yet. The returned values are differentiable in the
     cosmologies' :func:`differentiable_parameters` of the model under
     ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad``, with or without ``jit``.
     The derivative runs through the model's directed inputs: the background
@@ -346,14 +266,7 @@ def solve_eb(
         max_steps=max_steps,
         thermo_weight=thermo_weight,
     )
-    return Solution(
-        names=names,
-        k=np.asarray(k_values, dtype=np.float64).reshape(-1),
-        tau=tau,
-        tau0=prepared.tau0,
-        values=of_variables(variables),
-        model=batch.model_class or model,
-    )
+    return of_variables(variables)
 
 
 def _inputs_of(model, extra, given, variables) -> jax.Array:

@@ -382,6 +382,11 @@ def _class_base(param):
     }
 
 
+def by_name(values, keep):
+    """Split ``solve_eb``'s values into ``{name: (n_cosmologies, n_k, n_tau)}``."""
+    return dict(zip(keep, np.moveaxis(np.asarray(values), 1, 0)))
+
+
 def _matter_power(k_values, batch, tau_today=None, **options):
     """``P(k)`` of a cosmology or a list of them as a user computes it: ``solve_eb``, then the spectrum.
 
@@ -402,10 +407,9 @@ def _matter_power(k_values, batch, tau_today=None, **options):
     if tau_today is None:
         tau_today = tau0.max()
     options.setdefault("thermo_weight", 0.1)
-    solution = solve_eb(
-        batch, k_values, [tau_today], keep=("clxc", "clxb", "z", "vb"), **options
-    )
-    today = {name: solution[name][..., -1] for name in solution.names}
+    keep = ("clxc", "clxb", "z", "vb")
+    values = solve_eb(batch, k_values, [tau_today], keep=keep, **options)
+    today = dict(zip(keep, jnp.unstack(values[..., -1], axis=1)))
     params = {
         key: jnp.stack([jnp.asarray(getattr(c, key)) for c in cosmologies])
         for key in ("Omegam", "Omegab", "A_s", "n_s", "k_p")

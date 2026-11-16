@@ -72,8 +72,8 @@ planck = LCDM(
 k = np.geomspace(1e-4, 1.0, 64)      # 1/Mpc
 tau = np.geomspace(1.0, 2e4, 100)    # Mpc, the last times past today
 
-solution = solve_eb([planck, planck.replace(H0=70.0)], k, tau, keep=("R", "clxc"))
-R = solution["R"]  # (2, 64, 100): cosmologies, wave modes, times
+values = solve_eb([planck, planck.replace(H0=70.0)], k, tau, keep=("R", "clxc"))
+R = values[:, 0]  # (2, 64, 100): cosmologies, wave modes, times
 ```
 
 `discoeb.models` has `LCDM`, `W0WACDM` (a CPL dark-energy fluid) and their

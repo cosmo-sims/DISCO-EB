@@ -493,14 +493,13 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
 9. **solver/_solver.py** - `solve_eb(cosmologies, k, tau, *, keep=...)` solves
    one cosmology or a list of one model's and records only the named quantities at the given times, so the
    device holds `n_k * n_cosmo * n_tau * len(keep)` numbers and never the
-   history. Returns a `Solution` (`solution["R"]` is `(n_cosmo, n_k,
-   n_tau)` in the caller's order, `solution.model` the model class); a time past a
-   cosmology's `tau0` holds its state today. Traces under `jit` with every
-   cosmology key traced (only k and the names static); `Solution` (renamed
-   from `EBSolution` and generic in its names on 2026-11-16: literal `keep`
-   names give `Solution[Literal[...]]`, so ty and pyright reject a lookup of
-   a name not kept, and run-time names give `Solution[str]`) is a
-   pytree. `values` is differentiable in `differentiable_parameters(model)`
+   history. Returns the values themselves, `Annotated[jax.Array,
+   ("cosmology", "name", "k", "tau")]`, names in `keep` order and the rest in
+   the caller's order (there is no `Solution` class since 2026-11-16;
+   `jnp.unstack(values, axis=1)` splits it by name, `helpers.by_name` in the
+   tests); a time past a cosmology's `tau0` holds its state today. Traces
+   under `jit` with every cosmology key traced (only k and the names
+   static). The values are differentiable in `differentiable_parameters(model)`
    of `DIFFERENTIABLE_PARAMETERS` (`Omegam`, `Omegab`, `H0`, `Tcmb`, `Neff`,
    `Omegak`, and `mnu`, `w_DE_0`, `w_DE_a` where the model has the
    component): plain JAX from them to the directed inputs
@@ -526,8 +525,8 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
     `tau0`, and the parameters `(...)`. Differentiable like `solve_eb`; it
     adds the end-time term (`clxc' = -k z`, `clxb' = -k (z + vb)` times
     `tau0 - stop_gradient(tau0)`), so `tau0` must come from
-    `conformal_ages(batch)`: `solution.tau0` is under `stop_gradient` and
-    drops the term silently. `examples/flat_lcdm_power_spectrum.py` is the
+    `conformal_ages(batch)`: a `tau0` under `stop_gradient` drops the term
+    silently. `examples/flat_lcdm_power_spectrum.py` is the
     entry point
 
 11. **Jacobian sparsity** (`ModelSpec.sparsity`; its test is
