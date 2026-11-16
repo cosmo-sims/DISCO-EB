@@ -92,9 +92,9 @@ class AdiabaticMode(Component):
     solve never reads it, the matter power spectrum does.
     """
 
-    A_s: ArrayLike = Parameter()
-    n_s: ArrayLike = Parameter()
-    k_p: ArrayLike = Parameter(0.05)
+    A_s: ArrayLike = Parameter(solved=False)
+    n_s: ArrayLike = Parameter(solved=False)
+    k_p: ArrayLike = Parameter(0.05, solved=False)
 
     grho_matter = Sum()
     """The density of the pressureless species."""

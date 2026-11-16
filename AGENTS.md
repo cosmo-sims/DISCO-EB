@@ -217,7 +217,10 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      a key the kernel reads as a row column, `Parameter(differentiable=True)`
      a key `solve_eb` may differentiate (2026-11-17; before, a global
      `DIFFERENTIABLE_PARAMETERS` tuple listed them, so a component from
-     outside could never add one), `grhoc: ArrayLike =
+     outside could never add one), `A_s: ArrayLike =
+     Parameter(solved=False)` a key the solve never reads, whose tangent
+     `solve_eb` drops instead of raising (the primordial spectrum's;
+     before, a global `UNUSED_BY_THE_SOLVE` tuple), `grhoc: ArrayLike =
      Derived(lambda omega_c: ..., directed=True)` a kernel
      input derived on the host by name from other parameters. `Parameter`
      and `Derived` are `dataclass_transform` field specifiers returning a

@@ -15,9 +15,9 @@ import numpy as np
 
 from ..components.recombination import THERMO_ERROR_WEIGHT
 from ..models._cosmology import (
-    UNUSED_BY_THE_SOLVE,
     _columns,
     _is_concrete,
+    _is_unsolved,
 )
 from ..models._model import Model, ModelSpec, _batch_of, _spec_of
 from ._kernel import (
@@ -215,7 +215,7 @@ def solve_eb(
         # The primordial keys the solve never reads carry no tangent, and so
         # no replica, when P(k) differentiates them.
         "columns": {
-            k: jax.lax.stop_gradient(v) if k in UNUSED_BY_THE_SOLVE else v
+            k: jax.lax.stop_gradient(v) if _is_unsolved(k) else v
             for k, v in columns.items()
         },
     }

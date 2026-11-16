@@ -29,8 +29,10 @@ def _default(key):
     return REQUIRED
 
 
-UNUSED_BY_THE_SOLVE = ("A_s", "n_s", "k_p")
-"""Keys the Einstein-Boltzmann solve never reads: the primordial spectrum's."""
+def _is_unsolved(key) -> bool:
+    """Whether a component declares ``key`` a key the solve never reads (``solved=False``)."""
+
+    return any(p.is_key and not p.solved for _, p in declarations_of(key))
 
 
 @functools.partial(jax.custom_jvp, nondiff_argnums=(1,))
@@ -62,8 +64,8 @@ def _columns(cosmologies, keys, held: bool = True, differentiable=()) -> dict:
     numbers or JAX values, traced or not. With ``held``, a key the
     solve reads but does not differentiate (outside ``differentiable``,
     :meth:`ModelSpec.differentiable_parameters
-    <discoeb.models.ModelSpec.differentiable_parameters>`, and
-    :data:`UNUSED_BY_THE_SOLVE`) raises
+    <discoeb.models.ModelSpec.differentiable_parameters>`, and not declared
+    ``solved=False``) raises
     if differentiated: its derivative would otherwise come back as a silent
     zero.
     """
@@ -88,7 +90,7 @@ def _columns(cosmologies, keys, held: bool = True, differentiable=()) -> dict:
             column = jnp.stack([jnp.asarray(v, dtype=jnp.float64) for v in values])
         else:
             column = jnp.asarray(np.asarray(values, dtype=np.float64))
-        if held and key not in (*differentiable, *UNUSED_BY_THE_SOLVE):
+        if held and key not in differentiable and not _is_unsolved(key):
             column = _not_differentiable(column, key)
         columns[key] = column
     return columns
