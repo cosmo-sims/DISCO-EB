@@ -32,3 +32,6 @@ htmlcov/
 .pytest_cache/
 .ruff_cache/
 tests/resources/cmb_test_data_cache.pkl
+
+# Figures the example scripts save beside themselves
+examples/*.png
