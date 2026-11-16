@@ -27,7 +27,8 @@ uv sync --extra cuda13  # or --extra cuda12
 uv run pytest tests -rs
 uv run pytest "tests/observables/test_power_spectrum.py::test_matter_power_spectrum_matches_class[N128]" -v
 
-# The entry point: P(k) of Planck 2018 flat LCDM, one jitted function
+# The entry point: P(k) of 128 flat LCDM cosmologies about Planck 2018, built,
+# solved and timed in one jitted function
 uv run python examples/flat_lcdm_power_spectrum.py
 
 # Run with coverage, as CI does

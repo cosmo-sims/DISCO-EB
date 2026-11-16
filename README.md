@@ -79,8 +79,8 @@ R = solution["R"]  # (2, 64, 100): cosmologies, wave modes, times
 `discoeb.models` has `LCDM`, `W0WACDM` (a CPL dark-energy fluid) and their
 massive-neutrino variants `LCDM_MNU` and `W0WACDM_MNU`. Each takes exactly
 its own parameters, so a type checker flags a missing or unknown one.
-`examples/flat_lcdm_power_spectrum.py` computes the matter power spectrum of
-Planck 2018 flat LCDM in one jitted function.
+`examples/flat_lcdm_power_spectrum.py` computes and times the matter power
+spectrum of 128 flat LCDM cosmologies about Planck 2018 in one jitted function.
 
 <!-- end:quickstart -->
 
