@@ -17,12 +17,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..components.component import Equations, _compile
+from ..components._component import Equations, _compile
 from ..components.recombination import THERMO_ERROR_WEIGHT, Recombination
 from ..models import DEFAULT_SPEC
+from ..models._cosmology import _as_batch, _columns
 from ..models._model import Model, ModelSpec, _spec_of
-from ..models.cosmology import _as_batch, _columns
-from .background import TAU_START, background_endpoints, density_parameters
+from ._background import TAU_START, background_endpoints, density_parameters
 
 PERTURB_RTOL = 1.0e-4
 PERTURB_ATOL = 1.0e-4
@@ -61,7 +61,7 @@ class ParameterLayout:
     layout is a function of the resolved model and the kernels cached on it
     stay valid. ``eps`` is zero in every primal solve, and the derivative in
     it is the directional derivative along ``dir``
-    (:func:`~discoeb.solver.sensitivities._kept_values`).
+    (:func:`~discoeb.solver._sensitivities._kept_values`).
     """
 
     columns: dict
@@ -174,7 +174,7 @@ def joint_model(model: type[Model] | ModelSpec, extra=()) -> Equations:
 def thermal_indices(model) -> tuple[int, ...]:
     """Return the flat indices of the background states in the joint ``model``.
 
-    They are the states :meth:`Equations.stages <discoeb.components.component.Equations.stages>`
+    They are the states :meth:`Equations.stages <discoeb.components._component.Equations.stages>`
     finds to evolve without the wave number: the five of the recombination
     block and any a component of the model adds.
     """
@@ -199,12 +199,12 @@ def joint_kernel(model: type[Model] | ModelSpec, extra=()):
 
     The hierarchy is a modax :class:`~modax.Hierarchy` of two blocks, which
     the equations themselves split (:meth:`Equations.stages
-    <discoeb.components.component.Equations.stages>`). The background block holds every
+    <discoeb.components._component.Equations.stages>`). The background block holds every
     state whose rate reads no wave number: ``ln a``, the recombination
     history, the optical depth, and whatever a model adds, such as a scalar
     field. It publishes the fewest quantities that separate it from the
     perturbations (:meth:`Equations.published
-    <discoeb.components.component.Equations.published>`: the scale factor, the opacity and
+    <discoeb.components._component.Equations.published>`: the scale factor, the opacity and
     the baryon sound speed for the built-in models), and the perturbation
     block's right-hand side takes them as given. modax steps the background
     block ahead of the perturbations and hands the quantities down as a
@@ -285,7 +285,7 @@ def _prepare_solve(
 
     The cosmologies' values may be traced under ``jit``. ``k_values`` must be
     numbers: they set the launch's shape and order. ``columns`` are the
-    cosmologies' :func:`~discoeb.models.cosmology._columns` if already at hand. Every
+    cosmologies' :func:`~discoeb.models._cosmology._columns` if already at hand. Every
     cosmology must suit
     the model (:meth:`ModelSpec.check
     <discoeb.models.ModelSpec.check>`), checked when its values are
@@ -293,7 +293,7 @@ def _prepare_solve(
     model, wave-mode grid and batch size.
 
     The derivative holds the endpoints, the parameter rows and the initial
-    state fixed: :func:`~discoeb.solver.sensitivities._kept_values` sets the directed
+    state fixed: :func:`~discoeb.solver._sensitivities._kept_values` sets the directed
     columns from its own inputs.
     """
 
@@ -332,7 +332,7 @@ def _pack(model: ModelSpec, extra, k_sorted, columns):
     """Return ``(tau0, lna_start, z_re, params, y0)`` of a batch's columns, on the device.
 
     The background endpoints come from the vmapped quadrature
-    (:func:`~discoeb.solver.background.background_endpoints`), the rows from
+    (:func:`~discoeb.solver._background.background_endpoints`), the rows from
     :func:`_rows`, and the initial state from the joint model's initial
     conditions in ``jax.numpy``.
     """
@@ -366,7 +366,7 @@ def _rows(layout: ParameterLayout, values, tau_end, z_re):
     """Return the cosmologies' parameter rows ``(n_cosmologies, layout.n)``, without the wave number.
 
     ``values`` are the model's parameters
-    (:func:`~discoeb.solver.background.density_parameters`), each ``(n_cosmologies,)``.
+    (:func:`~discoeb.solver._background.density_parameters`), each ``(n_cosmologies,)``.
     ``eps`` and the direction block are zero, as in every primal solve.
     """
 
@@ -595,7 +595,7 @@ def build_keep_hook(model, names, layout: ParameterLayout = DEFAULT_LAYOUT):
     ``kappa`` of the recombination block) come straight from the state. Provided
     quantities (``R``, ``sigma``, ``phi`` with the line-of-sight sources
     appended, ``opacity`` or ``cs2`` from the thermal states) come from
-    :meth:`~discoeb.components.component.Equations.build_function`, with the state, the time and
+    :meth:`~discoeb.components._component.Equations.build_function`, with the state, the time and
     the parameter row of ``layout`` as inputs. The hook clamps the time to the trajectory's
     own ``tau_end``: a save past a cosmology's ``tau0`` holds its final state,
     and the background at ``tau0`` goes with it. ``hook._generated_source``

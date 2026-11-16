@@ -13,7 +13,7 @@ import pytest
 from conftest import HOST, ConstantThermalHistory, _cuda_available, cosmologies_of
 from jax.typing import ArrayLike
 
-from discoeb.components.component import Derived, Parameter, Species, State
+from discoeb.components._component import Derived, Parameter, Species, State
 from discoeb.models import LCDM
 
 
@@ -69,7 +69,7 @@ def _split(cosmology, omega_x=OMEGA_X):
 
 
 def test_the_parameter_reaches_the_dictionary_the_row_and_the_inputs():
-    from discoeb.solver.kernel import parameter_layout
+    from discoeb.solver._kernel import parameter_layout
 
     assert LCDM_X.parameter_keys()["Omega_x"] == 0.0
     assert "Omega_x" not in LCDM.parameter_keys()
@@ -111,8 +111,8 @@ def test_a_bare_cosmology_cannot_carry_the_parameter_past_the_default_model():
 
 
 def test_the_background_closes_the_budget_with_the_new_density():
-    from discoeb.models.cosmology import _columns
-    from discoeb.solver.background import density_parameters
+    from discoeb.models._cosmology import _columns
+    from discoeb.solver._background import density_parameters
 
     def densities(model, cosmology):
         columns = _columns([cosmology], held=False, keys=model.parameter_keys())
@@ -131,7 +131,7 @@ def test_the_background_closes_the_budget_with_the_new_density():
 def test_the_right_hand_side_reads_the_generated_provider():
     """``grhox = grhox_nominal + eps * dir_grhox``, and clxx evolves as clxc does."""
 
-    from discoeb.solver.kernel import parameter_layout
+    from discoeb.solver._kernel import parameter_layout
 
     columns = parameter_layout(LCDM_X).columns
     model = LCDM_X.build(ConstantThermalHistory())
@@ -168,7 +168,7 @@ def test_the_right_hand_side_reads_the_generated_provider():
 def test_the_growing_mode_counts_the_new_species_as_matter():
     """Splitting the dark matter leaves the initial state alone: ``om`` sums ``grho_matter``."""
 
-    from discoeb.solver.kernel import joint_model, make_initial_states
+    from discoeb.solver._kernel import joint_model, make_initial_states
 
     k = np.array([1.0e-2, 1.0e-1])
     plain = make_initial_states(
@@ -218,7 +218,7 @@ def test_splitting_the_dark_matter_leaves_the_solve_unchanged():
         a, b = np.asarray(split[name]), np.asarray(plain[name])
         assert np.abs(a - b).max() < gate * np.abs(b).max(), name
 
-    from discoeb.solver.kernel import parameter_layout
+    from discoeb.solver._kernel import parameter_layout
 
     directed = parameter_layout(LCDM_X).directed
     x = directed_inputs(batch)

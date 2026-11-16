@@ -127,9 +127,11 @@ which import each other in one direction, `components` <- `models` <-
 species, gravity, interactions, recombination), `models/` (the model classes
 and cosmologies), `solver/` (background, kernel, sensitivities, `solve_eb`)
 and `observables/` (the matter power spectrum). Each folder's `__init__.py`
-re-exports its public names. The modules:
+re-exports its public names, and a module with a leading underscore is
+private: import its public names from the folder (`from discoeb.components
+import Component, State`, `from discoeb.solver import solve_eb`). The modules:
 
-1. **components/component.py** - Right-hand sides from components, by dependency injection
+1. **components/_component.py** - Right-hand sides from components, by dependency injection
    - A `Component` declares its settings (`LMAX_G = Setting(15)`, loaded from
      `DISCO_LMAX_G` when the class is created, overridable as a constructor
      argument) and its state as class attributes (`etak = State()`,
@@ -343,7 +345,7 @@ re-exports its public names. The modules:
      `PerturbationLayout` any more (removed 2026-11-12): indices come from
      `model.state_names()` or the joint model's `index`
 
-4. **solver/background.py** - The expansion history
+4. **solver/_background.py** - The expansion history
    - `density_parameters(param, xp, model)` (every parameter the model
      declares, derived ones by `derive_parameters`; the `closes_budget`
      parameter is the root of `3 adotoa(a=1)^2 = grhom`, one secant step
@@ -369,7 +371,7 @@ re-exports its public names. The modules:
    - The momentum bins (`neutrino_momentum_bins`, cached) live in `util.py`
      beside the Gauss-Laguerre rule
 
-5. **models/cosmology.py** - Cosmologies as the solver reads them: parameter
+5. **models/_cosmology.py** - Cosmologies as the solver reads them: parameter
    dictionaries (`_cosmology_dictionary` of an instance is its `to_dict()`),
    their hashable form `_ParamCosmology` (`as_cosmology`, which takes an
    instance too and keeps no model), and
@@ -416,7 +418,7 @@ re-exports its public names. The modules:
    - The RECFAST constants live here too. **Recfast license** (UBC, not MIT):
      see the file header
 
-7. **solver/kernel.py** - The joint kernel and the launch
+7. **solver/_kernel.py** - The joint kernel and the launch
    - Solved by modax's Rodas5P numba-CUDA kernel, one wave mode per thread, for
      a batch of cosmologies at once. `joint_kernel(model, extra)` builds the
      modax `Hierarchy` (recombination block ahead of the perturbations) once
@@ -463,7 +465,7 @@ re-exports its public names. The modules:
      quantities such as `R` compiled by `Equations.build_function`, cached per
      model and set of names (`_keep_hook`)
 
-8. **solver/sensitivities.py** - `_kept_values`: the hooked launch as a
+8. **solver/_sensitivities.py** - `_kept_values`: the hooked launch as a
    `jax.custom_jvp` in a pytree of variables that `to_inputs` maps to the
    layout's directed inputs (`solve_eb` passes the cosmology columns and
    `z_re`). Its rule (`symbolic_zeros=True`) replicates every trajectory once
@@ -484,7 +486,7 @@ re-exports its public names. The modules:
    closes over no JAX array: JAX traces it lazily, after the enclosing
    `jit` trace, so a captured tracer breaks `jit(grad(jit(f)))`
 
-9. **solver/solver.py** - `solve_eb(cosmologies, k, tau, *, keep=...)` solves
+9. **solver/_solver.py** - `solve_eb(cosmologies, k, tau, *, keep=...)` solves
    one cosmology or a list of one model's and records only the named quantities at the given times, so the
    device holds `n_k * n_cosmo * n_tau * len(keep)` numbers and never the
    history. Returns an `EBSolution` (`solution["R"]` is `(n_cosmo, n_k,
@@ -556,7 +558,7 @@ re-exports its public names. The modules:
      against the dense core's 238, which had none). The fill and the
      diagonals have slots of their own in modax, written by no column of `J`
 
-12. **components/util.py** - the neutrino momentum bins and the generalised
+12. **components/_util.py** - the neutrino momentum bins and the generalised
     Gauss-Laguerre rule they use for `nqmax > 5`
 
 ### Computation Pipeline

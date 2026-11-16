@@ -1,7 +1,7 @@
 """The solve: the background, the joint kernel, its sensitivities and ``solve_eb``."""
 
-from .background import TAU_START, background_history, density_coefficients
-from .kernel import (
+from ._background import TAU_START, background_history, density_coefficients
+from ._kernel import (
     DIRECTED_NAMES,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
@@ -9,7 +9,7 @@ from .kernel import (
     PERTURB_RTOL,
     joint_model,
 )
-from .solver import (
+from ._solver import (
     EBSolution,
     conformal_ages,
     differentiable_parameters,

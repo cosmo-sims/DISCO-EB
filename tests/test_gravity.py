@@ -7,7 +7,13 @@ import pytest
 from conftest import HOST, ConstantThermalHistory
 from jax.typing import ArrayLike
 
-from discoeb.components.component import Component, Equations, Gravity, Parameter, State
+from discoeb.components._component import (
+    Component,
+    Equations,
+    Gravity,
+    Parameter,
+    State,
+)
 from discoeb.components.gravity import GRAVITY_INTERFACE, Background, Curvature, Metric
 from discoeb.components.species import (
     ColdDarkMatter,
@@ -29,8 +35,8 @@ COSMOLOGY = {
 
 
 def _densities(model, cosmology):
-    from discoeb.models.cosmology import _columns
-    from discoeb.solver.background import density_parameters
+    from discoeb.models._cosmology import _columns
+    from discoeb.solver._background import density_parameters
 
     columns = _columns([cosmology], held=False, keys=model.parameter_keys())
     return {k: v[0] for k, v in density_parameters(columns, model=model).items()}
@@ -50,7 +56,7 @@ def test_curvature_is_geometry_and_not_a_fluid():
 
     import jax.numpy as jnp
 
-    from discoeb.solver.background import background_model
+    from discoeb.solver._background import background_model
 
     assert issubclass(Curvature, Gravity)
     curved = {**COSMOLOGY, "Omegak": 0.05}
@@ -70,7 +76,7 @@ def test_the_acceleration_equation_is_the_derivative_of_the_friedmann_equation(a
     import jax
     import jax.numpy as jnp
 
-    from discoeb.solver.background import background_model
+    from discoeb.solver._background import background_model
 
     cosmology = {
         **COSMOLOGY,
@@ -107,7 +113,7 @@ def test_another_friedmann_equation_replaces_the_background():
 
     import jax.numpy as jnp
 
-    from discoeb.solver.background import background_model
+    from discoeb.solver._background import background_model
 
     scaled = LCDM.swap(Background, ScaledGravity, name="scaled gravity")
     assert scaled.state_names() == LCDM.state_names()
@@ -121,7 +127,7 @@ def test_another_friedmann_equation_replaces_the_background():
     total = 1.1 * (d["grhov"] + d["grhoc"] + d["grhob"] + d["grhog"] + d["grhornomass"])
     assert float(total / d["grhom"]) == pytest.approx(1.0, rel=1e-12)
     # and the right-hand side builds with it
-    from discoeb.solver.kernel import parameter_layout
+    from discoeb.solver._kernel import parameter_layout
 
     model = scaled.build(ConstantThermalHistory())
     model.build(parameter_layout(scaled).columns, **HOST)
@@ -172,7 +178,7 @@ def test_a_rate_is_a_quantity_a_provider_may_read():
 
 
 def test_the_metric_rate_is_a_quantity_of_the_model():
-    from discoeb.solver.kernel import N_PARAM, PARAM_COLUMNS
+    from discoeb.solver._kernel import N_PARAM, PARAM_COLUMNS
 
     model = LCDM.build(ConstantThermalHistory())
     rhs = model.build(PARAM_COLUMNS, **HOST)
@@ -202,7 +208,7 @@ def test_the_gauge_needs_its_species_at_rest():
 def test_the_streaming_approximation_is_a_component_a_model_may_drop():
     """No species names it, and no species is named by it."""
 
-    from discoeb.solver.kernel import N_PARAM, PARAM_COLUMNS
+    from discoeb.solver._kernel import N_PARAM, PARAM_COLUMNS
 
     full = LCDM.swap(RadiationStreaming, NoRadiationStreaming, name="full")
     assert full.state_names() == LCDM.state_names()

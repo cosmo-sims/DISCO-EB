@@ -1,7 +1,7 @@
 """Derivatives of kept quantities: forward sensitivities along the directed inputs.
 
 The model reads each input a derivative may move (its directed parameters,
-:data:`~discoeb.solver.kernel.DIRECTED_NAMES` for the built-in models) as
+:data:`~discoeb.solver._kernel.DIRECTED_NAMES` for the built-in models) as
 ``x_nominal + eps dir_x``. A sensitivity launch replicates every
 trajectory once per differentiated variable, with the direction ``dx / dv``
 of that variable, and differentiates the launch in ``eps``, a leaf of the
@@ -18,8 +18,8 @@ from jax.custom_derivatives import SymbolicZero
 
 from ..components.recombination import THERMO_ERROR_WEIGHT
 from ..models import DEFAULT_SPEC
-from .background import density_parameters
-from .kernel import (
+from ._background import density_parameters
+from ._kernel import (
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
@@ -34,8 +34,8 @@ from .kernel import (
 def _directed_inputs(columns, model=DEFAULT_SPEC, extra=()) -> jax.Array:
     """Return the ``(n_cosmologies, n_directed)`` directed inputs of ``model`` from a batch's columns, in JAX.
 
-    They are the layout's directed parameters (:func:`~discoeb.solver.kernel.parameter_layout`),
-    :data:`~discoeb.solver.kernel.DIRECTED_NAMES` for :data:`~discoeb.models.DEFAULT_MODEL`.
+    They are the layout's directed parameters (:func:`~discoeb.solver._kernel.parameter_layout`),
+    :data:`~discoeb.solver._kernel.DIRECTED_NAMES` for :data:`~discoeb.models.DEFAULT_MODEL`.
     """
 
     values = density_parameters(columns, model=model)
@@ -60,7 +60,7 @@ def _kept_values(
 ):
     """Return the hooked launches of :func:`solve_eb` as a function of the directed inputs.
 
-    ``prepared`` is the batch :func:`~discoeb.solver.kernel._prepare_solve` packed at
+    ``prepared`` is the batch :func:`~discoeb.solver._kernel._prepare_solve` packed at
     its wave modes, and ``tau_grid`` the save times, which may be traced.
     The result, ``of_variables(v)``, takes a pytree ``v`` whose leaves are
     ``(n_cosmologies,)`` or ``(n_cosmologies, m)``, maps it to the

@@ -13,7 +13,7 @@ from conftest import HOST, MODELS, ConstantThermalHistory, state_index
 
 from discoeb.components.species import DarkEnergy, MassiveNeutrinos, Photons
 from discoeb.models import LCDM
-from discoeb.solver.kernel import N_PARAM, PARAM_COLUMNS, make_initial_states
+from discoeb.solver._kernel import N_PARAM, PARAM_COLUMNS, make_initial_states
 
 
 def build(cosmology_model):
@@ -298,7 +298,7 @@ def test_the_initial_state_and_sparsity_come_from_the_components():
 
 
 def test_make_initial_states_uses_the_model():
-    from discoeb.models.cosmology import _as_cosmology
+    from discoeb.models._cosmology import _as_cosmology
 
     cosmology = _as_cosmology(
         dict(
@@ -319,7 +319,7 @@ def test_make_initial_states_uses_the_model():
             k_p=0.05,
         )
     )
-    from discoeb.solver.kernel import joint_model
+    from discoeb.solver._kernel import joint_model
 
     model = joint_model(LCDM)
     y0 = make_initial_states(cosmology, np.array([1e-2, 1e-1]), model, lna_start=-15.0)

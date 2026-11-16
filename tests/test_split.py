@@ -3,7 +3,7 @@
 import pytest
 
 from discoeb.models import LCDM
-from discoeb.solver.kernel import joint_kernel, thermal_indices
+from discoeb.solver._kernel import joint_kernel, thermal_indices
 
 
 def test_the_recombination_block_publishes_the_thermal_quantities():
@@ -40,7 +40,7 @@ def test_the_recombination_block_steps_on_its_own():
     from conftest import _cuda_available
     from test_perturbations import _perturbed_cosmologies
 
-    from discoeb.solver.kernel import _solve_batch
+    from discoeb.solver._kernel import _solve_batch
 
     if not _cuda_available():
         pytest.skip("numba-CUDA requires a CUDA GPU")

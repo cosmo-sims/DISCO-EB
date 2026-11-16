@@ -18,7 +18,7 @@ import pytest
 jax.config.update("jax_enable_x64", True)
 
 # after x64 is on, so nothing of DISCO-EB is built in single precision
-from discoeb.components.component import Component  # noqa: E402
+from discoeb.components._component import Component  # noqa: E402
 from discoeb.models import LCDM, LCDM_MNU, W0WACDM, W0WACDM_MNU  # noqa: E402
 
 

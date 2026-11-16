@@ -1,9 +1,9 @@
 """The species of the linear Einstein-Boltzmann system, as components.
 
-Each species is a :mod:`discoeb.components.component` component that owns its
+Each species is a :mod:`discoeb.components._component` component that owns its
 perturbation variables and states its own equations. A function names what
 it needs in its signature, as in ``d_vb(adotoa, vb, k, cs2, clxb)``, and
-:class:`~discoeb.components.component.Equations` injects it. A species sees another only
+:class:`~discoeb.components._component.Equations` injects it. A species sees another only
 through the quantities it publishes. Couplings between species live in
 :mod:`discoeb.components.interactions`, the metric and the Friedmann sum in
 :mod:`discoeb.components.gravity`. Conventions are CAMB's (see :mod:`discoeb.components.gravity`).
@@ -31,7 +31,7 @@ import math
 
 from jax.typing import ArrayLike
 
-from .component import (
+from ._component import (
     Component,
     Derived,
     Parameter,
@@ -40,8 +40,8 @@ from .component import (
     State,
     contributes,
 )
+from ._util import neutrino_momentum_bins
 from .gravity import C2OK, GRHOG_PER_TCMB4, GRHOR_PER_TCMB4
-from .util import neutrino_momentum_bins
 
 
 def _needs_octupole(**lmax):

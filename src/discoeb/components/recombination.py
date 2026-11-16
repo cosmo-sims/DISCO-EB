@@ -58,7 +58,7 @@ import os
 
 from jax.typing import ArrayLike
 
-from .component import Component, Parameter, State, float32, float64
+from ._component import Component, Parameter, State, float32, float64
 
 # RECFAST's physical and atomic constants (PDG 2023 where noted).
 const_mH = 1.67353284e-27  # H atom mass [kg], PDG 2023
@@ -496,7 +496,7 @@ class Recombination(Component):
     (``kappa' = x_e n_H sigma_T a``, with reionization) and ``cs2`` (from
     ``T_m`` and its own rate, no spline derivative). Nothing marks these
     states as the background: their rates read no wave number, and
-    :meth:`Equations.stages <discoeb.components.component.Equations.stages>` finds that.
+    :meth:`Equations.stages <discoeb.components._component.Equations.stages>` finds that.
     """
 
     lna = State(initial=lambda lna_start: lna_start)
@@ -639,7 +639,7 @@ def recombination_model():
     reionization fraction, the opacity and the sound speed.
     """
 
-    from .component import Equations
+    from ._component import Equations
 
     if not _ALONE:
         _ALONE.append(Equations([Recombination()]))

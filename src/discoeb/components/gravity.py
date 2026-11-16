@@ -20,7 +20,7 @@ includes all five.
 contribute to the sums :data:`SUMS`, which describe the fluids alone. They
 read :data:`GRAVITY_INTERFACE`: the expansion rate ``adotoa`` and the metric
 sources ``z`` and ``sigma``. A theory of gravity is a set of
-:class:`~discoeb.components.component.Gravity` components that provides those three
+:class:`~discoeb.components._component.Gravity` components that provides those three
 from the sums, so another theory replaces :class:`Background` (a modified
 Friedmann equation), :class:`Metric` (modified constraints, with states of
 its own if it needs them) or both, and no species changes::
@@ -34,7 +34,7 @@ import math
 
 from jax.typing import ArrayLike
 
-from .component import Component, Derived, Gravity, Parameter, State
+from ._component import Component, Derived, Gravity, Parameter, State
 
 # Density coefficients in CAMB's convention, ``8 pi G rho / c^2`` in 1/Mpc^2:
 # ``H^2 = sum_i grho_i / 3`` gives the Hubble rate in 1/Mpc and ``a'/a = a H``

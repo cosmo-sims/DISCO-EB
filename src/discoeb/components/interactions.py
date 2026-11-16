@@ -1,13 +1,13 @@
 """Interactions between species: components that write other components' derivatives.
 
-An :class:`~discoeb.components.component.Interaction` owns no state. It reads the
+An :class:`~discoeb.components._component.Interaction` owns no state. It reads the
 species' quantities and adds to their derivatives, so a model couples two
 species by listing the interaction beside them.
 """
 
 from __future__ import annotations
 
-from .component import Interaction, contributes
+from ._component import Interaction, contributes
 
 
 class ThomsonScattering(Interaction):

@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..components.component import REQUIRED, declarations_of
+from ..components._component import REQUIRED, declarations_of
 
 
 class _ParamCosmology(NamedTuple):

@@ -1,7 +1,7 @@
 """The expansion history: density coefficients, the Friedmann sum and the conformal time.
 
 The background uses the same species as the perturbations.
-:meth:`~discoeb.components.component.Equations.evaluate` computes the kernel's Friedmann sum
+:meth:`~discoeb.components._component.Equations.evaluate` computes the kernel's Friedmann sum
 ``grho`` on JAX arrays at ``a``, which gives the expansion rate the
 conformal-time quadrature and the thermal history integrate
 (:func:`expansion_rate`, :func:`dtauda`). :func:`density_parameters` closes
@@ -18,7 +18,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..components.component import Equations, derive_parameters
+from ..components._component import Equations, derive_parameters
 from ..components.gravity import (  # noqa: F401 (the density constants, re-exported)
     C2OK,
     GRHOG_PER_TCMB4,
@@ -27,8 +27,8 @@ from ..components.gravity import (  # noqa: F401 (the density constants, re-expo
 )
 from ..components.recombination import recombination_model
 from ..models import DEFAULT_SPEC
+from ..models._cosmology import _as_cosmology, _ParamCosmology
 from ..models._model import ModelSpec
-from ..models.cosmology import _as_cosmology, _ParamCosmology
 
 
 def background_model(model: ModelSpec | None = None) -> Equations:
@@ -58,7 +58,7 @@ def density_parameters(param, xp=jnp, model: ModelSpec | None = None) -> dict:
     """The parameters of ``model`` for a parameter dictionary, keyed as the components name them.
 
     The keys pass through, and every derived parameter comes from its
-    declaration (:class:`~discoeb.components.component.Parameter`): ``grhom`` the
+    declaration (:class:`~discoeb.components._component.Parameter`): ``grhom`` the
     critical density, ``grhog``, ``grhornomass``, ``grhoc``, ``grhob`` and
     ``grhok`` the photons, massless neutrinos, cold dark matter, baryons and
     curvature, ``grhor_nu``, ``n_mnu`` and ``amnu`` the massive neutrinos.
@@ -176,7 +176,7 @@ def _background_solution(d, model: ModelSpec | None = None):
 
     A model may also evolve background states of its own: a scalar field,
     a density that decays (:meth:`Equations.stages
-    <discoeb.components.component.Equations.stages>` finds them). Their rates in ``ln a``,
+    <discoeb.components._component.Equations.stages>` finds them). Their rates in ``ln a``,
     ``y' / (a'/a)``, are then integrated along the grid with the time by
     fixed Runge-Kutta steps of 0.005 in ``ln a``, from the states' initial
     conditions at :data:`A_START`. ``states`` holds each one on the grid.

@@ -2,13 +2,15 @@
 
 DISCO-EB solves the background, the thermal history (RECFAST with
 reionization) and the linear perturbation hierarchy of each wave mode on the
-GPU. :mod:`discoeb.components.component` holds the component framework,
-:mod:`discoeb.components.species`, :mod:`discoeb.components.interactions` and
-:mod:`discoeb.components.gravity` the equations, :mod:`discoeb.models` the cosmological
-models built from them (``LCDM``, ``W0WACDM``, ...),
-:mod:`discoeb.components.recombination` the thermal history, :mod:`discoeb.solver.background`
-the expansion history and :mod:`discoeb.solver.kernel` the batching and modax
-launches behind :func:`solve_eb` and the matter power spectrum. The CMB code lives in the separate package ``discocmb`` (DISCO-CMB) and turns
+GPU. :mod:`discoeb.components` holds the component framework and the
+equations (:mod:`~discoeb.components.species`,
+:mod:`~discoeb.components.interactions`, :mod:`~discoeb.components.gravity`,
+and the thermal history in :mod:`~discoeb.components.recombination`),
+:mod:`discoeb.models` the cosmological models built from them (``LCDM``,
+``W0WACDM``, ...), :mod:`discoeb.solver` the expansion history, the batching
+and the modax launches behind :func:`solve_eb`, and :mod:`discoeb.observables`
+the matter power spectrum. Modules with a leading underscore are private.
+The CMB code lives in the separate package ``discocmb`` (DISCO-CMB) and turns
 this output into angular power spectra: line-of-sight sources, grids,
 transfer functions, projection and lensing. It imports only from this
 package itself. DISCO-EB does not depend on it.
@@ -57,34 +59,33 @@ a hashable form.
 # First: double precision and JAX's GPU memory policy, before anything builds
 # an array or touches the device.
 from . import _jax_config  # noqa: F401
-from .components.component import Component
+from .components import Component
 from .components.recombination import THERMO_ERROR_WEIGHT
 from .models import (
+    DIFFERENTIABLE_PARAMETERS,
     LCDM,
     LCDM_MNU,
     W0WACDM,
     W0WACDM_MNU,
     Model,
     ModelSpec,
+    as_cosmology,
 )
-from .models.cosmology import DIFFERENTIABLE_PARAMETERS, as_cosmology
-from .observables.power_spectrum import (
-    matter_power_spectrum,
-)
-from .solver.background import TAU_START, background_history, density_coefficients
-from .solver.kernel import (
+from .observables import matter_power_spectrum
+from .solver import (
     DIRECTED_NAMES,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
     PERTURB_RTOL,
-    joint_model,
-)
-from .solver.solver import (
+    TAU_START,
     EBSolution,
+    background_history,
     conformal_ages,
+    density_coefficients,
     differentiable_parameters,
     directed_inputs,
+    joint_model,
     solve_eb,
     state_names,
 )
