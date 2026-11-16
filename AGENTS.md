@@ -121,9 +121,15 @@ DISCO-CMB's `compute_cl` passes. Grids read
 change that seems to need a private name should add to `__init__.py` instead;
 changing `__init__.py` means running DISCO-CMB's tests too.
 
-The codebase is organized into modular components in `src/discoeb/`:
+The codebase is organized in four folders under `src/discoeb/` (2026-11-16),
+which import each other in one direction, `components` <- `models` <-
+`solver`, with `observables` importing none: `components/` (the framework,
+species, gravity, interactions, recombination), `models/` (the model classes
+and cosmologies), `solver/` (background, kernel, sensitivities, `solve_eb`)
+and `observables/` (the matter power spectrum). Each folder's `__init__.py`
+re-exports its public names. The modules:
 
-1. **component.py** - Right-hand sides from components, by dependency injection
+1. **components/component.py** - Right-hand sides from components, by dependency injection
    - A `Component` declares its settings (`LMAX_G = Setting(15)`, loaded from
      `DISCO_LMAX_G` when the class is created, overridable as a constructor
      argument) and its state as class attributes (`etak = State()`,
@@ -223,7 +229,7 @@ The codebase is organized into modular components in `src/discoeb/`:
    - Host-only tests: `tests/test_component.py`; a species with a parameter
      of its own, added from the test file alone: `tests/test_new_species.py`
 
-2. **species.py, interactions.py, gravity.py** - The Einstein-Boltzmann system
+2. **components/species.py, interactions.py, gravity.py** - The Einstein-Boltzmann system
    as components (`eb_model.py` was split into these on 2026-11-12)
    - `gravity.py`: `Kinematics` (`a2`, `inv_a`, `inv_a2`, `inv_tau`,
      `inv_k2`), `Background` (the Friedmann equation: `adotoa = sqrt(grho/3 -
@@ -278,7 +284,7 @@ The codebase is organized into modular components in `src/discoeb/`:
      model's `with_settings(LMAX_G=...)`, or rebind `Photons.LMAX_G`
    - Host-only tests: `tests/test_eb_model.py`
 
-3. **models.py** - Cosmological models built from those components
+3. **models/models.py** - Cosmological models built from those components
    - Since 2026-11-15 a model is a class and a cosmology an instance of it:
      `class LCDM(Model, Kinematics, Background, ..., ThomsonScattering)`,
      `class LCDM_MNU(LCDM, MassiveNeutrinos, name="LCDM+mnu")`, then
@@ -332,7 +338,7 @@ The codebase is organized into modular components in `src/discoeb/`:
      `PerturbationLayout` any more (removed 2026-11-12): indices come from
      `model.state_names()` or the joint model's `index`
 
-4. **background.py** - The expansion history
+4. **solver/background.py** - The expansion history
    - `density_parameters(param, xp, model)` (every parameter the model
      declares, derived ones by `derive_parameters`; the `closes_budget`
      parameter is the root of `3 adotoa(a=1)^2 = grhom`, one secant step
@@ -358,7 +364,7 @@ The codebase is organized into modular components in `src/discoeb/`:
    - The momentum bins (`neutrino_momentum_bins`, cached) live in `util.py`
      beside the Gauss-Laguerre rule
 
-5. **cosmology.py** - Cosmologies as the solver reads them: parameter
+5. **models/cosmology.py** - Cosmologies as the solver reads them: parameter
    dictionaries (`_cosmology_dictionary` of an instance is its `to_dict()`),
    their hashable form `_ParamCosmology` (`as_cosmology`, which takes an
    instance too and keeps no model), and
@@ -374,7 +380,7 @@ The codebase is organized into modular components in `src/discoeb/`:
    `Omegak`, `Nmnu`, `k_p`, ...). `_ParamCosmology.extra` holds declared
    keys beyond its fixed fields. `ModelSpec.check` skips traced values
 
-6. **recombination.py** - Recombination history, inside the joint kernel
+6. **components/recombination.py** - Recombination history, inside the joint kernel
    - RECFAST's `(x_H, x_He, T_m)`, `ln a` and the optical depth `kappa` are
      five states of every trajectory, the `Recombination` component, a block
      of a modax `Hierarchy` stepping ahead of the perturbations
@@ -405,7 +411,7 @@ The codebase is organized into modular components in `src/discoeb/`:
    - The RECFAST constants live here too. **Recfast license** (UBC, not MIT):
      see the file header
 
-7. **kernel.py** - The joint kernel and the launch
+7. **solver/kernel.py** - The joint kernel and the launch
    - Solved by modax's Rodas5P numba-CUDA kernel, one wave mode per thread, for
      a batch of cosmologies at once. `joint_kernel(model, extra)` builds the
      modax `Hierarchy` (recombination block ahead of the perturbations) once
@@ -452,7 +458,7 @@ The codebase is organized into modular components in `src/discoeb/`:
      quantities such as `R` compiled by `Equations.build_function`, cached per
      model and set of names (`_keep_hook`)
 
-8. **sensitivities.py** - `_kept_values`: the hooked launch as a
+8. **solver/sensitivities.py** - `_kept_values`: the hooked launch as a
    `jax.custom_jvp` in a pytree of variables that `to_inputs` maps to the
    layout's directed inputs (`solve_eb` passes the cosmology columns and
    `z_re`). Its rule (`symbolic_zeros=True`) replicates every trajectory once
@@ -473,7 +479,7 @@ The codebase is organized into modular components in `src/discoeb/`:
    closes over no JAX array: JAX traces it lazily, after the enclosing
    `jit` trace, so a captured tracer breaks `jit(grad(jit(f)))`
 
-9. **solver.py** - `solve_eb(cosmologies, k, tau, *, keep=...)` solves
+9. **solver/solver.py** - `solve_eb(cosmologies, k, tau, *, keep=...)` solves
    one cosmology or a list of one model's and records only the named quantities at the given times, so the
    device holds `n_k * n_cosmo * n_tau * len(keep)` numbers and never the
    history. Returns an `EBSolution` (`solution["R"]` is `(n_cosmo, n_k,
@@ -498,7 +504,7 @@ The codebase is organized into modular components in `src/discoeb/`:
    off at every step tried, so those three are held. Also `solve_perturbation_history_batch`,
    `directed_inputs`, `conformal_ages`, `state_names(model)`
 
-10. **power_spectrum.py** - `matter_power_spectrum(k, *, clxc, clxb,
+10. **observables/power_spectrum.py** - `matter_power_spectrum(k, *, clxc, clxb,
     z, vb, tau0, Omegam, Omegab, A_s, n_s, k_p)`, JAX only, takes arrays and
     no solution or batch: the four quantities today `(..., n_k)` from a
     `solve_eb(..., keep=("clxc", "clxb", "z", "vb"),
@@ -545,7 +551,7 @@ The codebase is organized into modular components in `src/discoeb/`:
      against the dense core's 238, which had none). The fill and the
      diagonals have slots of their own in modax, written by no column of `J`
 
-12. **util.py** - the neutrino momentum bins and the generalised
+12. **components/util.py** - the neutrino momentum bins and the generalised
     Gauss-Laguerre rule they use for `nqmax > 5`
 
 ### Computation Pipeline

@@ -1,6 +1,6 @@
 """Interactions between species: components that write other components' derivatives.
 
-An :class:`~discoeb.component.Interaction` owns no state. It reads the
+An :class:`~discoeb.components.component.Interaction` owns no state. It reads the
 species' quantities and adds to their derivatives, so a model couples two
 species by listing the interaction beside them.
 """

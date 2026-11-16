@@ -32,7 +32,7 @@ MATTER_THERMO_WEIGHT = 0.1
 
 
 def _model(name):
-    from discoeb.models import LCDM, LCDM_MNU, W0WACDM
+    from discoeb.models.models import LCDM, LCDM_MNU, W0WACDM
 
     return {"lcdm": LCDM, "w0wacdm": W0WACDM, "lcdm-mnu": LCDM_MNU}[name]
 
@@ -72,7 +72,7 @@ def _matter_power_and_steps(model, cosmologies, **options):
 
     import jax
 
-    from discoeb.kernel import _solve_batch
+    from discoeb.solver.kernel import _solve_batch
 
     batch = cosmologies_of(model, cosmologies)
     pk = np.asarray(jax.block_until_ready(_matter_power(SWEEP_K, batch, **options)))
@@ -161,7 +161,7 @@ def test_sweep_is_stable(swept):
     ``max_steps`` of 20000.
     """
 
-    from discoeb.kernel import PERTURB_MAX_STEPS
+    from discoeb.solver.kernel import PERTURB_MAX_STEPS
 
     name, cosmologies, pk, steps = swept
     assert pk.shape == (len(cosmologies), len(SWEEP_K))
@@ -234,7 +234,7 @@ def test_dark_energy_crossing_minus_one():
     miss CLASS by 5.5e-2 to 9.9e-1 (measured 2026-11-13).
     """
 
-    from discoeb.kernel import PERTURB_MAX_STEPS
+    from discoeb.solver.kernel import PERTURB_MAX_STEPS
 
     cosmologies = [c for c in sweep("w0wacdm") if _crosses_phantom_divide(c)]
     assert CROSSING_COSMOLOGY in cosmologies
@@ -264,10 +264,10 @@ def _converged_matter_power(model, cosmology):
     ``compute_matter_power_spectrum`` does. Also returns the loop steps.
     """
 
-    from discoeb.background import TAU_START, density_coefficients
-    from discoeb.cosmology import as_cosmology
-    from discoeb.kernel import _solve_batch
-    from discoeb.solver import conformal_ages
+    from discoeb.models.cosmology import as_cosmology
+    from discoeb.solver.background import TAU_START, density_coefficients
+    from discoeb.solver.kernel import _solve_batch
+    from discoeb.solver.solver import conformal_ages
 
     tau_today = float(conformal_ages(cosmology).max())
     (hist, stats), prepared, k_sorted = _solve_batch(

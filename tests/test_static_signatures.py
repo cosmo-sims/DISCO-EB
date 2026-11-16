@@ -16,7 +16,7 @@ import pytest
 
 USER_CODE = '''
 from discoeb import LCDM, W0WACDM
-from discoeb.species import MassiveNeutrinos
+from discoeb.components.species import MassiveNeutrinos
 
 good = LCDM(
     Omegam=0.31, Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,

@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from conftest import HOST
 
-from discoeb.component import (
+from discoeb.components.component import (
     Component,
     Equations,
     Interaction,

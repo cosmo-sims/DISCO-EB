@@ -15,10 +15,10 @@ import pytest
 from conftest import _cuda_available, cosmologies_of
 from jax.typing import ArrayLike
 
-from discoeb.component import Derived, Parameter, Species, State
-from discoeb.kernel import joint_model
-from discoeb.models import LCDM
-from discoeb.species import CosmologicalConstant
+from discoeb.components.component import Derived, Parameter, Species, State
+from discoeb.components.species import CosmologicalConstant
+from discoeb.models.models import LCDM
+from discoeb.solver.kernel import joint_model
 
 
 class Quintessence(Species):
@@ -88,8 +88,8 @@ LAM = 1.0
 
 
 def _densities(model, cosmology):
-    from discoeb.background import density_parameters
-    from discoeb.cosmology import _columns
+    from discoeb.models.cosmology import _columns
+    from discoeb.solver.background import density_parameters
 
     columns = _columns([cosmology], held=False, keys=model.parameter_keys())
     return {k: v[0] for k, v in density_parameters(columns, model=model).items()}
@@ -117,7 +117,7 @@ def test_shooting_closes_the_budget_of_a_rolling_field():
     import jax
     import jax.numpy as jnp
 
-    from discoeb.background import _background_solution, background_model
+    from discoeb.solver.background import _background_solution, background_model
 
     d = _densities(QCDM, {**COSMOLOGY, "lam": LAM})
     a, tau, states = _background_solution(d, QCDM)
@@ -174,7 +174,7 @@ def _growth(model, cosmology):
 
     import jax.numpy as jnp
 
-    from discoeb.background import _background_solution, background_model
+    from discoeb.solver.background import _background_solution, background_model
 
     d = _densities(model, cosmology)
     a, _, states = _background_solution(d, model)

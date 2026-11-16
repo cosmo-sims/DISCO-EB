@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 from conftest import HOST, MODELS, ConstantThermalHistory, state_index
 
-from discoeb.kernel import N_PARAM, PARAM_COLUMNS
-from discoeb.species import MassiveNeutrinos
+from discoeb.components.species import MassiveNeutrinos
+from discoeb.solver.kernel import N_PARAM, PARAM_COLUMNS
 
 sparse_direct = pytest.importorskip("modax._sparse_direct")
 colour_sparsity = pytest.importorskip("modax._sparsity").colour_sparsity

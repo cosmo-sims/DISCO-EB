@@ -2,12 +2,12 @@
 
 DISCO-EB solves the background, the thermal history (RECFAST with
 reionization) and the linear perturbation hierarchy of each wave mode on the
-GPU. :mod:`discoeb.component` holds the component framework,
-:mod:`discoeb.species`, :mod:`discoeb.interactions` and
-:mod:`discoeb.gravity` the equations, :mod:`discoeb.models` the cosmological
+GPU. :mod:`discoeb.components.component` holds the component framework,
+:mod:`discoeb.components.species`, :mod:`discoeb.components.interactions` and
+:mod:`discoeb.components.gravity` the equations, :mod:`discoeb.models` the cosmological
 models built from them (``LCDM``, ``W0WACDM``, ...),
-:mod:`discoeb.recombination` the thermal history, :mod:`discoeb.background`
-the expansion history and :mod:`discoeb.kernel` the batching and modax
+:mod:`discoeb.components.recombination` the thermal history, :mod:`discoeb.solver.background`
+the expansion history and :mod:`discoeb.solver.kernel` the batching and modax
 launches behind :func:`solve_eb` and the matter power spectrum. The CMB code lives in the separate package ``discocmb`` (DISCO-CMB) and turns
 this output into angular power spectra: line-of-sight sources, grids,
 transfer functions, projection and lensing. It imports only from this
@@ -57,18 +57,10 @@ a hashable form.
 # First: double precision and JAX's GPU memory policy, before anything builds
 # an array or touches the device.
 from . import _jax_config  # noqa: F401
-from .background import TAU_START, background_history, density_coefficients
-from .component import Component
-from .cosmology import DIFFERENTIABLE_PARAMETERS, as_cosmology
-from .kernel import (
-    DIRECTED_NAMES,
-    PERTURB_ATOL,
-    PERTURB_FIRST_STEP,
-    PERTURB_MAX_STEPS,
-    PERTURB_RTOL,
-    joint_model,
-)
-from .models import (
+from .components.component import Component
+from .components.recombination import THERMO_ERROR_WEIGHT
+from .models.cosmology import DIFFERENTIABLE_PARAMETERS, as_cosmology
+from .models.models import (
     LCDM,
     LCDM_MNU,
     W0WACDM,
@@ -76,11 +68,19 @@ from .models import (
     Model,
     ModelSpec,
 )
-from .power_spectrum import (
+from .observables.power_spectrum import (
     matter_power_spectrum,
 )
-from .recombination import THERMO_ERROR_WEIGHT
-from .solver import (
+from .solver.background import TAU_START, background_history, density_coefficients
+from .solver.kernel import (
+    DIRECTED_NAMES,
+    PERTURB_ATOL,
+    PERTURB_FIRST_STEP,
+    PERTURB_MAX_STEPS,
+    PERTURB_RTOL,
+    joint_model,
+)
+from .solver.solver import (
     EBSolution,
     conformal_ages,
     differentiable_parameters,

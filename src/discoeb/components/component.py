@@ -80,7 +80,7 @@ and the component provides ``x = x_nominal + eps * dir_x``, so a
 sensitivity in ``eps`` is the derivative along ``dir``. One parameter
 closes the density budget (``Derived(closes_budget=True)``, ``grhov`` in
 the built-in models): the background solves for it so that the model expands at ``H0``
-today (:func:`discoeb.background.density_parameters`).
+today (:func:`discoeb.solver.background.density_parameters`).
 Two components of a model may declare one name only through the same
 declaration. A ``check`` classmethod whose parameters name
 cosmology keys rejects values the component cannot represent.
@@ -776,7 +776,7 @@ class Gravity(Component):
     """A component of the theory of gravity: the expansion rate, the metric and its constraints.
 
     The species read what these provide and never each other
-    (:data:`discoeb.gravity.GRAVITY_INTERFACE`), so a model changes its
+    (:data:`discoeb.components.gravity.GRAVITY_INTERFACE`), so a model changes its
     theory of gravity by replacing them.
     """
 

@@ -2,7 +2,7 @@
 
 A model is a class whose bases are its components, and an instance of it is
 a cosmology: the model with values for its parameters. The components declare
-the parameters (:func:`~discoeb.component.Parameter`), so the constructor
+the parameters (:func:`~discoeb.components.component.Parameter`), so the constructor
 takes exactly the model's, and a type checker sees them::
 
     class LCDM_MNU(LCDM, MassiveNeutrinos):
@@ -14,7 +14,7 @@ takes exactly the model's, and a type checker sees them::
 
 A model's bases are its components in state order, a model among them
 standing for its own components: ``LCDM_MNU`` is LCDM's components, then
-:class:`~discoeb.species.MassiveNeutrinos`. :meth:`Model.swap`,
+:class:`~discoeb.components.species.MassiveNeutrinos`. :meth:`Model.swap`,
 :meth:`Model.add`, :meth:`Model.remove` and :meth:`Model.with_settings`
 derive models at run time; a type checker sees only those written as class
 statements.
@@ -29,7 +29,7 @@ from typing import Any, ClassVar
 
 import jax
 
-from .component import (
+from ..components.component import (
     REQUIRED,
     Component,
     Equations,
@@ -37,8 +37,7 @@ from .component import (
     declarations_of,
     declared_parameters,
 )
-from .cosmology import DIFFERENTIABLE_PARAMETERS, _cosmology_dictionary, _is_concrete
-from .gravity import (
+from ..components.gravity import (
     GRAVITY_INTERFACE,
     SUMS,
     AdiabaticMode,
@@ -47,9 +46,9 @@ from .gravity import (
     Kinematics,
     Metric,
 )
-from .interactions import ThomsonScattering
-from .recombination import Recombination
-from .species import (
+from ..components.interactions import ThomsonScattering
+from ..components.recombination import Recombination
+from ..components.species import (
     Baryons,
     ColdDarkMatter,
     CosmologicalConstant,
@@ -59,6 +58,7 @@ from .species import (
     Photons,
     RadiationStreaming,
 )
+from .cosmology import DIFFERENTIABLE_PARAMETERS, _cosmology_dictionary, _is_concrete
 
 __all__ = [
     "DEFAULT_MODEL",
@@ -200,11 +200,11 @@ class ModelSpec:
         ]
 
     def build(self, thermal_history: Component | None = None, extra=()) -> Equations:
-        """Return the component :class:`~discoeb.component.Equations` of this cosmological model.
+        """Return the component :class:`~discoeb.components.component.Equations` of this cosmological model.
 
         ``thermal_history`` provides ``a``, ``opacity``, ``cs2``, ``rhonu`` and
         ``pnu`` as functions of ``tau``. In the solve it is the recombination
-        block of :func:`discoeb.kernel.joint_kernel`, in a test anything.
+        block of :func:`discoeb.solver.kernel.joint_kernel`, in a test anything.
         Without it the model still gives the state layout, the initial
         conditions and the sparsity pattern. ``extra`` lists component
         instances to append (the line-of-sight sources of DISCO-CMB).
@@ -220,10 +220,10 @@ class ModelSpec:
         """Return the parameters the model's components declare, by name.
 
         They include those of the recombination block every solve appends
-        (:func:`discoeb.kernel.joint_model`) and of the component classes
+        (:func:`discoeb.solver.kernel.joint_model`) and of the component classes
         ``extra``. The keys among them make up the cosmology dictionary
         (:meth:`parameter_keys`), the columns the kernel's parameter row
-        (:func:`discoeb.kernel.parameter_layout`).
+        (:func:`discoeb.solver.kernel.parameter_layout`).
         """
 
         return declared_parameters((*self.components, Recombination, *extra))
@@ -231,7 +231,7 @@ class ModelSpec:
     def parameter_keys(self) -> dict[str, object]:
         """Return the cosmology-dictionary keys of :meth:`parameters` and their defaults.
 
-        :data:`~discoeb.component.REQUIRED` marks a key every cosmology gives.
+        :data:`~discoeb.components.component.REQUIRED` marks a key every cosmology gives.
         """
 
         return {n: p.default for n, p in self.parameters().items() if p.is_key}
@@ -249,7 +249,7 @@ class ModelSpec:
         sweeps rather than ``nvar + 1``. And it orders the pattern,
         factorises it symbolically and compiles a sparse LU and a pair of
         sparse triangular solves for that exact structure.
-        :meth:`Equations.sparsity <discoeb.component.Equations.sparsity>` traces the
+        :meth:`Equations.sparsity <discoeb.components.component.Equations.sparsity>` traces the
         pattern through the equations, so the tridiagonal free-streaming
         tails and the Einstein constraints that tie the metric, the fluids
         and the lowest multipoles together come straight from the code that
@@ -270,12 +270,12 @@ class ModelSpec:
         """Raise ``ValueError`` if ``cosmology`` sets parameters this model ignores.
 
         ``cosmology`` is a parameter dictionary or a cosmology object
-        (:func:`~discoeb.cosmology.as_cosmology`). A key that another
+        (:func:`~discoeb.models.cosmology.as_cosmology`). A key that another
         component declares but none of this model's must keep its declared
         default: a model without the dark-energy fluid needs ``w_DE_0 = -1``
         and ``w_DE_a = 0``, one without massive neutrinos ``Nmnu = 0``. Then
         each component's ``check`` hook runs on the keys it names
-        (:meth:`DarkEnergy.check <discoeb.species.DarkEnergy.check>` needs
+        (:meth:`DarkEnergy.check <discoeb.components.species.DarkEnergy.check>` needs
         ``w != -1``). A traced value, under ``jit``, has nothing to compare
         yet and is skipped.
         """
@@ -348,10 +348,10 @@ class Model(Recombination):
     The parameters the components declare are the keyword arguments of its
     constructor: required without a default, optional with one. A type
     checker reads them off the declarations (the ``dataclass_transform`` on
-    :class:`~discoeb.component.Component`), and ``help``, IPython and the
+    :class:`~discoeb.components.component.Component`), and ``help``, IPython and the
     class docstring list them. Every model has the recombination block,
     whose ``tau_reio`` it inherits from
-    :class:`~discoeb.recombination.Recombination`.
+    :class:`~discoeb.components.recombination.Recombination`.
 
     Class keywords set component settings, ``class Coarse(LCDM, LMAX_G=10)``,
     and ``name=`` the name errors and the kernel cache use. ``LCDM.spec`` is
@@ -513,7 +513,7 @@ class Model(Recombination):
 
     @classmethod
     def build(cls, thermal_history: Component | None = None, extra=()) -> Equations:
-        """Return the model's :class:`~discoeb.component.Equations` (:meth:`ModelSpec.build`)."""
+        """Return the model's :class:`~discoeb.components.component.Equations` (:meth:`ModelSpec.build`)."""
 
         return cls.spec.build(thermal_history, extra)
 
@@ -656,8 +656,8 @@ class W0WACDM_MNU(W0WACDM, MassiveNeutrinos, name="w0waCDM+mnu"):
 DEFAULT_MODEL = W0WACDM_MNU
 """The model a bare parameter dictionary stands for where nothing names one.
 
-:func:`~discoeb.background.density_coefficients`,
-:func:`~discoeb.background.background_history`,
+:func:`~discoeb.solver.background.density_coefficients`,
+:func:`~discoeb.solver.background.background_history`,
 :func:`~discoeb.solver.conformal_ages` and
 :func:`~discoeb.solver.directed_inputs` take a cosmology, or a dictionary
 for this model. Its components declare every built-in parameter, and on a

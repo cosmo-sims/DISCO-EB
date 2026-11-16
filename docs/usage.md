@@ -1,6 +1,6 @@
 # Models
 
-A model is a class whose bases are its components: the species it evolves (`discoeb.species`), the interactions between them (`discoeb.interactions`) and the metric and Friedmann sum (`discoeb.gravity`). An instance of a model is a cosmology. `discoeb.models` defines `LCDM` and `W0WACDM`, each with a massive-neutrino variant (`LCDM_MNU`, `W0WACDM_MNU`).
+A model is a class whose bases are its components: the species it evolves (`discoeb.components.species`), the interactions between them (`discoeb.components.interactions`) and the metric and Friedmann sum (`discoeb.components.gravity`). An instance of a model is a cosmology. `discoeb.models` defines `LCDM` and `W0WACDM`, each with a massive-neutrino variant (`LCDM_MNU`, `W0WACDM_MNU`).
 
 The components declare the parameters, so a model's constructor takes exactly its own, by keyword. A type checker reads them from the declarations and flags a missing or unknown one, as the constructor does at run time. `help(LCDM)` lists them. A cosmology is immutable: `planck.replace(H0=70.0)` gives a new one. Dictionaries go through `LCDM(**params)`, or `LCDM.from_dict(params)` for one written for another model, whose extra keys must keep their defaults.
 
@@ -8,7 +8,7 @@ A new model is a class statement. A model among the bases stands for its compone
 
 ```python
 from discoeb.models import LCDM
-from discoeb.species import MassiveNeutrinos
+from discoeb.components.species import MassiveNeutrinos
 
 class LCDM_MNU(LCDM, MassiveNeutrinos):
     """LCDM with massive neutrinos."""

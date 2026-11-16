@@ -1,7 +1,7 @@
 """A background state added from outside: the equations split the blocks themselves.
 
 ``CosmicTime`` integrates ``dt = a dtau``. Its rate reads no wave number, so
-:meth:`Equations.stages <discoeb.component.Equations.stages>` puts it in the
+:meth:`Equations.stages <discoeb.components.component.Equations.stages>` puts it in the
 background block beside the recombination history, the host integrates it
 from the start of the background, and the kernel carries it on from there.
 """
@@ -10,9 +10,9 @@ import numpy as np
 import pytest
 from conftest import _cuda_available, cosmologies_of
 
-from discoeb.component import Component, Interaction, State
-from discoeb.kernel import joint_model
-from discoeb.models import LCDM
+from discoeb.components.component import Component, Interaction, State
+from discoeb.models.models import LCDM
+from discoeb.solver.kernel import joint_model
 
 
 class CosmicTime(Component):
@@ -67,12 +67,12 @@ def test_the_host_integrates_the_states_of_the_background():
 
     import jax.numpy as jnp
 
-    from discoeb.background import (
+    from discoeb.models.cosmology import _columns
+    from discoeb.solver.background import (
         _background_solution,
         background_endpoints,
         density_parameters,
     )
-    from discoeb.cosmology import _columns
 
     columns = _columns([COSMOLOGY], held=False, keys=LCDM_T.parameter_keys())
     densities = {k: v[0] for k, v in density_parameters(columns, model=LCDM_T).items()}

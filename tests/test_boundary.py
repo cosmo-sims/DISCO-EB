@@ -19,7 +19,7 @@ def test_the_interface_exports_what_it_lists():
 
 
 def test_the_package_does_not_import_discocmb():
-    for path in sorted(PACKAGE.glob("*.py")):
+    for path in sorted(PACKAGE.rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.ImportFrom):
                 names = [node.module or ""]
@@ -28,5 +28,5 @@ def test_the_package_does_not_import_discocmb():
             else:
                 continue
             assert not any(n.split(".")[0] == "discocmb" for n in names), (
-                f"discoeb.{path.stem} imports DISCO-CMB"
+                f"{path.relative_to(PACKAGE)} imports DISCO-CMB"
             )

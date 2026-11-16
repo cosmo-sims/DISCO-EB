@@ -11,9 +11,9 @@ import numpy as np
 import pytest
 from conftest import HOST, MODELS, ConstantThermalHistory, state_index
 
-from discoeb.kernel import N_PARAM, PARAM_COLUMNS, make_initial_states
-from discoeb.models import LCDM
-from discoeb.species import DarkEnergy, MassiveNeutrinos, Photons
+from discoeb.components.species import DarkEnergy, MassiveNeutrinos, Photons
+from discoeb.models.models import LCDM
+from discoeb.solver.kernel import N_PARAM, PARAM_COLUMNS, make_initial_states
 
 
 def build(cosmology_model):
@@ -120,8 +120,8 @@ def test_a_hierarchy_needs_an_octupole():
 
 
 def test_models_derive_from_each_other():
-    from discoeb.models import LCDM, LCDM_MNU, W0WACDM, Model
-    from discoeb.species import CosmologicalConstant
+    from discoeb.components.species import CosmologicalConstant
+    from discoeb.models.models import LCDM, LCDM_MNU, W0WACDM, Model
 
     assert W0WACDM.spec.components.index(DarkEnergy) == LCDM.spec.components.index(
         CosmologicalConstant
@@ -161,7 +161,7 @@ BASE = dict(
 
 
 def test_a_model_rejects_a_cosmology_it_cannot_represent():
-    from discoeb.models import LCDM, LCDM_MNU, W0WACDM
+    from discoeb.models.models import LCDM, LCDM_MNU, W0WACDM
 
     LCDM(**BASE)
     LCDM_MNU(**BASE, Nmnu=1.0, mnu=0.06)
@@ -185,7 +185,7 @@ def test_a_model_rejects_a_cosmology_it_cannot_represent():
     # it for the solve, which raises if it is differentiated
     import jax
 
-    from discoeb.models import _batch_of
+    from discoeb.models.models import _batch_of
 
     held = jax.jit(lambda w: LCDM.from_dict({**BASE, "w_DE_0": w}))(-1.0)
     assert "w_DE_0" not in held.to_dict() and "w_DE_0" in held._held
@@ -198,7 +198,7 @@ def test_a_cosmology_is_an_immutable_pytree_of_its_parameters():
     import jax
     import jax.numpy as jnp
 
-    from discoeb.models import LCDM
+    from discoeb.models.models import LCDM
 
     planck = LCDM(**BASE)
     assert isinstance(planck, LCDM) and planck.H0 == 67.0 and planck.k_p == 0.05
@@ -227,7 +227,7 @@ def test_a_cosmology_is_an_immutable_pytree_of_its_parameters():
 
 
 def test_a_solve_takes_cosmologies_of_one_model():
-    from discoeb.models import LCDM, W0WACDM, _batch_of
+    from discoeb.models.models import LCDM, W0WACDM, _batch_of
 
     planck = LCDM(**BASE)
     batch = _batch_of([planck, planck.replace(H0=70.0)])
@@ -297,7 +297,7 @@ def test_the_initial_state_and_sparsity_come_from_the_components():
 
 
 def test_make_initial_states_uses_the_model():
-    from discoeb.cosmology import _as_cosmology
+    from discoeb.models.cosmology import _as_cosmology
 
     cosmology = _as_cosmology(
         dict(
@@ -318,7 +318,7 @@ def test_make_initial_states_uses_the_model():
             k_p=0.05,
         )
     )
-    from discoeb.kernel import joint_model
+    from discoeb.solver.kernel import joint_model
 
     model = joint_model(LCDM)
     y0 = make_initial_states(cosmology, np.array([1e-2, 1e-1]), model, lna_start=-15.0)

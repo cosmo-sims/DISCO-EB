@@ -2,7 +2,7 @@
 
 :func:`solve_eb` is the interface the CMB code uses. It runs one modax launch
 over every (wave mode, cosmology) pair and records only the named quantities,
-differentiable in :data:`~discoeb.cosmology.DIFFERENTIABLE_PARAMETERS`.
+differentiable in :data:`~discoeb.models.cosmology.DIFFERENTIABLE_PARAMETERS`.
 """
 
 import functools
@@ -13,14 +13,23 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .background import TAU_START, background_endpoints
-from .cosmology import (
+from ..components.recombination import THERMO_ERROR_WEIGHT
+from ..models.cosmology import (
     DIFFERENTIABLE_PARAMETERS,
     UNUSED_BY_THE_SOLVE,
     _as_batch,
     _columns,
     _is_concrete,
 )
+from ..models.models import (
+    DEFAULT_SPEC,
+    CosmologyBatch,
+    Model,
+    ModelSpec,
+    _batch_of,
+    _spec_of,
+)
+from .background import TAU_START, background_endpoints
 from .kernel import (
     DIRECTED_NAMES,
     N_COMMON_DIRECTED,
@@ -32,8 +41,6 @@ from .kernel import (
     _solve_batch,
     parameter_layout,
 )
-from .models import DEFAULT_SPEC, CosmologyBatch, Model, ModelSpec, _batch_of, _spec_of
-from .recombination import THERMO_ERROR_WEIGHT
 from .sensitivities import _directed_inputs, _kept_values
 
 
@@ -170,13 +177,13 @@ def solve_eb(
         amounts to the hierarchy's full history.
     extra
         Components to append to the model for the hook: stateless
-        :class:`~discoeb.component.Component` subclasses whose providers read the
+        :class:`~discoeb.components.component.Component` subclasses whose providers read the
         model's quantities and add their own (the line-of-sight sources of
         :mod:`discocmb.cmb`). The hook cache tells them apart by class.
     inputs
         The ``(n_cosmologies, n_directed)`` directed inputs of the model
         (:func:`directed_inputs`, in the order of its
-        :func:`~discoeb.kernel.parameter_layout`), or only the first nine
+        :func:`~discoeb.solver.kernel.parameter_layout`), or only the first nine
         every built-in model shares (the five background densities and the
         recombination block's ``YHe``, ``Tcmb``, ``H0``, ``Omegab``),
         replacing those the cosmologies imply. They are differentiable in
@@ -196,7 +203,7 @@ def solve_eb(
     The hook compiles once per batch shape and set of names, like the
     right-hand side. Everything before the launch is JAX: the background
     endpoints, the parameter rows and the initial states
-    (:func:`~discoeb.kernel._pack`), so ``solve_eb`` traces under ``jit``, and
+    (:func:`~discoeb.solver.kernel._pack`), so ``solve_eb`` traces under ``jit``, and
     the whole solve then runs on the device. Under ``jit`` the cosmologies are
     not checked against the model, since their ``w_DE_*`` and ``Nmnu`` have no
     values yet. The returned ``values`` are differentiable in the
@@ -325,8 +332,8 @@ def differentiable_parameters(model: type[Model] | ModelSpec) -> tuple[str, ...]
 
     Those the model's components declare (:meth:`Model.parameter_keys
     <discoeb.models.Model.parameter_keys>`): ``w_DE_0`` and
-    ``w_DE_a`` need :class:`~discoeb.species.DarkEnergy` and ``mnu``
-    :class:`~discoeb.species.MassiveNeutrinos`. Differentiating another key
+    ``w_DE_a`` need :class:`~discoeb.components.species.DarkEnergy` and ``mnu``
+    :class:`~discoeb.components.species.MassiveNeutrinos`. Differentiating another key
     raises.
     """
 

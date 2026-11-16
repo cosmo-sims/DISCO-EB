@@ -1,12 +1,12 @@
 """The species of the linear Einstein-Boltzmann system, as components.
 
-Each species is a :mod:`discoeb.component` component that owns its
+Each species is a :mod:`discoeb.components.component` component that owns its
 perturbation variables and states its own equations. A function names what
 it needs in its signature, as in ``d_vb(adotoa, vb, k, cs2, clxb)``, and
-:class:`~discoeb.component.Equations` injects it. A species sees another only
+:class:`~discoeb.components.component.Equations` injects it. A species sees another only
 through the quantities it publishes. Couplings between species live in
-:mod:`discoeb.interactions`, the metric and the Friedmann sum in
-:mod:`discoeb.gravity`. Conventions are CAMB's (see :mod:`discoeb.gravity`).
+:mod:`discoeb.components.interactions`, the metric and the Friedmann sum in
+:mod:`discoeb.components.gravity`. Conventions are CAMB's (see :mod:`discoeb.components.gravity`).
 
 The Boltzmann hierarchies are vector states: ``theta`` holds ``Theta_0 ..
 Theta_lmax``, ``e`` holds ``E_2 .. E_lmax``, ``n`` the neutrino multipoles
@@ -20,7 +20,7 @@ equations read them as ``self.NQMAX`` like any attribute.
 
 Each state carries its adiabatic initial condition (CAMB's ``initial()``
 series at ``k tau << 1``, using the growing-mode quantities of
-:class:`~discoeb.gravity.AdiabaticMode`). The photon monopole, dipole and
+:class:`~discoeb.components.gravity.AdiabaticMode`). The photon monopole, dipole and
 quadrupole are ``theta[0]``, ``theta[1]``, ``theta[2]``. The scalar names
 ``clxg``, ``qg``, ``pig`` and ``E2`` exist for the equations that read them.
 """
@@ -66,7 +66,7 @@ class ColdDarkMatter(Species):
     """Cold dark matter, the species whose rest frame defines the gauge.
 
     Synchronous gauge leaves the choice of the initial hypersurface open.
-    The equations of :mod:`discoeb.gravity` take the one on which this
+    The equations of :mod:`discoeb.components.gravity` take the one on which this
     species is at rest, so it has a density contrast and no velocity
     (``fixes_gauge``). A model must keep it, at whatever density. Dark
     matter that feels a force has a velocity of its own and is another

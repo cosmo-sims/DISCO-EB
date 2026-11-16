@@ -9,9 +9,9 @@ import numpy as np
 import pytest
 from conftest import HOST, ConstantThermalHistory, _cuda_available, cosmologies_of
 
-from discoeb.component import Component, Equations, State
-from discoeb.models import LCDM
-from discoeb.species import ColdDarkMatter, Fluid
+from discoeb.components.component import Component, Equations, State
+from discoeb.components.species import ColdDarkMatter, Fluid
+from discoeb.models.models import LCDM
 
 X, Y = Fluid.named("x"), Fluid.named("y")
 LCDM_XY = LCDM.add(X, Y, name="LCDM+x+y")
@@ -48,7 +48,7 @@ def test_a_named_copy_prefixes_what_the_component_declares():
 
 
 def test_two_copies_share_a_model():
-    from discoeb.kernel import parameter_layout
+    from discoeb.solver.kernel import parameter_layout
 
     keys = LCDM_XY.parameter_keys()
     assert {"x_Omega", "x_w", "x_cs2", "y_Omega", "y_w", "y_cs2"} <= set(keys)
@@ -72,8 +72,8 @@ def test_each_copy_checks_its_own_keys():
 
 
 def test_the_background_closes_with_both_densities():
-    from discoeb.background import density_parameters
-    from discoeb.cosmology import _columns
+    from discoeb.models.cosmology import _columns
+    from discoeb.solver.background import density_parameters
 
     def densities(model, cosmology):
         columns = _columns([cosmology], held=False, keys=model.parameter_keys())
@@ -101,7 +101,7 @@ def test_the_background_closes_with_both_densities():
 def test_a_cold_pressureless_copy_moves_as_the_dark_matter():
     """``w = cs2 = 0`` at rest: ``x_delta' = -k z``, the dark matter's equation."""
 
-    from discoeb.kernel import parameter_layout
+    from discoeb.solver.kernel import parameter_layout
 
     columns = parameter_layout(LCDM_XY).columns
     model = LCDM_XY.build(ConstantThermalHistory())

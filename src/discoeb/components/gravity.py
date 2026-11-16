@@ -3,7 +3,7 @@
 Conventions follow CAMB: ``k`` in 1/Mpc, conformal time ``tau`` in Mpc,
 ``etak = k eta``, velocities ``q_i = (1 + w_i) theta_i / k`` and density
 coefficients ``grho_i_t = 8 pi G rho_i a^2``. The metric enters the fluid
-equations of :mod:`discoeb.species` through ``0.5 h' = k z`` and the shear
+equations of :mod:`discoeb.components.species` through ``0.5 h' = k z`` and the shear
 ``sigma`` (see :class:`Metric`). The curved-geometry relations follow
 CLASS's ``perturbations.c`` with ``K = -grhok / 3`` and ``s2^2 = 1 - 3K/k^2``.
 
@@ -20,7 +20,7 @@ includes all five.
 contribute to the sums :data:`SUMS`, which describe the fluids alone. They
 read :data:`GRAVITY_INTERFACE`: the expansion rate ``adotoa`` and the metric
 sources ``z`` and ``sigma``. A theory of gravity is a set of
-:class:`~discoeb.component.Gravity` components that provides those three
+:class:`~discoeb.components.component.Gravity` components that provides those three
 from the sums, so another theory replaces :class:`Background` (a modified
 Friedmann equation), :class:`Metric` (modified constraints, with states of
 its own if it needs them) or both, and no species changes::
@@ -74,7 +74,7 @@ of the radiation that stream freely (the neutrinos). A species says what it
 is by contributing its density, so the growing mode counts one added from
 outside the package. ``dgrho_streaming`` is the density perturbation of the
 species under the radiation streaming approximation
-(:class:`~discoeb.species.RadiationStreaming`), which ``dgrho`` leaves out."""
+(:class:`~discoeb.components.species.RadiationStreaming`), which ``dgrho`` leaves out."""
 
 GRAVITY_INTERFACE = ("adotoa", "z", "sigma")
 """What every species reads of gravity, and a model's gravity components provide:

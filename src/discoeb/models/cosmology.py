@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .component import REQUIRED, declarations_of
+from ..components.component import REQUIRED, declarations_of
 
 
 class _ParamCosmology(NamedTuple):
@@ -174,8 +174,8 @@ curvature density, the massive neutrinos' density and mass and the
 dark-energy equation of state. The forward sensitivities carry them through
 both the hierarchy and the recombination history. A model differentiates
 those its components declare (:func:`~discoeb.solver.differentiable_parameters`):
-``mnu`` needs :class:`~discoeb.species.MassiveNeutrinos` and ``w_DE_0`` and
-``w_DE_a`` :class:`~discoeb.species.DarkEnergy`. The derivative holds fixed
+``mnu`` needs :class:`~discoeb.components.species.MassiveNeutrinos` and ``w_DE_0`` and
+``w_DE_a`` :class:`~discoeb.components.species.DarkEnergy`. The derivative holds fixed
 the conformal age ``tau0`` at which a trajectory stops
 (:func:`matter_power_spectrum` adds its term), the reionization redshift
 found for ``tau_reio``, ``ln a`` at the start and the initial state. Every

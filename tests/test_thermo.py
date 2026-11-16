@@ -1,7 +1,7 @@
 """The recombination history of the perturbation kernel against CLASS, and the time of its solve.
 
 RECFAST runs as the recombination block of the joint kernel
-(:mod:`discoeb.recombination`); :func:`kernel_thermal_history` records its
+(:mod:`discoeb.components.recombination`); :func:`kernel_thermal_history` records its
 free-electron fraction, matter temperature, baryon sound speed, opacity and
 optical depth through :func:`discoeb.solve_eb` at one wave mode per
 cosmology. The check runs the same cosmologies as

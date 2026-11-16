@@ -496,7 +496,7 @@ class Recombination(Component):
     (``kappa' = x_e n_H sigma_T a``, with reionization) and ``cs2`` (from
     ``T_m`` and its own rate, no spline derivative). Nothing marks these
     states as the background: their rates read no wave number, and
-    :meth:`Equations.stages <discoeb.component.Equations.stages>` finds that.
+    :meth:`Equations.stages <discoeb.components.component.Equations.stages>` finds that.
     """
 
     lna = State(initial=lambda lna_start: lna_start)
