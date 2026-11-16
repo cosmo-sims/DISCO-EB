@@ -264,10 +264,10 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `w_DE_*`, `cs2_DE` on `DarkEnergy`, `Nmnu`, `mnu`, `grhor_nu`, `n_mnu`,
      `amnu` on `MassiveNeutrinos`; `tau_reio` on `Recombination`
    - The gravity interface (2026-11-14): species contribute to the sums
-     (fluids only) and read `GRAVITY_INTERFACE` = `adotoa`, `z`, `sigma`,
-     which `component.Gravity` subclasses (`Background`, `Metric`,
-     `Curvature`) provide. `ModelSpec` raises if a model provides none
-     of one. Another theory is `LCDM.swap(Background, Other, name=)` or
+     (fluids only) and read `adotoa`, `z`, `sigma`, which
+     `component.Gravity` subclasses (`Background`, `Metric`, `Curvature`)
+     provide. A model missing one fails at build, like any unprovided
+     quantity (no special check since 2026-11-16). Another theory is `LCDM.swap(Background, Other, name=)` or
      `swap(Metric, Other, name=)`; the closure follows since it solves
      `adotoa(a=1)` (`tests/components/test_gravity.py`). A scalar state's rate is a
      quantity `d_<state>` any provider or hook may read (`_collect` adds it

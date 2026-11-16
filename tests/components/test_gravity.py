@@ -23,7 +23,7 @@ from discoeb.components._component import (
     Parameter,
     State,
 )
-from discoeb.components.gravity import GRAVITY_INTERFACE, Background, Curvature, Metric
+from discoeb.components.gravity import Background, Curvature, Metric
 from discoeb.components.species import (
     ColdDarkMatter,
     NoRadiationStreaming,
@@ -133,12 +133,11 @@ def _densities(model, cosmology):
 
 
 def test_a_model_needs_the_whole_interface():
-    assert GRAVITY_INTERFACE == ("adotoa", "z", "sigma")
     assert issubclass(Background, Gravity) and issubclass(Metric, Gravity)
-    with pytest.raises(ValueError, match=r"provides \['z', 'sigma'\]"):
-        LCDM.remove(Metric, name="no metric")
-    with pytest.raises(ValueError, match=r"provides \['adotoa'\]"):
-        LCDM.remove(Background, name="no Friedmann equation")
+    for removed in (Metric, Background):
+        model = LCDM.remove(removed, name=f"no {removed.__name__}")
+        with pytest.raises(TypeError, match="declares it with"):
+            model.build(ConstantThermalHistory()).build(PARAM_COLUMNS, **HOST)
 
 
 def test_curvature_is_geometry_and_not_a_fluid():

@@ -37,7 +37,6 @@ from ..components._component import (
     declarations_of,
     declared_parameters,
 )
-from ..components.gravity import GRAVITY_INTERFACE
 from ..components.recombination import Recombination
 from ._cosmology import DIFFERENTIABLE_PARAMETERS, _cosmology_dictionary, _is_concrete
 
@@ -85,14 +84,6 @@ class ModelSpec:
             raise ValueError(
                 f"{self.name} has no species whose rest frame fixes the "
                 "synchronous gauge: keep ColdDarkMatter, at whatever density"
-            )
-        provided = {n for cls in self.components for n in cls.provided_names()}
-        missing = [n for n in GRAVITY_INTERFACE if n not in provided]
-        if missing:
-            raise ValueError(
-                f"{self.name} has no gravity component that provides {missing}: "
-                "the species read the expansion rate adotoa (Background) and "
-                "the metric sources z and sigma (Metric)"
             )
 
     def __repr__(self) -> str:

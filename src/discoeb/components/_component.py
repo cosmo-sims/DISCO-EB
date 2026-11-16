@@ -702,9 +702,9 @@ class Species(Component):
 class Gravity(Component):
     """A component of the theory of gravity: the expansion rate, the metric and its constraints.
 
-    The species read what these provide and never each other
-    (:data:`discoeb.components.gravity.GRAVITY_INTERFACE`), so a model changes its
-    theory of gravity by replacing them.
+    The species read what these provide, the conformal Hubble rate ``adotoa``
+    and the metric sources ``z`` and ``sigma``, and never each other, so a
+    model changes its theory of gravity by replacing them.
     """
 
 

@@ -27,11 +27,6 @@ GRHOG_PER_TCMB4 = 1.49594245e-13  # photons, per K^4
 GRHOR_PER_TCMB4 = 3.39739477e-14  # one massless neutrino flavour, per K^4
 C2OK = 1.62581581e4  # K / eV: amnu = m_nu c^2 / (k_B T_nu0) = mnu * C2OK / Tcmb
 
-GRAVITY_INTERFACE = ("adotoa", "z", "sigma")
-"""What every species reads of gravity, and a model's gravity components provide:
-the conformal Hubble rate and the metric sources ``z = h' / (2k)`` and
-``sigma = k alpha`` of synchronous gauge."""
-
 
 class Kinematics(Component):
     """Powers of the scale factor, ``1/tau`` and ``1/k^2``, for every component to read."""
