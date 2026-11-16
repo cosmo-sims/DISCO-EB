@@ -15,6 +15,7 @@ from ._component import (
     Setting,
     Species,
     State,
+    Sum,
     contributes,
 )
 
@@ -28,6 +29,7 @@ __all__ = [
     "Setting",
     "Species",
     "State",
+    "Sum",
     "contributes",
     "gravity",
     "interactions",

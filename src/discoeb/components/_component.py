@@ -37,7 +37,8 @@ algorithm that builds the right-hand side of the Einstein-Boltzmann system will
 call the providers in the order that respects their dependencies. Providers
 of the form ``d_<state>`` define a contribution to that state's derivative.
 A provider may also be decorated with ``@contributes`` to contribute to
-a sum over components, such as ``grho``, ``dgrho`` and ``dgq``.
+a sum over components, such as ``grho``, ``dgrho`` and ``dgq``. The
+component that reads a sum declares it: ``grho = Sum()``.
 
 **Parameters.** ``Omegam: ArrayLike = Parameter()`` declares a cosmological
 parameter.
@@ -509,6 +510,19 @@ class State:
         return shape
 
 
+class Sum:
+    """A quantity summed over the components that contribute to it: ``grho = Sum()``.
+
+    The component that reads a sum declares it, and any component of the
+    model adds to it with :func:`contributes`. A model's sums are those its
+    components declare. A sum keeps its name in a named component
+    (:meth:`Component.named`).
+    """
+
+    def __repr__(self):
+        return "Sum()"
+
+
 # --- components -----------------------------------------------------------------------
 
 
@@ -625,6 +639,19 @@ class Component:
                     seen.add(attr)
                     found.append((cls._renames.get(attr, attr), value))
         return found
+
+    @classmethod
+    def declared_sums(cls) -> tuple[str, ...]:
+        """The names of the ``Sum`` attributes, base classes first."""
+
+        return tuple(
+            dict.fromkeys(
+                attr
+                for klass in reversed(cls.__mro__)
+                for attr, value in vars(klass).items()
+                if isinstance(value, Sum)
+            )
+        )
 
     @classmethod
     def declared_parameters(cls) -> list[tuple[str, ParameterDeclaration]]:
@@ -773,7 +800,8 @@ class _Provider:
         if method != attr and not (attr.startswith("d_") or attr in sums):
             raise TypeError(
                 f"{self.label} contributes to {attr!r}, which is neither one of "
-                f"the model's sums {tuple(sums)} nor a derivative d_<state>"
+                f"the model's sums {tuple(sums)} nor a derivative d_<state>; "
+                f"the component that reads it declares it with {attr} = Sum()"
             )
         self.self_symbol = f"{component.label}_self"
         self.takes_self, names = _positional_names(fn, self.label)
@@ -1280,9 +1308,11 @@ def _minimum_vertex_cut(weight, edges, sources, sinks) -> set:
 class Equations:
     """Components, their state in declaration order, and the functions built from them."""
 
-    def __init__(self, components: Iterable[Component], sums: Sequence[str] = ()):
+    def __init__(self, components: Iterable[Component]):
         self.components = list(components)
-        self.sums = tuple(sums)
+        self.sums = tuple(
+            dict.fromkeys(s for c in self.components for s in type(c).declared_sums())
+        )
         labels = [c.label for c in self.components]
         duplicates = sorted({label for label in labels if labels.count(label) > 1})
         if duplicates:

@@ -37,7 +37,7 @@ from ..components._component import (
     declarations_of,
     declared_parameters,
 )
-from ..components.gravity import GRAVITY_INTERFACE, SUMS
+from ..components.gravity import GRAVITY_INTERFACE
 from ..components.recombination import Recombination
 from ._cosmology import DIFFERENTIABLE_PARAMETERS, _cosmology_dictionary, _is_concrete
 
@@ -187,7 +187,7 @@ class ModelSpec:
         if thermal_history is not None:
             components.insert(0, thermal_history)
         components.extend(extra)
-        return Equations(components, sums=SUMS)
+        return Equations(components)
 
     def parameters(self, extra=()) -> dict[str, ParameterDeclaration]:
         """Return the parameters the model's components declare, by name.

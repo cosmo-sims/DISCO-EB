@@ -144,8 +144,11 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `d_<state>` provides a derivative contribution: a scalar state's is
      returned; a vector state's is written into `output`, which the framework
      hands the provider filled with zeros and then sums into the derivative,
-     so several components may write one state. A method named in the model's
-     `sums` contributes to that sum. Since 2026-11-15 a contribution to a sum,
+     so several components may write one state. A sum is declared by the
+     component that reads it, `grho = Sum()` (2026-11-16; before, a global
+     `SUMS` tuple passed to `Equations`), and a model's sums are those its
+     components declare. A method named after a sum contributes to it.
+     Since 2026-11-15 a contribution to a sum,
      or to another component's state, has a name of its own and says what it
      adds to: `@contributes("dgrho") def dgrho_b(...)` (`_contributed`; the
      suffix names the species: `_c`, `_b`, `_g`, `_r`, `_nu`, `_de`,
@@ -244,9 +247,11 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      CAMB's sign, read by `solve_eb`'s hook and not by the right-hand side),
      `Curvature` (geometry: `Kcurv`, `s2`; in no sum since 2026-11-14),
      `AdiabaticMode` (the growing-mode quantities `x`, `Rv`, `om`
-     the initial conditions read) and `SUMS` (`grho`, `gpres`, `dgrho`, `dgq`,
-     `dgpi`, summed over the species a model includes, and `grho_matter`,
-     `grho_radiation`, `grho_free_streaming`, from which `Rv` and `om` are
+     the initial conditions read). The sums live on their readers:
+     `grho`, `gpres` on `Background`, `dgrho`, `dgq`, `dgpi` and
+     `dgrho_streaming` on `Metric` (the last two read only by DISCO-CMB's
+     Weyl potential), `grho_matter`, `grho_radiation`,
+     `grho_free_streaming` on `AdiabaticMode`, from which `Rv` and `om` are
      ratios with `a` cancelling, so a new species enters the initial
      conditions by contributing its density; `MassiveNeutrinos` and `Fluid`
      contribute to none, as before 2026-11-14 when the four densities were
@@ -258,7 +263,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `grhornomass` on `MasslessNeutrinos`, `grhov` on both dark energies, the
      `w_DE_*`, `cs2_DE` on `DarkEnergy`, `Nmnu`, `mnu`, `grhor_nu`, `n_mnu`,
      `amnu` on `MassiveNeutrinos`; `tau_reio` on `Recombination`
-   - The gravity interface (2026-11-14): species contribute to `SUMS`
+   - The gravity interface (2026-11-14): species contribute to the sums
      (fluids only) and read `GRAVITY_INTERFACE` = `adotoa`, `z`, `sigma`,
      which `component.Gravity` subclasses (`Background`, `Metric`,
      `Curvature`) provide. `ModelSpec` raises if a model provides none

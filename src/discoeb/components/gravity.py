@@ -15,7 +15,7 @@ import math
 
 from jax.typing import ArrayLike
 
-from ._component import Component, Derived, Gravity, Parameter, State
+from ._component import Component, Derived, Gravity, Parameter, State, Sum
 
 # Density coefficients in CAMB's convention, ``8 pi G rho / c^2`` in 1/Mpc^2:
 # ``H^2 = sum_i grho_i / 3`` gives the Hubble rate in 1/Mpc and ``a'/a = a H``
@@ -26,36 +26,6 @@ GRHOM_PER_H0SQ = 3.33795017e-11  # 8 pi G rho_crit / c^2 per (H0 in km/s/Mpc)^2
 GRHOG_PER_TCMB4 = 1.49594245e-13  # photons, per K^4
 GRHOR_PER_TCMB4 = 3.39739477e-14  # one massless neutrino flavour, per K^4
 C2OK = 1.62581581e4  # K / eV: amnu = m_nu c^2 / (k_B T_nu0) = mnu * C2OK / Tcmb
-
-SUMS = (
-    "grho",
-    "gpres",
-    "dgrho",
-    "dgq",
-    "dgpi",
-    "grho_matter",
-    "grho_radiation",
-    "grho_free_streaming",
-    "dgrho_streaming",
-)
-"""The quantities summed over species.
-
-``grho`` is the Friedmann density and ``gpres = Sum 8 pi G p_i a^2`` the
-pressure (CAMB's, so the comoving curvature perturbation can divide by
-``rho + p``). ``dgrho = Sum grho_i_t delta_i`` and ``dgq = Sum grho_i_t q_i``
-source the Einstein constraints. ``dgpi = Sum grho_i_t pi_i`` is the
-anisotropic stress the line-of-sight sources' Weyl potential needs. Spatial
-curvature is no fluid and contributes to none of them: the Friedmann equation
-reads it as :meth:`Curvature.Kcurv`.
-
-The last three sort the densities for the initial conditions
-(:class:`AdiabaticMode`): ``grho_matter`` the pressureless species,
-``grho_radiation`` the relativistic ones and ``grho_free_streaming`` those
-of the radiation that stream freely (the neutrinos). A species says what it
-is by contributing its density, so the growing mode counts one added from
-outside the package. ``dgrho_streaming`` is the density perturbation of the
-species under the radiation streaming approximation
-(:class:`~discoeb.components.species.RadiationStreaming`), which ``dgrho`` leaves out."""
 
 GRAVITY_INTERFACE = ("adotoa", "z", "sigma")
 """What every species reads of gravity, and a model's gravity components provide:
@@ -95,6 +65,12 @@ class Background(Gravity):
     H0: ArrayLike = Parameter(directed=True)
     grhom: ArrayLike = Derived(lambda H0: GRHOM_PER_H0SQ * H0**2)
 
+    grho = Sum()
+    """The Friedmann density ``Sum 8 pi G rho_i a^2``. Curvature is no fluid
+    and adds nothing: the Friedmann equation reads it as ``Kcurv``."""
+    gpres = Sum()
+    """The pressure ``Sum 8 pi G p_i a^2``."""
+
     def adotoa(self, grho, Kcurv):
         """The conformal Hubble rate ``a'/a = sqrt(grho / 3 - K)``."""
         return math.sqrt(grho * (1.0 / 3.0) - Kcurv)
@@ -121,6 +97,13 @@ class AdiabaticMode(Component):
     A_s: ArrayLike = Parameter()
     n_s: ArrayLike = Parameter()
     k_p: ArrayLike = Parameter(0.05)
+
+    grho_matter = Sum()
+    """The density of the pressureless species."""
+    grho_radiation = Sum()
+    """The density of the relativistic species."""
+    grho_free_streaming = Sum()
+    """The density of the radiation that streams freely (the neutrinos)."""
 
     def x(self, k, tau):
         return k * tau
@@ -171,6 +154,18 @@ class Metric(Gravity):
     etak = State(
         initial=lambda k, x, Rp15: -k * (1.0 - x * x / 12.0 * (-10.0 / Rp15 + 1.0))
     )
+
+    dgrho = Sum()
+    """The density perturbation ``Sum grho_i_t delta_i``, which sources ``z``."""
+    dgq = Sum()
+    """The momentum density ``Sum grho_i_t q_i``, which sources ``sigma`` and ``etak``."""
+    dgrho_streaming = Sum()
+    """The density perturbation of the species under the radiation streaming
+    approximation, which ``dgrho`` leaves out (CLASS takes ``h'`` without them)."""
+    dgpi = Sum()
+    """The anisotropic stress ``Sum grho_i_t pi_i``."""
+    # The equations here read neither of the last two. The line-of-sight
+    # sources' Weyl potential reads both.
 
     def z(self, dgrho, k, s2, etak, adotoa):
         return (0.5 * dgrho / k + s2 * etak) / adotoa

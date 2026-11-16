@@ -22,6 +22,7 @@ from discoeb.components._component import (
     Setting,
     Species,
     State,
+    Sum,
     contributes,
     cuda,
     float64,
@@ -37,6 +38,8 @@ FLOOR = 1e-30  # a module constant a provider reads
 
 
 class Background(Component):
+    grho = Sum()
+
     def inv_a(a):
         return 1.0 / a
 
@@ -131,8 +134,7 @@ def toy_model(*extra):
             Photons(),
             ThomsonScattering(),
             *extra,
-        ],
-        sums=("grho",),
+        ]
     )
 
 
@@ -463,6 +465,8 @@ def test_a_contribution_says_what_it_adds_to():
             return 2.0 * x
 
     class Sink(Interaction):
+        total = Sum()
+
         @contributes("total")
         def total_sink(self):
             return 1.0
@@ -471,7 +475,7 @@ def test_a_contribution_says_what_it_adds_to():
         def d_x_sink(self, x, total):
             return -x * total
 
-    model = Equations([Source(), Sink()], sums=("total",))
+    model = Equations([Source(), Sink()])
     x, k = 3.0, 0.5
     rhs = model.build({"k": 0}, **HOST)
     np.testing.assert_allclose(rhs((x,), 1.0, (k,)), (k - x * (2.0 * x + 1.0),))
@@ -483,7 +487,7 @@ def test_a_contribution_says_what_it_adds_to():
             return 1.0
 
     with pytest.raises(TypeError, match="neither one of the model's sums"):
-        Equations([Source(), Stray()], sums=("total",)).build({"k": 0}, **HOST)
+        Equations([Source(), Sink(), Stray()]).build({"k": 0}, **HOST)
 
 
 def test_matrix_states_and_tuple_constants():
@@ -515,12 +519,13 @@ def test_matrix_states_and_tuple_constants():
                 output[i, 1] = kv * psi[i, 0]
 
     class Reads(Species):
+        grho = Sum()
         w = State()
 
         def d_w(grho):
             return grho
 
-    model = Equations([Bins([0.5, 0.25]), Reads()], sums=("grho",))
+    model = Equations([Bins([0.5, 0.25]), Reads()])
     rhs = model.build({"k": 0, "a": 1}, **HOST)
     assert model.state == ["psi_0_0", "psi_0_1", "psi_1_0", "psi_1_1", "w"]
     k, a, y = 3.0, 2.0, (1.0, 2.0, 4.0, 8.0, 0.0)
@@ -783,7 +788,10 @@ def test_names_resolve_in_initial_conditions_and_sums():
         def d_level(self, outflow):
             return -outflow
 
-    model = Equations([Tank.named("a")(), Tank.named("b")()], sums=("total",))
+    class Pool(Component):
+        total = Sum()
+
+    model = Equations([Tank.named("a")(), Tank.named("b")(), Pool()])
     assert model.state == ["a_level", "b_level"]
     np.testing.assert_allclose(model.initial_state(np.array([1.0])), [[3.0, 3.0]])
     rhs = model.build({}, **HOST)
