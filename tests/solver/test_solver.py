@@ -15,6 +15,8 @@ from helpers import (
     _qcdm_densities,
     _split,
     cosmologies_of,
+    ty_errors,
+    ty_executable,
 )
 
 from discoeb.models import LCDM
@@ -312,3 +314,32 @@ def test_solve_eb_comoving_curvature_is_conserved_outside_the_horizon():
     ).max()
     # k = 0.1 Mpc^-1 entered the horizon long before today and R has decayed.
     assert abs(R[-1, -1]) < 0.5
+
+
+TYPED_KEEP = """
+from discoeb import LCDM, solve_eb
+
+planck = LCDM(
+    Omegam=0.31, Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
+    Tcmb=2.7255, YHe=0.245, Neff=3.046,
+)
+kept = solve_eb(planck, [0.1], [100.0], keep=("R", "clxc"))
+kept["R"]
+kept["clxc"]
+kept["z"]  # not kept
+names = [name for name in ("R", "z")]
+dynamic = solve_eb(planck, [0.1], [100.0], keep=names)
+dynamic["anything"]
+everything = solve_eb(planck, [0.1], [100.0])
+everything["clxb"]
+"""
+
+
+@pytest.mark.skipif(ty_executable() is None, reason="needs ty (the dev group)")
+def test_a_type_checker_sees_the_kept_names(tmp_path):
+    """Literal names in ``keep`` type the solution; names built at run time do not."""
+    found, output = ty_errors(TYPED_KEEP, tmp_path)
+    not_kept = next(
+        i for i, text in enumerate(TYPED_KEEP.splitlines(), 1) if "# not kept" in text
+    )
+    assert {row for row, _ in found} == {not_kept}, output

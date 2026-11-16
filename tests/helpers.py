@@ -439,3 +439,39 @@ def _more_parameter_case(name):
     model_name, changes, step = MORE_PARAMETERS[name]
     cosmology = {**REFERENCE_COSMOLOGY, **changes}
     return getattr(models, model_name), cosmology, step
+
+
+def ty_executable() -> str | None:
+    """The ty beside this interpreter (the dev group), else the one on the path."""
+    import shutil
+    import sys
+    from pathlib import Path
+
+    beside = Path(sys.executable).parent / "ty"
+    return str(beside) if beside.exists() else shutil.which("ty")
+
+
+def ty_errors(code: str, tmp_path) -> tuple[set[tuple[int, str]], str]:
+    """``{(line, rule)}`` of the errors ty reports in ``code``, and its output."""
+    import subprocess
+    import sys
+
+    user = tmp_path / "user.py"
+    user.write_text(code)
+    result = subprocess.run(
+        [
+            str(ty_executable()),
+            "check",
+            "--python",
+            sys.executable,
+            "--output-format",
+            "concise",
+            str(user),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    errors = [line for line in result.stdout.splitlines() if "error[" in line]
+    found = {(int(e.split(":")[1]), e.split("error[")[1].split("]")[0]) for e in errors}
+    return found, result.stdout

@@ -1,10 +1,5 @@
 """The model base classes (``_model``): model classes, specs, cosmologies as instances, the sparsity pattern."""
 
-import shutil
-import subprocess
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 from helpers import (
@@ -22,6 +17,8 @@ from helpers import (
     nvar,
     state_index,
     structure,
+    ty_errors,
+    ty_executable,
 )
 
 from discoeb.components.species import DarkEnergy, MassiveNeutrinos
@@ -241,46 +238,24 @@ LCDM(0.31)  # positional
 '''
 
 
-def _ty() -> str | None:
-    beside = Path(sys.executable).parent / "ty"
-    return str(beside) if beside.exists() else shutil.which("ty")
-
-
-@pytest.mark.skipif(_ty() is None, reason="needs ty (the dev group)")
+@pytest.mark.skipif(ty_executable() is None, reason="needs ty (the dev group)")
 def test_a_type_checker_sees_the_models_parameters(tmp_path):
-    code = tmp_path / "user.py"
-    code.write_text(USER_CODE)
-    result = subprocess.run(
-        [
-            str(_ty()),
-            "check",
-            "--python",
-            sys.executable,
-            "--output-format",
-            "concise",
-            str(code),
-        ],
-        capture_output=True,
-        text=True,
-        cwd=tmp_path,
-    )
-    errors = [line for line in result.stdout.splitlines() if "error[" in line]
+    found, output = ty_errors(USER_CODE, tmp_path)
     lines = USER_CODE.splitlines()
 
     def line_of(marker: str) -> int:
         return next(i for i, text in enumerate(lines, 1) if marker in text)
 
-    found = {(int(e.split(":")[1]), e.split("error[")[1].split("]")[0]) for e in errors}
     assert found >= {
         (line_of("# missing"), "missing-argument"),
         (line_of("# positional"), "too-many-positional-arguments"),
-    }, result.stdout
+    }, output
     rows = {row for row, _ in found}
     for marker in ("# foreign", "# derived"):
         start = line_of(marker)
-        assert any(start <= row <= start + 3 for row in rows), (marker, result.stdout)
+        assert any(start <= row <= start + 3 for row in rows), (marker, output)
     # and nothing else: the valid calls and the user's model class pass
-    assert all(row >= line_of("# missing") for row in rows), result.stdout
+    assert all(row >= line_of("# missing") for row in rows), output
 
 
 # --- The Jacobian sparsity pattern, and what modax's analysis makes of it.

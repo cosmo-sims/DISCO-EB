@@ -10,7 +10,7 @@ from ._kernel import (
     joint_model,
 )
 from ._solver import (
-    EBSolution,
+    Solution,
     conformal_ages,
     differentiable_parameters,
     directed_inputs,
@@ -25,7 +25,7 @@ __all__ = [
     "PERTURB_MAX_STEPS",
     "PERTURB_RTOL",
     "TAU_START",
-    "EBSolution",
+    "Solution",
     "background_history",
     "conformal_ages",
     "density_coefficients",

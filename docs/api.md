@@ -26,7 +26,7 @@
 
 .. autofunction:: discoeb.matter_power_spectrum
 
-.. autoclass:: discoeb.EBSolution
+.. autoclass:: discoeb.Solution
    :no-members:
 
 .. autofunction:: discoeb.state_names

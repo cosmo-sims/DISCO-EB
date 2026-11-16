@@ -22,7 +22,7 @@ state history:
 
 * :func:`solve_eb` ``(cosmologies, k, tau, keep=names, extra=components)``,
   with cosmologies of one model such as ``[LCDM(H0=..., ...), ...]``,
-  returns an :class:`EBSolution` whose ``values`` are ``(n_cosmologies,
+  returns an :class:`Solution` whose ``values`` are ``(n_cosmologies,
   len(keep), n_k, n_tau)``, with each cosmology's conformal age ``tau0``.
   Past its own ``tau0``, a cosmology's trajectories hold their state today.
 * A name is a state element (:func:`state_names`, including the thermal
@@ -79,7 +79,7 @@ from .solver import (
     PERTURB_MAX_STEPS,
     PERTURB_RTOL,
     TAU_START,
-    EBSolution,
+    Solution,
     background_history,
     conformal_ages,
     density_coefficients,
@@ -96,7 +96,7 @@ __all__ = [
     "ModelSpec",
     "DIFFERENTIABLE_PARAMETERS",
     "DIRECTED_NAMES",
-    "EBSolution",
+    "Solution",
     "PERTURB_ATOL",
     "PERTURB_FIRST_STEP",
     "PERTURB_MAX_STEPS",

@@ -493,10 +493,13 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
 9. **solver/_solver.py** - `solve_eb(cosmologies, k, tau, *, keep=...)` solves
    one cosmology or a list of one model's and records only the named quantities at the given times, so the
    device holds `n_k * n_cosmo * n_tau * len(keep)` numbers and never the
-   history. Returns an `EBSolution` (`solution["R"]` is `(n_cosmo, n_k,
+   history. Returns a `Solution` (`solution["R"]` is `(n_cosmo, n_k,
    n_tau)` in the caller's order, `solution.model` the model class); a time past a
    cosmology's `tau0` holds its state today. Traces under `jit` with every
-   cosmology key traced (only k and the names static); `EBSolution` is a
+   cosmology key traced (only k and the names static); `Solution` (renamed
+   from `EBSolution` and generic in its names on 2026-11-16: literal `keep`
+   names give `Solution[Literal[...]]`, so ty and pyright reject a lookup of
+   a name not kept, and run-time names give `Solution[str]`) is a
    pytree. `values` is differentiable in `differentiable_parameters(model)`
    of `DIFFERENTIABLE_PARAMETERS` (`Omegam`, `Omegab`, `H0`, `Tcmb`, `Neff`,
    `Omegak`, and `mnu`, `w_DE_0`, `w_DE_a` where the model has the
@@ -637,7 +640,7 @@ The typical computation flow is:
   and a self-convergence check against a 1000x tighter fp64-LU solve. A CPL
   `w(a)` crossing -1 hits `max_steps` and is silently wrong (strict `xfail`).
   The sweeps and the self-convergence tests are marked `slow`
-- The default run is the fast suite (2026-11-16): 119 tests, 4.5 minutes
+- The default run is the fast suite (2026-11-16): 120 tests, 4.5 minutes
   from an empty kernel cache, about 30 s with it warm. A kernel costs 30 to
   200 s to compile per (model, settings, keep names, plain or joint), so the
   fast suite launches LCDM only, with five kernels: `P(k)` against CLASS,
