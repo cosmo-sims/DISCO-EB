@@ -11,12 +11,14 @@ SWEEPS = ("lcdm", "lcdm-mnu")
 """The sweeps of this module's models, by the names ``sweep.py`` gives them."""
 
 
+@pytest.mark.slow
 @pytest.mark.gpu
 @pytest.mark.parametrize("name", SWEEPS)
 def test_sweep_is_stable(name):
     check_sweep_is_stable(name)
 
 
+@pytest.mark.slow
 @pytest.mark.gpu
 @pytest.mark.parametrize("name", SWEEPS)
 def test_sweep_matches_class(name):

@@ -13,12 +13,14 @@ SWEEPS = ("w0wacdm",)
 """The sweeps of this module's models, by the names ``sweep.py`` gives them."""
 
 
+@pytest.mark.slow
 @pytest.mark.gpu
 @pytest.mark.parametrize("name", SWEEPS)
 def test_sweep_is_stable(name):
     check_sweep_is_stable(name)
 
 
+@pytest.mark.slow
 @pytest.mark.gpu
 @pytest.mark.parametrize("name", SWEEPS)
 def test_sweep_matches_class(name):
@@ -35,6 +37,7 @@ def test_sweep_matches_class(name):
         f"with no error raised. E.g. {CROSSING_COSMOLOGY}"
     ),
 )
+@pytest.mark.slow
 def test_dark_energy_crossing_minus_one():
     check_dark_energy_crossing_minus_one()
 

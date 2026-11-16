@@ -25,6 +25,7 @@ from discoeb.models import LCDM
 OMEGA_FLUID = 0.08
 
 
+@pytest.mark.slow
 @pytest.mark.gpu
 def test_splitting_the_dark_matter_into_a_named_fluid_leaves_the_solve_unchanged():
     from discoeb import solve_eb
@@ -61,6 +62,7 @@ SOLVE_K = np.geomspace(1.0e-3, 0.3, 8)
 SOLVE_TAU = np.geomspace(1.0, 2.0e4, 16)  # the last lies past tau0
 
 
+@pytest.mark.slow
 @pytest.mark.gpu
 def test_splitting_the_dark_matter_leaves_the_solve_unchanged():
     """Two pressureless fluids holding the CDM between them evolve as the CDM did.
@@ -163,6 +165,7 @@ def _growth(model, cosmology):
     return delta
 
 
+@pytest.mark.slow
 @pytest.mark.gpu
 def test_the_solve_matches_lcdm_and_the_growth_in_the_fields_background():
     """A flat potential gives LCDM, and a rolling field suppresses ``P(k)`` as its expansion history says.
@@ -279,6 +282,7 @@ def test_solve_eb_keeps_what_the_history_holds():
         np.testing.assert_allclose(pk, pk_batch[ci], rtol=1e-9)
 
 
+@pytest.mark.slow
 @pytest.mark.gpu
 def test_solve_eb_comoving_curvature_is_conserved_outside_the_horizon():
     """``R`` starts at unity and stays there until the mode enters the horizon.

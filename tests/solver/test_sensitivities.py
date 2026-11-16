@@ -14,6 +14,7 @@ from helpers import (
 # --- GPU perturbation solves against CLASS: the matter power spectrum and its derivatives.
 
 
+@pytest.mark.slow
 @pytest.mark.gpu
 def test_solve_eb_derivatives():
     """The kept quantities are differentiable in the cosmological parameters.
@@ -179,6 +180,7 @@ MORE_SOLVE_GATES = {"mnu": 2.0e-3}
 MORE_NAMES = ("R", "clxb", "kappa")
 
 
+@pytest.mark.slow
 @pytest.mark.gpu
 @pytest.mark.parametrize("name", list(MORE_PARAMETERS))
 def test_more_parameters_solve_eb(name):

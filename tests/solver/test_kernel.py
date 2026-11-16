@@ -249,6 +249,7 @@ def test_the_recombination_block_publishes_the_thermal_quantities():
 
 
 @pytest.mark.gpu
+@pytest.mark.slow
 def test_the_recombination_block_steps_on_its_own():
     """The recombination block takes the same, fewer steps for every wave mode of a cosmology."""
     import numpy as np
@@ -303,6 +304,7 @@ def test_a_background_state_the_perturbations_read_is_published():
     assert model.published() == ("t", "a", "opacity", "cs2")
 
 
+@pytest.mark.slow
 @pytest.mark.gpu
 def test_the_kernel_carries_the_state_to_today():
     """The age of the universe from the background block, and LCDM's solve beside it."""

@@ -111,6 +111,7 @@ def test_a_flat_potential_closes_the_budget_as_a_cosmological_constant():
     assert float(flat["V0"]) == pytest.approx(float(lcdm["grhov"]), rel=1e-9)
 
 
+@pytest.mark.slow
 def test_shooting_closes_the_budget_of_a_rolling_field():
     """``V0`` is the root of ``H(a = 1) = H0`` through the field's integration."""
 

@@ -211,6 +211,7 @@ def test_matter_power_spectrum_under_jit():
 MORE_PK_GATES: dict = {}
 
 
+@pytest.mark.slow
 @pytest.mark.gpu
 @pytest.mark.parametrize("name", list(MORE_PARAMETERS))
 def test_more_parameters_matter_power(name):

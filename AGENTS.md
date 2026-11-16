@@ -635,8 +635,19 @@ The typical computation flow is:
   well under `max_steps`, P(k) against CLASS at gates set from measured errors,
   and a self-convergence check against a 1000x tighter fp64-LU solve. A CPL
   `w(a)` crossing -1 hits `max_steps` and is silently wrong (strict `xfail`).
-  The self-convergence tests are marked `slow`, which `pyproject.toml`
-  deselects by default: run them with `uv run pytest tests -m slow -rs`
+  The sweeps and the self-convergence tests are marked `slow`
+- The default run is the fast suite (2026-11-16): 119 tests, 4.5 minutes
+  from an empty kernel cache, about 30 s with it warm. A kernel costs 30 to
+  200 s to compile per (model, settings, keep names, plain or joint), so the
+  fast suite launches LCDM only, with five kernels: `P(k)` against CLASS,
+  its derivatives, under `jit`, RECFAST and reionization against CLASS, and
+  `solve_eb`'s kept quantities against the history. Marked `slow`, which
+  `pyproject.toml` deselects: every launch of another model (the sweeps,
+  `test_more_parameters_*`, the components added in the tests), the
+  `solve_eb`-level derivative gate (200 s), the comoving curvature, the block
+  step statistics and the scalar-field shooting. A new GPU test on a kernel
+  outside those five is `slow`. Run everything with `uv run pytest tests -m
+  "" -rs` (12 minutes warm)
 - Two gates are noise-limited (measured 2026-11-14 by scaling H0 by 1 +
   O(1e-11), on the code before and after that day's refactor alike), so a
   change to any kernel's bits can flip them: `test_recfast_matches_class`'s

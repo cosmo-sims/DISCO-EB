@@ -113,7 +113,7 @@ pythonpath = ["tests"]
 # `pytest -m slow` (a later -m wins) or `-m ""` runs the slow tests too
 addopts = ["-m", "not slow"]
 markers = [
-  "slow: over a minute, mostly kernel compiles; deselected by default",
+  "slow: needs a kernel the fast suite does not compile, or is not essential; deselected by default",
   "gpu: launches a kernel; skipped without a CUDA device",
 ]
 
