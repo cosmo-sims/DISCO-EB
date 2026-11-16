@@ -442,6 +442,9 @@ MORE_PARAMETERS = {
     "w_DE_a": ("W0WACDM", {"w_DE_0": -0.9, "w_DE_a": 0.1}, 4.0e-3),
     "Omegak": ("LCDM", {"Omegak": 0.02}, 2.0e-3),
     "mnu": ("LCDM_MNU", {"Nmnu": 1.0, "mnu": 0.1, "Neff": 2.0328}, 4.0e-3),
+    # z_re moves sum P(k) by 1.4e-5 of itself per unit: a step of 0.05 sits
+    # in the converged solve's noise (2026-11-16)
+    "z_re": ("LCDM", {"z_re": 7.67}, 1.0),
 }
 
 

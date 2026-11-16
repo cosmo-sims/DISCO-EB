@@ -34,7 +34,7 @@ class _ParamCosmology(NamedTuple):
     num_massive_neutrinos: float
     mnu: float
     k_pivot: float
-    tau_reio: float = 0.0  # reionization optical depth (0: no reionization)
+    z_re: float = 0.0  # the reionization redshift (0: no reionization)
     extra: tuple = ()  # (key, value) of the parameters other components declare
 
     def to_background_params(self):
@@ -53,7 +53,7 @@ class _ParamCosmology(NamedTuple):
             "Neff": self.Neff_massless,
             "Nmnu": self.num_massive_neutrinos,
             "mnu": self.mnu,
-            "tau_reio": self.tau_reio,
+            "z_re": self.z_re,
             **dict(self.extra),
         }
 
@@ -74,7 +74,7 @@ _FIELD_KEYS = {
     "num_massive_neutrinos": "Nmnu",
     "mnu": "mnu",
     "k_pivot": "k_p",
-    "tau_reio": "tau_reio",
+    "z_re": "z_re",
 }
 """The cosmology object's fields and the dictionary keys they hold."""
 
@@ -134,7 +134,7 @@ def _as_cosmology(cosmology):
         num_massive_neutrinos=float(c["Nmnu"]),
         mnu=float(c["mnu"]),
         k_pivot=float(c["k_p"]),
-        tau_reio=float(c["tau_reio"]),
+        z_re=float(c["z_re"]),
         extra=extra,
     )
 
@@ -165,24 +165,24 @@ DIFFERENTIABLE_PARAMETERS = (
     "mnu",
     "w_DE_0",
     "w_DE_a",
+    "z_re",
 )
 """The cosmology-dictionary keys :func:`solve_eb` differentiates with respect to.
 
 They reach the solve through the directed inputs
 (:data:`~discoeb.solver.DIRECTED_NAMES` and those of the model's components):
 the background densities, the recombination block's thermal inputs, the
-curvature density, the massive neutrinos' density and mass and the
-dark-energy equation of state. The forward sensitivities carry them through
+curvature density, the massive neutrinos' density and mass, the
+dark-energy equation of state and the reionization redshift. The forward sensitivities carry them through
 both the hierarchy and the recombination history. A model differentiates
 those its components declare (:func:`~discoeb.solver.differentiable_parameters`):
 ``mnu`` needs :class:`~discoeb.components.species.MassiveNeutrinos` and ``w_DE_0`` and
 ``w_DE_a`` :class:`~discoeb.components.species.DarkEnergy`. The derivative holds fixed
 the conformal age ``tau0`` at which a trajectory stops
-(:func:`matter_power_spectrum` adds its term), the reionization redshift
-found for ``tau_reio``, ``ln a`` at the start and the initial state. Every
-key may be traced under ``jit``. These raise if differentiated: ``Nmnu``, a
-count, and ``YHe``, ``cs2_DE`` and ``tau_reio``, whose derivatives of
-``P(k)`` miss central differences by 0.8, 1 and 1.8 percent. The solve never
+(:func:`matter_power_spectrum` adds its term), ``ln a`` at the start and
+the initial state. Every key may be traced under ``jit``. These raise if
+differentiated: ``Nmnu``, a count, and ``YHe`` and ``cs2_DE``, whose
+derivatives of ``P(k)`` miss central differences by 0.8 and 1 percent. The solve never
 reads ``A_s``, ``n_s`` and ``k_p``."""
 
 

@@ -238,7 +238,9 @@ def test_matter_power_spectrum_under_jit():
         jax.jit(jax.grad(lambda w: jnp.sum(jitted({**cosmology, "w_DE_0": w}))))(-1.0)
 
 
-MORE_PK_GATES: dict = {}
+MORE_PK_GATES: dict = {"z_re": 3.0e-3}
+"""``dP/dz_re`` matched central differences to 4e-4 at a step of 1 and 3e-3
+at 0.5, which the converged solves' noise sets (2026-11-16)."""
 
 
 @pytest.mark.slow

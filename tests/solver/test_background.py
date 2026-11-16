@@ -94,7 +94,7 @@ def test_the_host_integrates_the_states_of_the_background():
     np.testing.assert_allclose(tau, tau_lcdm, rtol=5e-6)
     t = np.concatenate(([0.0], np.cumsum(0.5 * (a[1:] + a[:-1]) * np.diff(tau_lcdm))))
     np.testing.assert_allclose(states["t"][1:], t[1:], rtol=1e-4)
-    tau0, _, _, start = background_endpoints(columns, LCDM_T)
+    tau0, _, start = background_endpoints(columns, LCDM_T)
     assert set(start) == {"t"}
     assert float(start["t"][0]) == pytest.approx(
         float(jnp.interp(0.1, tau, states["t"])), rel=1e-12

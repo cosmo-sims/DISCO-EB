@@ -264,7 +264,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `YHe`, `grhob` on `Baryons`, `Tcmb`, `grhog` on `Photons`, `Neff`,
      `grhornomass` on `MasslessNeutrinos`, `grhov` on both dark energies, the
      `w_DE_*`, `cs2_DE` on `DarkEnergy`, `Nmnu`, `mnu`, `grhor_nu`, `n_mnu`,
-     `amnu` on `MassiveNeutrinos`; `tau_reio` on `Recombination`
+     `amnu` on `MassiveNeutrinos`; `z_re` on `Recombination`
    - The gravity interface (2026-11-14): species contribute to the sums
      (fluids only) and read `adotoa`, `z`, `sigma`, which
      `component.Gravity` subclasses (`Background`, `Metric`, `Curvature`)
@@ -308,7 +308,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `LCDM(H0=67.3, Omegam=..., ...)`. The bases are the components in state
      order, a model among them standing for its own (`Model.__init_subclass__`
      builds `cls.spec`); `Model` subclasses `Recombination`, so every model
-     has `tau_reio`. `Component` carries `dataclass_transform`, so ty and
+     has `z_re`. `Component` carries `dataclass_transform`, so ty and
      pyright read the constructor's keyword arguments off the annotated
      declarations of every base (`tests/models/test_model.py` runs ty on
      user code). At run time the same signature is `cls.__signature__`, and
@@ -374,7 +374,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      state of its own, else fixed RK4 steps in `ln a` of those states
      (`background_model(model).stages()[0]`, scalars only) beside the time.
      `background_endpoints` vmaps it over a batch for `tau0`, `ln a` at
-     `TAU_START`, `z_re` and `start`, the model's own background states at
+     `TAU_START` and `start`, the model's own background states at
      `TAU_START`, which `_pack` writes into the initial state
      (`conformal_ages` reads it; the model is a static argument). Nothing is
      cached per batch: the whole preparation is JAX and traces under `jit`
@@ -390,7 +390,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    not, plus any key another component declares that a cosmology gives
    (`w_DE_0` in an LCDM dict); a key the solve reads but the model does not
    differentiate (outside `differentiable` = `differentiable_parameters(model)`:
-   `Nmnu`, `YHe`, `cs2_DE`, `tau_reio`, `w_DE_*` without `DarkEnergy`,
+   `Nmnu`, `YHe`, `cs2_DE`, `w_DE_*` without `DarkEnergy`,
    `mnu` without `MassiveNeutrinos`) passes through `_not_differentiable`, a `custom_jvp`
    whose rule raises, so a derivative is never a silent zero.
    A dictionary may leave out a key whose declaration has a default (`w_DE_0`,
@@ -398,8 +398,8 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    keys beyond its fixed fields. `ModelSpec.check` skips traced values
 
 6. **components/recombination.py** - Recombination history, inside the joint kernel
-   - RECFAST's `(x_H, x_He, T_m)`, `ln a` and the optical depth `kappa` are
-     five states of every trajectory, the `Recombination` component, a block
+   - RECFAST's `(x_H, x_He, T_m)`, `ln a`, the optical depth `kappa` and
+     reionization's part of it `kappa_reio` are six states of every trajectory, the `Recombination` component, a block
      of a modax `Hierarchy` stepping ahead of the perturbations
      (`kernel.joint_kernel`) and publishing `a`, `opacity` and `cs2` to them
      as quintic interpolants. Nothing is tabulated, and nothing names these
@@ -408,17 +408,23 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `thermal_history_batch`, `evolve_background`) was removed on 2026-11-11:
      it served only tests. `tests/components/test_recombination.py` reads the kernel's block
      through `solve_eb(..., keep=("a", "xe", "Tmat", "cs2", "opacity",
-     "kappa"))` at one wave mode (`kernel_thermal_history`): `x_e` within
+     "kappa", "kappa_reio"))` at one wave mode (`kernel_thermal_history`): `x_e` within
      0.36 percent of CLASS recfast, `T_m` 0.04, `c_b^2` 0.4 (9.7 in the
      tight-coupling switch window near z = 850)
    - The rates' transcendentals run in fp32 by default (`FP32_MATH`,
      `DISCO_THERMO_FP32_MATH`); `a` and the reionization opacity stay fp64
-   - Reionization: a cosmology's `tau_reio` (default 0, none) adds CAMB's tanh
-     step to `x_e` (H and HeII together, width 0.5 in `(1+z)^1.5`; HeIII at
-     z = 3.5), with `z_re` bisected on the optical depth on the background
-     (`_reionization_redshift`, residual recombination ionization neglected:
-     2e-4 of `tau_reio`). Same parametrization as CLASS `reio_camb`
-     (`tests/components/test_recombination.py`)
+   - Reionization: a cosmology's `z_re` (default 0, none), a directed
+     parameter, centres CAMB's tanh step in `x_e` (H and HeII together, width
+     0.5 in `(1+z)^1.5`; HeIII at z = 3.5). `tau_reio` is an output, the state
+     `kappa_reio` at `tau0` (2026-11-16; before, `tau_reio` was the input
+     and `z_re` a solver column bisected on the background). Same
+     parametrization as CLASS `reio_camb`: `kappa_reio(tau0)` against its
+     `tau_reio` at the same `z_reio` (`tests/components/test_recombination.py`).
+     A sensitivity launch weights `kappa_reio` by `REIO_ERROR_WEIGHT` = 1e4:
+     at the block's weight the steps across the 0.5-wide step resolve
+     `tau_reio` but not its `z_re` derivative (6 percent off; `dP/dz_re`
+     3), and the weight costs a primal P(k) batch with reionization 14
+     percent, so primal launches go without it
    - Hydrogen leaves Saha equilibrium on *redshift*, not on `x_H`: Saha slope
      above `Z_H_SAHA_END` = 1600, the rate equation below, the two slopes
      blended over 2 x `DZ_H_SAHA_BLEND` = 50 in z (CLASS 3's
@@ -461,10 +467,11 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      numba-enzyme optimises the primal with `O3` before Enzyme.
    - The parameter row is generated: `parameter_layout(model, extra)` (cached
      per resolved model) is `(x_nominal of each directed parameter,
-     SOLVER_COLUMNS = tau_start, tau_end, k, cosmology_tag, save_index, z_re,
+     SOLVER_COLUMNS = tau_start, tau_end, k, cosmology_tag, save_index,
      the other column parameters, eps, dir_x of each directed)`, the directed
      ones in `DIRECTED_NAMES` order, then component order. `grhok`, `w_DE_*`, `cs2_DE`,
-     `grhor_nu` and `amnu` are directed (2026-11-13); `amnu` is one
+     `grhor_nu` and `amnu` are directed (2026-11-13), `z_re` too
+     (2026-11-16, last: `Recombination` comes last); `amnu` is one
      declaration `MassiveNeutrinos` and `Recombination` share, and
      `Equations._collect` lets two components bring the same generated provider. `_rows` and the
      initial state iterate over the declarations. Host tests that build any
@@ -477,8 +484,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
 
 8. **solver/_sensitivities.py** - `_kept_values`: the hooked launch as a
    `jax.custom_jvp` in a pytree of variables that `to_inputs` maps to the
-   layout's directed inputs (`solve_eb` passes the cosmology columns and
-   `z_re`). Its rule (`symbolic_zeros=True`) replicates every trajectory once
+   layout's directed inputs (`solve_eb` passes the cosmology columns). Its rule (`symbolic_zeros=True`) replicates every trajectory once
    per *differentiated* variable, with direction `d inputs / d variable`
    from `jax.jvp` of `to_inputs`, so the cost is the number of parameters
    differentiated (5 for the densities' five), not of directed inputs, and
@@ -488,10 +494,10 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    column per replica and keeps each quantity's derivative beside it. fp64
    LU; the joint path's primal agrees with the plain fp32-LU one to ~1e-6 of
    scale. At *fixed tau0*: `matter_power_spectrum` adds the end-time
-   term `d tau0 / dp` itself. `z_re` stays fixed too: a directed `z_re`
-   with the implicit function theorem on the bisection was tried
-   (2026-11-13) and missed central differences of `P(k)` in `tau_reio` by
-   1.8 percent, so `tau_reio` is held. The rows, initial state and save times are
+   term `d tau0 / dp` itself. (A `tau_reio` input with the implicit
+   function theorem on a host bisection for `z_re` missed central
+   differences of `P(k)` by 1.8 percent on 2026-11-13; `z_re` is now the
+   input and differentiates directly.) The rows, initial state and save times are
    explicit arguments of the `custom_jvp`, never closed over, and the rule
    closes over no JAX array: JAX traces it lazily, after the enclosing
    `jit` trace, so a captured tracer breaks `jit(grad(jit(f)))`
@@ -519,8 +525,9 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    1e-2 (fp32 or fp64 rate math alike). The 0.5 to 2 percent thermal bias
    recorded before for `YHe`, `Tcmb`, `Omegab` was measured at small steps
    and may be mostly that noise (`Tcmb` and `Omegab` not re-measured).
-   `dP/dYHe`, `dP/dcs2_DE` and `dP/dtau_reio` stay 0.8, 1 and 1.8 percent
-   off at every step tried, so those three are held. Also `solve_perturbation_history_batch`,
+   `dP/dYHe` and `dP/dcs2_DE` stay 0.8 and 1 percent off at every step
+   tried, so those two are held. `dP/dz_re` needs a step of 1 in `z_re`:
+   it moves sum P by 1.4e-5 of itself per unit, so a step of 0.05 is noise. Also `solve_perturbation_history_batch`,
    `directed_inputs`, `conformal_ages`, `state_names(model)`
 
 10. **observables/power_spectrum.py** - `matter_power_spectrum(k, *, clxc, clxb,

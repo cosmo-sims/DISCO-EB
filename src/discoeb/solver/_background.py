@@ -25,7 +25,6 @@ from ..components.gravity import (  # noqa: F401 (the density constants, re-expo
     GRHOM_PER_H0SQ,
     GRHOR_PER_TCMB4,
 )
-from ..components.recombination import recombination_model
 from ..models._model import Model, ModelSpec
 
 
@@ -257,51 +256,14 @@ def _background_solution(d, model: ModelSpec):
     return a_bg, tau, states
 
 
-def _reionization_redshift(a_bg, tau_bg, params, tau_reio):
-    """Bisect for ``z_re`` of CAMB's step on the background grid.
-
-    Returns 0 unless ``tau_reio > 0``. Neglects the residual ionization left by
-    recombination (``xe_rec = 0``), which shifts ``tau_reio`` by 2e-4 of itself.
-    """
-
-    dtau = jnp.gradient(tau_bg)
-    thermal = {name: params[name] for name in ("YHe", "Omegab", "H0")}
-
-    def tau_of(z_re):
-        xe_reio, akthom = recombination_model().evaluate(
-            "xe_reio",
-            "akthom",
-            math=jnp,
-            inv_a=1.0 / a_bg,
-            xe_rec=0.0,
-            z_re=z_re,
-            **thermal,
-        )
-        return jnp.sum(xe_reio * akthom / a_bg**2 * dtau)
-
-    def bisect(carry, _):
-        lo, hi = carry
-        mid = 0.5 * (lo + hi)
-        too_much = tau_of(mid) > tau_reio
-        return (jnp.where(too_much, lo, mid), jnp.where(too_much, mid, hi)), None
-
-    (lo, hi), _ = jax.lax.scan(
-        bisect, (jnp.asarray(1.0), jnp.asarray(40.0)), None, length=40
-    )
-    return jnp.where(tau_reio > 0.0, 0.5 * (lo + hi), 0.0)
-
-
 @functools.partial(jax.jit, static_argnums=(1,))
 def background_endpoints(stacked, model: ModelSpec):
-    """Return ``(tau0, lna_start, z_re, start)`` of stacked background parameters, one vmap lane each.
+    """Return ``(tau0, lna_start, start)`` of stacked background parameters, one vmap lane each.
 
     ``model`` gives the species (:func:`background_model`).
 
     ``tau0`` is the conformal age, where each trajectory stops. ``lna_start`` is
-    ``ln a`` at :data:`TAU_START`, where it starts. ``z_re`` is the reionization
-    redshift that gives ``tau_reio`` (0 without reionization). The bisection for
-    it runs on the background and neglects the residual ionization left by
-    recombination, which shifts ``tau_reio`` by 2e-4 of itself. ``start``
+    ``ln a`` at :data:`TAU_START`, where it starts. ``start``
     holds the model's own background states at :data:`TAU_START` by name
     (:func:`_background_solution`), empty for the built-in models.
     """
@@ -311,9 +273,8 @@ def background_endpoints(stacked, model: ModelSpec):
             density_parameters(params, model=model), model
         )
         lna_start = jnp.log(jnp.interp(TAU_START, tau_bg, a_bg))
-        z_re = _reionization_redshift(a_bg, tau_bg, params, params["tau_reio"])
         start = {n: jnp.interp(TAU_START, tau_bg, v) for n, v in states.items()}
-        return tau_bg[-1], lna_start, z_re, start
+        return tau_bg[-1], lna_start, start
 
     return jax.vmap(one)(stacked)
 

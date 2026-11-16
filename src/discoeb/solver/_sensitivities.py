@@ -16,7 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.custom_derivatives import SymbolicZero
 
-from ..components.recombination import THERMO_ERROR_WEIGHT
+from ..components.recombination import REIO_ERROR_WEIGHT, THERMO_ERROR_WEIGHT
 from ._background import density_parameters
 from ._kernel import (
     PERTURB_ATOL,
@@ -207,6 +207,7 @@ def _kept_values(
                 # threads the driver reserves local memory for.
                 max_registers=None,
                 sens_error_control=False,
+                reio_weight=REIO_ERROR_WEIGHT,
                 **settings,
             )
             return out

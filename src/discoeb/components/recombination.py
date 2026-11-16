@@ -29,13 +29,12 @@ here in pure Python, based on the original code by Douglas Scott.
 
 from __future__ import annotations
 
-import functools
 import math
 import os
 
 from jax.typing import ArrayLike
 
-from ._component import Component, Equations, Parameter, State, float32, float64
+from ._component import Component, Parameter, State, float32, float64
 
 # RECFAST's physical and atomic constants (PDG 2023 where noted).
 const_mH = 1.67353284e-27  # H atom mass [kg], PDG 2023
@@ -147,6 +146,18 @@ The block takes its own steps ahead of the hierarchy, so the weight sets the
 thermal state's accuracy and the number of RECFAST evaluations, not the
 hierarchy's steps. ``P(k)`` does not change between 0.3 and 100. A weight of
 0 leaves the block's steps uncontrolled."""
+
+REIO_ERROR_WEIGHT = 1.0e4
+"""Weight of ``kappa_reio`` in the error norm of a sensitivity launch.
+
+Reionization's step is 0.5 wide in ``z``, ~150 Mpc of conformal time. At
+the block's weight the steps across it resolve ``tau_reio`` (to 2e-4) but
+not its derivative in ``z_re``, which the sensitivities carry without error
+control: ``d tau_reio / d z_re`` came out 6 percent high and ``dP/dz_re``
+3 percent off. ``kappa_reio`` changes only there, so its weight refines
+those steps alone; at 1e4 the derivative is converged. It costs a P(k)
+batch with reionization 14 percent, so primal launches go without it
+(2026-11-16)."""
 
 AKTHOM_PER_OMEGAB_H0SQ = 2.3038921003709498e-9
 """``n_H sigma_T c / (H_0 units)``: ``kappa' = x_e akthom / a^2`` with
@@ -309,11 +320,18 @@ def helium_rate(x_H, x_He, xe, Tmat, z, a, n_H, Hz, Tcmb, Nnow, fHe):
 
 
 def helium_rate_equation(x_H, x_He, xe, Tmat, z, n_H, Hz, fHe):
-    """The singlet and triplet rate equations of HeI recombination, ``d x_He / d z``."""
+    """The singlet and triplet rate equations of HeI recombination, ``d x_He / d z``.
+
+    ``1 - x_He`` has a floor of 1e-6. The equations hold for ``x_He < 1``
+    (at the handover from Saha it is 1e-3 or more), and a solver stage that
+    probes ``x_He >= 1`` makes the escape probabilities ``(1 - exp(-tau)) /
+    tau`` overflow or 0/0. That NaN stalled one sweep cosmology's block at
+    ``max_steps`` once a sixth state changed its step sequence (2026-11-16).
+    """
 
     Hz_z_term = Hz * (1.0 + z)
     n_He = fHe * n_H
-    one_minus_x_He = 1.0 - x_He
+    one_minus_x_He = max(1.0 - x_He, 1.0e-6)
     one_minus_x_H = 1.0 - x_H
     n_He_1_minus_x_He = n_He * one_minus_x_He
     CR_Tmat = CR * Tmat
@@ -468,7 +486,9 @@ class Recombination(Component):
     whose rates in ``z`` convert with ``dz/dtau = -adotoa / a``. ``kappa`` is
     ``int_{tau_start}^tau kappa' dtau``, from which the hook of
     :mod:`discocmb.cmb` forms the visibility
-    ``kappa'(tau) exp(-(kappa(tau_0) - kappa(tau)))``. The hierarchy reads
+    ``kappa'(tau) exp(-(kappa(tau_0) - kappa(tau)))``. ``kappa_reio`` is the
+    part of it from reionization's electrons, so ``kappa_reio(tau_0)`` is
+    ``tau_reio``. The hierarchy reads
     ``a``, ``opacity``
     (``kappa' = x_e n_H sigma_T a``, with reionization) and ``cs2`` (from
     ``T_m`` and its own rate, no spline derivative). Nothing marks these
@@ -479,10 +499,11 @@ class Recombination(Component):
     lna = State(initial=lambda lna_start: lna_start)
     thermo = State(3, initial=_thermo_initial)
     kappa = State()
+    kappa_reio = State()
 
-    # The reionization optical depth sets the solver's column z_re. The
-    # rates read YHe, Tcmb, H0 and Omegab, which the species declare.
-    tau_reio: ArrayLike = Parameter(0.0)
+    # The rates read YHe, Tcmb, H0 and Omegab, which the species declare.
+    z_re: ArrayLike = Parameter(0.0, directed=True)
+    """The redshift half way through CAMB's reionization step (0: none)."""
 
     def a(self, lna):
         """``exp(ln a)`` in double precision, since the hierarchy needs it smooth in the parameters.
@@ -602,14 +623,6 @@ class Recombination(Component):
     def d_kappa(self, opacity):
         return opacity
 
-
-@functools.cache
-def recombination_model() -> Equations:
-    """:class:`Recombination` as a model of its own, for evaluating its providers on the host.
-
-    This way the device kernel, the background solve for ``z_re`` and the
-    diagnostics' thermal histories all share one piece of code for the
-    reionization fraction, the opacity and the sound speed.
-    """
-
-    return Equations([Recombination()])
+    def d_kappa_reio(self, xe_reio, akthom, inv_a2):
+        """The opacity of reionization's electrons alone, whose integral is ``tau_reio``."""
+        return xe_reio * akthom * inv_a2

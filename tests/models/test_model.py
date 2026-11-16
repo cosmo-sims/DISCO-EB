@@ -158,7 +158,7 @@ def test_a_cosmology_is_an_immutable_pytree_of_its_parameters():
     assert planck.to_dict() == {**LCDM.parameter_keys(), **BASE_COSMOLOGY} | {
         "k_p": 0.05,
         "Omegak": 0.0,
-        "tau_reio": 0.0,
+        "z_re": 0.0,
     }
     later = planck.replace(H0=70.0)
     assert later.H0 == 70.0 and planck.H0 == 67.0

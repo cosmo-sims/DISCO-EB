@@ -43,7 +43,8 @@ def test_two_copies_share_a_model():
     names = LCDM_XY.state_names()
     assert names[-4:] == ("x_delta", "x_theta", "y_delta", "y_theta")
     layout = parameter_layout(LCDM_XY)
-    assert layout.directed[-2:] == ("x_grho0", "y_grho0")
+    # the reionization redshift, declared by the recombination block, comes last
+    assert layout.directed[-3:] == ("x_grho0", "y_grho0", "z_re")
     assert {"x_w", "y_cs2", "x_grho0_nominal", "dir_y_grho0"} <= set(layout.columns)
     # unnamed, the fluid's theta is the photons'
     with pytest.raises(ValueError, match="theta"):
@@ -81,10 +82,10 @@ def test_make_initial_states_uses_the_model():
     y0 = make_initial_states(
         cosmology, np.array([1e-2, 1e-1]), model, -15.0, cosmology_model=LCDM.spec
     )
-    assert y0.shape == (2, 55) and np.isfinite(y0).all()
+    assert y0.shape == (2, 56) and np.isfinite(y0).all()
     np.testing.assert_allclose(y0[:, 0], [-1e-2, -1e-1], rtol=1e-3)  # etak ~ -k
     np.testing.assert_allclose(
-        y0[:, 50:], [[-15.0, 1.0, 2.0, 2.7255 * np.exp(15.0), 0.0]] * 2
+        y0[:, 50:], [[-15.0, 1.0, 2.0, 2.7255 * np.exp(15.0), 0.0, 0.0]] * 2
     )  # the thermal state
 
 
@@ -227,7 +228,7 @@ def test_the_recombination_block_publishes_the_thermal_quantities():
 
     nvar = len(LCDM.state_names())
     model, hierarchy = joint_kernel(LCDM)
-    assert model.nvar == nvar + 5
+    assert model.nvar == nvar + 6
     perturbations, recombination = hierarchy.blocks[-1], hierarchy.blocks[0]
     assert hierarchy.layout == (
         perturbations,
@@ -236,9 +237,9 @@ def test_the_recombination_block_publishes_the_thermal_quantities():
     # nothing declares the split: the trace finds the states that read no
     # wave number and the fewest quantities the hierarchy needs of them
     background, others = model.stages()
-    assert background == ("lna", "thermo", "kappa")
+    assert background == ("lna", "thermo", "kappa", "kappa_reio")
     assert model.published() == ("a", "opacity", "cs2")
-    assert recombination.n == 5 and recombination.n_outputs == 3
+    assert recombination.n == 6 and recombination.n_outputs == 3
     assert perturbations.n == nvar and perturbations.reads == (recombination,)
     assert model.state_indices(background) == list(thermal_indices(model))
     # the hierarchy alone, as the model's sparsity traces it: 173 entries
@@ -292,7 +293,7 @@ class Ageing(Interaction):
 def test_a_state_that_reads_no_wave_number_joins_the_background():
     model = joint_model(LCDM_T)
     background, perturbations = model.stages()
-    assert background == ("t", "lna", "thermo", "kappa")
+    assert background == ("t", "lna", "thermo", "kappa", "kappa_reio")
     assert "t" not in perturbations and "clxc" in perturbations
     # nobody reads it, so the perturbations are handed what LCDM's are
     assert model.published() == ("a", "opacity", "cs2")
@@ -335,7 +336,7 @@ def test_the_kernel_carries_the_state_to_today():
 def test_the_field_is_background_and_its_perturbation_is_not():
     model = joint_model(QCDM)
     background, perturbations = model.stages()
-    assert background == ("phi", "phidot", "lna", "thermo", "kappa")
+    assert background == ("phi", "phidot", "lna", "thermo", "kappa", "kappa_reio")
     assert {"dphi", "ddphi"} <= set(perturbations)
     # the perturbations read the field's velocity itself, and the potential
     # stands for the field: its slope and curvature follow from it

@@ -13,7 +13,7 @@ from helpers import (
 # --- The recombination history of the perturbation kernel against CLASS, and the time of its solve.
 
 
-THERMAL_KEEP = ("a", "xe", "Tmat", "cs2", "opacity", "kappa")
+THERMAL_KEEP = ("a", "xe", "Tmat", "cs2", "opacity", "kappa", "kappa_reio")
 
 
 THERMAL_K = np.array([1.0e-3])
@@ -127,7 +127,8 @@ def test_recfast_matches_class(n_cosmologies, benchmark):
 # --- Reionization in the thermal history.
 
 
-TAU_REIO = 0.0544
+Z_RE = 7.67
+"""Planck 2018's midpoint of CAMB's step, for ``tau_reio`` near 0.054."""
 
 
 LATE = 0.3
@@ -135,8 +136,8 @@ LATE = 0.3
 the recombination tail adds ~1e-4 to their optical depth."""
 
 
-def _class_z_reio(tau_reio):
-    """CLASS's reionization redshift for CAMB's step at ``tau_reio``."""
+def _class_tau_reio(z_re):
+    """CLASS's optical depth of CAMB's step at ``z_re``."""
 
     Class = pytest.importorskip("classy").Class
     c = Class()
@@ -145,44 +146,49 @@ def _class_z_reio(tau_reio):
             **_class_base(REFERENCE_COSMOLOGY),
             "recombination": "recfast",
             "reio_parametrization": "reio_camb",
-            "tau_reio": tau_reio,
+            "z_reio": z_re,
         }
     )
     try:
         c.compute()
-        return c.get_current_derived_parameters(["z_reio"])["z_reio"]
+        return c.get_current_derived_parameters(["tau_reio"])["tau_reio"]
     finally:
         c.struct_cleanup()
         c.empty()
 
 
-def _late_history(tau_reio):
-    """``(a, visibility, late optical depth)`` after :data:`LATE` ``tau0``, from the kernel."""
+def _late_history(z_re):
+    """``(a, visibility, late optical depth, tau_reio)`` after :data:`LATE` ``tau0``, from the kernel."""
 
-    tau, tau0, history = kernel_thermal_history(
-        [{**REFERENCE_COSMOLOGY, "tau_reio": tau_reio}]
-    )
+    tau, tau0, history = kernel_thermal_history([{**REFERENCE_COSMOLOGY, "z_re": z_re}])
     late = tau > LATE * tau0[0]
     kappa = history["kappa"][0]
     visibility = history["opacity"][0] * np.exp(-(kappa[-1] - kappa))
-    return history["a"][0][late], visibility[late], float(kappa[-1] - kappa[late][0])
+    return (
+        history["a"][0][late],
+        visibility[late],
+        float(kappa[-1] - kappa[late][0]),
+        float(history["kappa_reio"][0][-1]),
+    )
 
 
 @pytest.mark.gpu
 def test_reionization_optical_depth():
-    """The late optical depth is tau_reio, and the bump sits where CLASS puts z_reio."""
+    """``kappa_reio`` today is CLASS's tau_reio at the same z_re, and the bump sits at z_re."""
 
-    a, g, tau_late = _late_history(TAU_REIO)
-    assert abs(tau_late - TAU_REIO) < 1.0e-3, tau_late
+    a, g, tau_late, tau_reio = _late_history(Z_RE)
+    tau_class = _class_tau_reio(Z_RE)
+    assert abs(tau_reio - tau_class) < 1.0e-3, (tau_reio, tau_class)
+    # the late optical depth is reionization's plus the recombination tail
+    assert 0.0 < tau_late - tau_reio < 5.0e-4, (tau_late, tau_reio)
     z_bump = 1.0 / a[np.argmax(g)] - 1.0
-    # the visibility peaks a little below z_reio (the step is half way there); 1.5 in z
-    z_reio_class = _class_z_reio(TAU_REIO)
-    assert abs(z_bump - z_reio_class) < 1.5, (z_bump, z_reio_class)
+    # the visibility peaks a little below z_re (the step is half way there)
+    assert abs(z_bump - Z_RE) < 1.5, z_bump
 
 
 @pytest.mark.gpu
 def test_no_reionization_by_default():
-    """tau_reio = 0 (the default) adds no optical depth after recombination."""
+    """z_re = 0 (the default) adds no optical depth after recombination."""
 
-    _, _, tau_late = _late_history(0.0)
-    assert tau_late < 5.0e-4
+    _, _, tau_late, tau_reio = _late_history(0.0)
+    assert tau_late < 5.0e-4 and tau_reio == 0.0

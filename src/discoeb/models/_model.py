@@ -314,7 +314,7 @@ class Model(Recombination):
     checker reads them off the declarations (the ``dataclass_transform`` on
     :class:`~discoeb.components._component.Component`), and ``help``, IPython and the
     class docstring list them. Every model has the recombination block,
-    whose ``tau_reio`` it inherits from
+    whose ``z_re`` it inherits from
     :class:`~discoeb.components.recombination.Recombination`.
 
     Class keywords set component settings, ``class Coarse(LCDM, LMAX_G=10)``,

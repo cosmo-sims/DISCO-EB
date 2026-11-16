@@ -152,9 +152,9 @@ def test_solve_eb_derivatives():
     assert np.all(grad_theta != 0.0)
 
     # mnu needs MassiveNeutrinos, cs2_DE DarkEnergy. The sensitivities in
-    # YHe, cs2_DE and tau_reio miss central differences of P(k) by 0.8, 1
-    # and 1.8 percent (2026-11-13), so they stay held.
-    for key, value in (("mnu", 0.0), ("YHe", 0.245), ("tau_reio", 0.054)):
+    # YHe and cs2_DE miss central differences of P(k) by 0.8 and 1 percent
+    # (2026-11-13), so they stay held.
+    for key, value in (("mnu", 0.0), ("YHe", 0.245)):
         with pytest.raises(ValueError, match="cannot be differentiated"):
             jax.grad(
                 lambda v, key=key: jnp.sum(
@@ -172,8 +172,8 @@ def test_solve_eb_derivatives():
 # (2026-11-13, RTX 4070 SUPER), largest over R and clxb: w_DE_0 1.6e-4,
 # w_DE_a 3.4e-4, Omegak 2.7e-4, mnu 9.8e-4 (dR/dmnu). Of sum P(k): w_DE_0
 # 6.9e-5, w_DE_a 1.3e-6, Omegak 1.5e-5, mnu 7.2e-5. The gate is 1e-3, 2e-3
-# for mnu's solve. YHe, cs2_DE and tau_reio missed P(k) by 0.8, 1 and 1.8
-# percent at every step tried and stay held.
+# for mnu's solve. YHe and cs2_DE missed P(k) by 0.8 and 1 percent at every
+# step tried and stay held.
 MORE_SOLVE_GATES = {"mnu": 2.0e-3}
 
 

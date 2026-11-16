@@ -21,7 +21,7 @@ class Coarse(LCDM, LMAX_G=10, LMAX_NR=10):  # shorter hierarchies
 
 # Keeping quantities
 
-`solve_eb` records only what you name in `keep`. A name can be a state element, such as `clxc`, `theta_2` or `psi_0_1`, which `state_names(model)` lists. It can also be any quantity the model provides, such as the comoving curvature perturbation `R`, the shear `sigma`, the expansion rate `adotoa` or the Thomson `opacity`. The recombination block adds `xe`, `Tmat`, `cs2` and the optical depth `kappa`.
+`solve_eb` records only what you name in `keep`. A name can be a state element, such as `clxc`, `theta_2` or `psi_0_1`, which `state_names(model)` lists. It can also be any quantity the model provides, such as the comoving curvature perturbation `R`, the shear `sigma`, the expansion rate `adotoa` or the Thomson `opacity`. The recombination block adds `xe`, `Tmat`, `cs2`, the optical depth `kappa` and reionization's part of it, `kappa_reio`, whose value today is `tau_reio`.
 
 The device holds `n_cosmologies * n_k * n_tau * len(keep)` numbers and never the full state history.
 

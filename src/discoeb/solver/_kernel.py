@@ -28,11 +28,10 @@ PERTURB_ATOL = 1.0e-4
 PERTURB_FIRST_STEP = 1.0e-2
 PERTURB_MAX_STEPS = 20000
 
-SOLVER_COLUMNS = ("tau_start", "tau_end", "k", "cosmology_tag", "save_index", "z_re")
+SOLVER_COLUMNS = ("tau_start", "tau_end", "k", "cosmology_tag", "save_index")
 """The row's columns the solver sets rather than a component: the
-integration span, the wave number, the cosmology's index in the batch, the
-save counter and the reionization redshift the background finds for
-``tau_reio``."""
+integration span, the wave number, the cosmology's index in the batch and
+the save counter."""
 
 DIRECTED_NAMES = (
     "grhog",
@@ -252,7 +251,6 @@ class _PreparedSolve(NamedTuple):
     ode_fn: object  # the modax Hierarchy
     tau0: jax.Array  # (n_cosmologies,)
     lna_start: jax.Array
-    z_re: jax.Array
     params: jax.Array  # (n_k * n_cosmologies, layout.n)
     y0: jax.Array  # (n_k * n_cosmologies, nvar)
     order: np.ndarray  # the caller's wave modes, sorted
@@ -289,7 +287,7 @@ def _prepare_solve(
     if columns is None:
         columns = _columns(cosmologies, keys=resolved.parameter_keys())
     columns = jax.lax.stop_gradient(columns)
-    tau0, lna_start, z_re, params, y0 = _pack(
+    tau0, lna_start, params, y0 = _pack(
         resolved, tuple(extra), tuple(k_sorted.tolist()), columns
     )
     return _PreparedSolve(
@@ -300,7 +298,6 @@ def _prepare_solve(
         hierarchy,
         tau0,
         lna_start,
-        z_re,
         params,
         y0,
         order,
@@ -310,7 +307,7 @@ def _prepare_solve(
 
 @functools.partial(jax.jit, static_argnums=(0, 1, 2))
 def _pack(model: ModelSpec, extra, k_sorted, columns):
-    """Return ``(tau0, lna_start, z_re, params, y0)`` of a batch's columns, on the device.
+    """Return ``(tau0, lna_start, params, y0)`` of a batch's columns, on the device.
 
     The background endpoints come from the vmapped quadrature
     (:func:`~discoeb.solver._background.background_endpoints`), the rows from
@@ -320,10 +317,10 @@ def _pack(model: ModelSpec, extra, k_sorted, columns):
 
     joint, _ = joint_kernel(model, extra)
     layout = parameter_layout(model, extra)
-    tau0, lna_start, z_re, start = background_endpoints(columns, model)
+    tau0, lna_start, start = background_endpoints(columns, model)
     n_cosmo, n_k = tau0.shape[0], len(k_sorted)
     values = density_parameters(columns, model=model)
-    params = jnp.tile(_rows(layout, values, tau0, z_re), (n_k, 1))
+    params = jnp.tile(_rows(layout, values, tau0), (n_k, 1))
     k = jnp.repeat(jnp.asarray(k_sorted, dtype=jnp.float64), n_cosmo)
     params = params.at[:, layout.columns["k"]].set(k)
     params = params.at[:, layout.columns["cosmology_tag"]].set(
@@ -340,10 +337,10 @@ def _pack(model: ModelSpec, extra, k_sorted, columns):
     # integration from A_START has brought it.
     for name, value in start.items():
         y0 = y0.at[:, joint.index[name]].set(jnp.tile(value, n_k))
-    return tau0, lna_start, z_re, params, y0
+    return tau0, lna_start, params, y0
 
 
-def _rows(layout: ParameterLayout, values, tau_end, z_re):
+def _rows(layout: ParameterLayout, values, tau_end):
     """Return the cosmologies' parameter rows ``(n_cosmologies, layout.n)``, without the wave number.
 
     ``values`` are the model's parameters
@@ -355,7 +352,6 @@ def _rows(layout: ParameterLayout, values, tau_end, z_re):
     by_column[layout.columns["tau_start"]] = TAU_START
     by_column[layout.columns["tau_end"]] = tau_end
     by_column[layout.columns["save_index"]] = 1.0
-    by_column[layout.columns["z_re"]] = z_re
     n_cosmo = jnp.shape(tau_end)
     return jnp.stack(
         [
@@ -373,7 +369,6 @@ def make_params(
     cosmology,
     k_values: np.ndarray,
     tau_end: float,
-    z_re: float = 0.0,
     *,
     model: ModelSpec,
 ) -> np.ndarray:
@@ -387,7 +382,6 @@ def make_params(
         parameter_layout(model),
         density_parameters(columns, model=model),
         jnp.asarray([tau_end]),
-        z_re,
     )
     params = np.tile(np.asarray(row), (len(k_values), 1))
     params[:, parameter_layout(model).columns["k"]] = k_values
@@ -428,12 +422,17 @@ def make_initial_states(
 
 
 def error_weights_for(
-    prepared, n_traj: int, base=None, thermo_weight: float = THERMO_ERROR_WEIGHT
+    prepared,
+    n_traj: int,
+    base=None,
+    thermo_weight: float = THERMO_ERROR_WEIGHT,
+    reio_weight: float | None = None,
 ):
     """Return the solver's error weights ``(n_traj, nvar)``.
 
     ``base`` (or ones) weights the hierarchy and ``thermo_weight`` the
-    recombination block. The optical depth gets the block's weight too, so its
+    recombination block, and ``reio_weight`` (if given) ``kappa_reio``. The optical
+    depth gets the block's weight too, so its
     error counts against ``rtol |kappa|``. The block's steps then resolve its
     increments where ``kappa`` is of order one, through recombination and after,
     which is where ``exp(-kappa)`` reads them. Unweighted, it left the lensed TT
@@ -446,6 +445,8 @@ def error_weights_for(
         base = np.asarray(base, dtype=np.float64)
         weights[:, : base.shape[-1]] = base
     weights[:, list(thermal_indices(model))] = thermo_weight
+    if reio_weight is not None:
+        weights[:, model.index["kappa_reio"]] = reio_weight
     return weights
 
 
@@ -482,6 +483,7 @@ def _launch(
     max_steps,
     error_weights=None,
     thermo_weight=THERMO_ERROR_WEIGHT,
+    reio_weight=None,
     lu_precision="fp32",
     max_registers=CUDA_MAX_REGISTERS,
     **extra,
@@ -520,7 +522,7 @@ def _launch(
         trajectories_per_block=TRAJECTORIES_PER_BLOCK,
         max_registers=max_registers,
         error_weights=error_weights_for(
-            prepared, np.shape(head)[0], error_weights, thermo_weight
+            prepared, np.shape(head)[0], error_weights, thermo_weight, reio_weight
         ),
         cache=True,
         **extra,
