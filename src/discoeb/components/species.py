@@ -1,12 +1,5 @@
-"""The species of the linear Einstein-Boltzmann system, as components.
-
-Each species is a :mod:`discoeb.components._component` component that owns its
-perturbation variables and states its own equations. A function names what
-it needs in its signature, as in ``d_vb(adotoa, vb, k, cs2, clxb)``, and
-:class:`~discoeb.components._component.Equations` injects it. A species sees another only
-through the quantities it publishes. Couplings between species live in
-:mod:`discoeb.components.interactions`, the metric and the Friedmann sum in
-:mod:`discoeb.components.gravity`. Conventions are CAMB's (see :mod:`discoeb.components.gravity`).
+"""
+Each species is a :mod:`discoeb.components._component` that owns its own state.
 
 The Boltzmann hierarchies are vector states: ``theta`` holds ``Theta_0 ..
 Theta_lmax``, ``e`` holds ``E_2 .. E_lmax``, ``n`` the neutrino multipoles
@@ -14,15 +7,7 @@ and ``psi`` one row per massive-neutrino momentum bin. Their equations loop
 over multipoles and share the free-streaming tail in :func:`stream`. The
 truncations are component settings: ``LMAX_G`` and ``LMAX_POL`` on
 :class:`Photons`, ``LMAX_NR`` on :class:`MasslessNeutrinos`, ``LMAX_NU`` and
-``NQMAX`` on :class:`MassiveNeutrinos`. ``DISCO_<NAME>`` in the environment,
-a model's settings or a constructor argument overrides each one, and the
-equations read them as ``self.NQMAX`` like any attribute.
-
-Each state carries its adiabatic initial condition (CAMB's ``initial()``
-series at ``k tau << 1``, using the growing-mode quantities of
-:class:`~discoeb.components.gravity.AdiabaticMode`). The photon monopole, dipole and
-quadrupole are ``theta[0]``, ``theta[1]``, ``theta[2]``. The scalar names
-``clxg``, ``qg``, ``pig`` and ``E2`` exist for the equations that read them.
+``NQMAX`` on :class:`MassiveNeutrinos`.
 """
 
 from __future__ import annotations
@@ -63,14 +48,10 @@ def _needs_octupole(**lmax):
 
 
 class ColdDarkMatter(Species):
-    """Cold dark matter, the species whose rest frame defines the gauge.
-
-    Synchronous gauge leaves the choice of the initial hypersurface open.
-    The equations of :mod:`discoeb.components.gravity` take the one on which this
-    species is at rest, so it has a density contrast and no velocity
-    (``fixes_gauge``). A model must keep it, at whatever density. Dark
-    matter that feels a force has a velocity of its own and is another
-    species beside it (:class:`Fluid`).
+    """Cold dark matter. Synchronous gauge leaves the choice of the initial hypersurface open.
+    The equations of :mod:`discoeb.components.gravity` take the one in which this
+    species is at rest, so it has a density contrast but no velocity
+    (``fixes_gauge``).
     """
 
     fixes_gauge = True
@@ -162,7 +143,7 @@ class Fluid(Species):
     ``grho_radiation``.
 
     Its names (``delta``, ``theta``, ``w``, ``cs2``) are generic, so a model
-    lists it under a name of its own, any number of times::
+    must rename it appropriately::
 
         LCDM.add(Fluid.named("dr"), name="LCDM+dr")   # dr_Omega, dr_w, dr_delta ...
     """
@@ -423,7 +404,7 @@ class Photons(Species):
 
 
 class MasslessNeutrinos(Species):
-    """Massless neutrinos ``n`` (``N_0 .. N_LMAX_NR``): collisionless free streaming."""
+    """Massless neutrinos ``n`` (``N_0 .. N_LMAX_NR``) exhibit collisionless free streaming."""
 
     LMAX_NR = Setting(15)
 

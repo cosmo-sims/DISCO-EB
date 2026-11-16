@@ -22,33 +22,9 @@
 # This file contains a numba-CUDA version of the recfast equations, adapted for use in the DISCO-EB module.
 # The rest of the DISCO-EB module is distributed under the MIT license.
 ####################################################################################################################
-
-"""The recombination history as states of each wave mode's trajectory.
-
-RECFAST's ``(x_H, x_He, T_m)``, ``ln a`` from the model's own Friedmann sum
-and the optical depth ``kappa = int kappa' dtau`` are five extra states in
-front of the Einstein-Boltzmann hierarchy. From them :class:`Recombination`
-provides the hierarchy with ``a``, the Thomson opacity, ``c_s^2`` and the
-massive-neutrino density ratio. These states read nothing of the hierarchy,
-so the joint model is a modax hierarchy of two blocks
-(:func:`discoeb.perturbations.joint_kernel`). The recombination block steps
-on its own ahead of the hierarchy and publishes the four quantities, which
-modax hands over as quintic polynomials of time between its steps. Nothing
-is tabulated and no device buffer is refilled: the right-hand side compiles
-once per model and serves every batch.
-
-RECFAST's equations are unaltered, with two implementation choices beside
-them. ``x_H`` is clamped to ``[0, 1]``: a hierarchy-sized step can overshoot
-the Saha-to-rate handover at ``z = 1600``, after which the rate equation's
-denominator changes sign and drives ``x_H`` away. And the rates'
-transcendental functions run in single precision by default
-(:data:`FP32_MATH`).
-
-Reionization follows CAMB. Hydrogen and HeII reionize together in a tanh
-step of width 0.5 in ``y = (1+z)^{3/2}`` about ``z_re``, HeIII at
-``z = 3.5``. ``z_re`` is a column of the parameter row, which
-:func:`discoeb.perturbations.background_endpoints` solves from the optical
-depth ``tau_reio`` on the background.
+"""
+The thermal recombination history as calculated by RECFAST, which is reimplemented
+here in pure Python, based on the original code by Douglas Scott.
 """
 
 from __future__ import annotations

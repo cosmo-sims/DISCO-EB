@@ -1,7 +1,6 @@
 """
-Interactions between species are defined by :class:`~discoeb.components._component.Interaction`
-instances that contribute to the derivatives of other components' states, but hold no state
-themselves.
+Couplings between species are defined by :class:`~discoeb.components._component.Interaction`
+classes. These contribute to the derivatives of species' states, but hold no state themselves.
 """
 
 from __future__ import annotations
