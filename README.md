@@ -58,23 +58,29 @@ You need a GPU to run a solve, but not to import the package. modax brings the C
 
 <!-- start:quickstart -->
 
-A cosmology is an instance of a model, with the model's parameters as keyword arguments. This example keeps the comoving curvature perturbation $\mathcal{R}$ and the CDM density contrast of flat LCDM, for 64 wave modes at 100 conformal times:
+A cosmology is an instance of a model, with the model's parameters as keyword arguments. This example keeps the comoving curvature perturbation $\mathcal{R}$ and the CDM density contrast of flat LCDM, for 64 wave modes at 100 scale factors:
 
 ```python
 import numpy as np
 from discoeb import LCDM, solve_eb
 
-h = 0.6732
-planck = LCDM(
-    Omegam=0.1424 / h**2, Omegab=0.02238 / h**2, H0=100 * h,
+planck = LCDM.from_density_parameters(
+    Omegam=0.3142, Omegab=0.0494, H0=67.32,
     A_s=2.1e-9, n_s=0.966, Tcmb=2.7255, YHe=0.2454, Neff=3.046,
 )
 k = np.geomspace(1e-4, 1.0, 64)      # 1/Mpc
-tau = np.geomspace(1.0, 2e4, 100)    # Mpc, the last times past today
+a = np.geomspace(1e-6, 1.0, 100)     # scale factors, the last one today
 
-values = solve_eb([planck, planck.replace(H0=70.0)], k, tau, keep=("R", "clxc"))
-R = values[:, 0]  # (2, 64, 100): cosmologies, wave modes, times
+values = solve_eb([planck, planck.replace(omega_c=0.125)], k, a, keep=("R", "clxc"))
+R = values[:, 0]  # (2, 64, 100): cosmologies, wave modes, scale factors
 ```
+
+A model's own parameters are physical densities, `omega_b`, `omega_c` and
+`omega_de` ($\omega = \Omega h^2$), and `planck.H0` is what they sum to.
+`from_density_parameters` takes $\Omega_m$, $\Omega_b$ and $H_0$ and
+finds the dark-energy density that closes the budget. The solve integrates
+in the scale factor, so nothing runs before it and every cosmology ends at
+`a = 1`. Keep `tau` for the conformal time.
 
 `discoeb.models` has `LCDM`, `W0WACDM` (a CPL dark-energy fluid) and their
 massive-neutrino variants `LCDM_MNU` and `W0WACDM_MNU`. Each takes exactly

@@ -2,7 +2,9 @@
 
 A model is a class whose bases are its components: the species it evolves (`discoeb.components.species`), the interactions between them (`discoeb.components.interactions`) and the metric and Friedmann sum (`discoeb.components.gravity`). An instance of a model is a cosmology. `discoeb.models` defines `LCDM` and `W0WACDM`, each with a massive-neutrino variant (`LCDM_MNU`, `W0WACDM_MNU`).
 
-The components declare the parameters, so a model's constructor takes exactly its own, by keyword. A type checker reads them from the declarations and flags a missing or unknown one, as the constructor does at run time. `help(LCDM)` lists them. A cosmology is immutable: `planck.replace(H0=70.0)` gives a new one. Dictionaries go through `LCDM(**params)`, or `LCDM.from_dict(params)` for one written for another model, whose extra keys must keep their defaults.
+The components declare the parameters, so a model's constructor takes exactly its own, by keyword. A type checker reads them from the declarations and flags a missing or unknown one, as the constructor does at run time. `help(LCDM)` lists them. A cosmology is immutable: `planck.replace(omega_c=0.125)` gives a new one. Dictionaries go through `LCDM(**params)`, or `LCDM.from_dict(params)` for one written for another model, whose extra keys must keep their defaults.
+
+The densities are physical ones, `omega_b`, `omega_c`, `omega_de` and `omega_k` ($\omega = \Omega h^2$), and the Hubble constant follows from them: `planck.H0`. To start from $\Omega_m$, $\Omega_b$ and $H_0$, use `LCDM.from_density_parameters(Omegam=..., Omegab=..., H0=..., ...)`, which finds the dark-energy density that makes the model expand at `H0` today. It is plain JAX arithmetic, so a derivative in `H0` or `Omegam` goes through it.
 
 A new model is a class statement. A model among the bases stands for its components, and the order of the bases is the state order:
 
@@ -21,24 +23,28 @@ class Coarse(LCDM, LMAX_G=10, LMAX_NR=10):  # shorter hierarchies
 
 # Keeping quantities
 
-`solve_eb` records only what you name in `keep`. A name can be a state element, such as `clxc`, `theta_2` or `psi_0_1`, which `state_names(model)` lists. It can also be any quantity the model provides, such as the comoving curvature perturbation `R`, the shear `sigma`, the expansion rate `adotoa` or the Thomson `opacity`. The recombination block adds `xe`, `Tmat`, `cs2`, the optical depth `kappa` and reionization's part of it, `kappa_reio`, whose value today is `tau_reio`.
+`solve_eb` records only what you name in `keep`. A name can be a state element, such as `clxc`, `theta_2` or `psi_0_1`, which `state_names(model)` lists. It can also be any quantity the model provides, such as the comoving curvature perturbation `R`, the shear `sigma`, the expansion rate `adotoa` or the Thomson `opacity`. The recombination block adds the conformal time `tau`, `xe`, `Tmat`, `cs2` and the optical depth `kappa`.
 
-The device holds `n_cosmologies * n_k * n_tau * len(keep)` numbers and never the full state history.
+The solve integrates in the scale factor, from `A_START` to 1, so you give the scale factors to record at, and `a = 1` is today for every cosmology. The conformal time is a state: keep `tau`, whose value today is the conformal age. Nothing is integrated before the solve.
+
+The device holds `n_cosmologies * n_k * n_a * len(keep)` numbers and never the full state history.
+
+Reionization is set by its redshift `z_re` (0, the default, for none). Its optical depth is an output: add `ReionizationDepth` (`discoeb.components.recombination`) to a model, `LCDM.add(ReionizationDepth, name="LCDM+reio")`, and keep `kappa_reio`, whose value today is $\tau_\mathrm{reio}$. The same model is the one that differentiates in `z_re`.
 
 ## Derivatives
 
-Give `Omegam`, `Omegab`, `H0`, `Tcmb` or `Neff` as JAX values and the kept values become differentiable. `jax.jvp`, `jax.jacfwd` and `jax.grad` each cost one joint launch, which forms the derivatives inside the kernel by forward sensitivities:
+Give `omega_b`, `omega_c`, `omega_de`, `Tcmb` or `Neff` as JAX values and the kept values become differentiable. `jax.jvp`, `jax.jacfwd` and `jax.grad` each cost one joint launch, which forms the derivatives inside the kernel by forward sensitivities:
 
 ```python
 import jax.numpy as jnp
 
-def R_today(omega_m):
-    return solve_eb(planck.replace(Omegam=omega_m), k, tau, keep=("R",))[0, 0, :, -1]
+def R_today(omega_c):
+    return solve_eb(planck.replace(omega_c=omega_c), k, [1.0], keep=("R",))[0, 0, :, -1]
 
-dR = jax.jacfwd(R_today)(jnp.asarray(planck.Omegam))  # (64,)
+dR = jax.jacfwd(R_today)(jnp.asarray(planck.omega_c))  # (64,)
 ```
 
-The derivative holds the conformal age and the reionization redshift fixed. The other parameters can't be differentiated, and trying raises an error.
+The derivative is taken at fixed scale factor, so at fixed redshift. The other parameters can't be differentiated, and trying raises an error.
 
 ## Under `jit`
 
@@ -49,24 +55,20 @@ import jax
 
 @jax.jit
 def power_spectrum(cosmology):
-    tau0 = conformal_ages(cosmology)[0]
-    values = solve_eb(  # (cosmology, name, k, tau)
+    values = solve_eb(  # (cosmology, name, k, a)
         cosmology,
         k,
-        tau0.reshape(1),
-        keep=("clxc", "clxb", "z", "vb"),
+        [1.0],  # today
+        keep=("clxc", "clxb"),
         thermo_weight=0.1,  # a looser recombination history suffices for P(k)
     )
-    clxc, clxb, z, vb = jnp.unstack(values[0, :, :, -1])
+    clxc, clxb = jnp.unstack(values[0, :, :, -1])
     return matter_power_spectrum(
         k,
         clxc=clxc,
         clxb=clxb,
-        z=z,
-        vb=vb,
-        tau0=tau0,
-        Omegam=cosmology.Omegam,
-        Omegab=cosmology.Omegab,
+        omega_c=cosmology.omega_c,
+        omega_b=cosmology.omega_b,
         A_s=cosmology.A_s,
         n_s=cosmology.n_s,
         k_p=cosmology.k_p,
@@ -77,4 +79,4 @@ Under `jit` a model can't check its cosmologies (for instance `w_DE_0 = -1` unde
 
 ## Extending the model
 
-A new species or interaction is a `Component` subclass; list it among a model's bases. It declares its parameters with an annotation, `Omega_x: ArrayLike = Parameter(0.0)` for a key and `grhox: ArrayLike = Derived(lambda grhom, Omega_x: grhom * Omega_x)` for one derived from others, so that they reach the model's constructor. A method provides the quantity it is named after; a contribution to a sum or to another component's derivative has a name of its own and says what it adds to, `@contributes("dgrho") def dgrho_x(self, ...)`, so that the model class inheriting every component has no clashing methods. To keep quantities a model does not provide, `solve_eb(..., extra=...)` appends your own components. A stateless `Component` subclass declares providers whose parameter names are the quantities they read. DISCO-CMB defines its line-of-sight sources this way, so they compile into the same kernel.
+A new species or interaction is a `Component` subclass; list it among a model's bases. It declares its parameters with an annotation, `omega_x: ArrayLike = Parameter(0.0)` for a key and `grhox: ArrayLike = Derived(lambda omega_x: GRHO_PER_OMEGA * omega_x)` for one derived from others, so that they reach the model's constructor. A method provides the quantity it is named after; a contribution to a sum or to another component's derivative has a name of its own and says what it adds to, `@contributes("dgrho") def dgrho_x(self, ...)`, so that the model class inheriting every component has no clashing methods. To keep quantities a model does not provide, `solve_eb(..., extra=...)` appends your own components. A stateless `Component` subclass declares providers whose parameter names are the quantities they read. DISCO-CMB defines its line-of-sight sources this way, so they compile into the same kernel.
