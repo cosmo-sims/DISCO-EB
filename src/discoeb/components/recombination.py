@@ -53,12 +53,13 @@ depth ``tau_reio`` on the background.
 
 from __future__ import annotations
 
+import functools
 import math
 import os
 
 from jax.typing import ArrayLike
 
-from ._component import Component, Parameter, State, float32, float64
+from ._component import Component, Equations, Parameter, State, float32, float64
 
 # RECFAST's physical and atomic constants (PDG 2023 where noted).
 const_mH = 1.67353284e-27  # H atom mass [kg], PDG 2023
@@ -507,8 +508,6 @@ class Recombination(Component):
     # rates read YHe, Tcmb, H0 and Omegab, which the species declare.
     tau_reio: ArrayLike = Parameter(0.0)
 
-    # What the hierarchy reads
-
     def a(self, lna):
         """``exp(ln a)`` in double precision, since the hierarchy needs it smooth in the parameters.
 
@@ -628,10 +627,8 @@ class Recombination(Component):
         return opacity
 
 
-_ALONE: list = []
-
-
-def recombination_model():
+@functools.cache
+def recombination_model() -> Equations:
     """:class:`Recombination` as a model of its own, for evaluating its providers on the host.
 
     This way the device kernel, the background solve for ``z_re`` and the
@@ -639,8 +636,4 @@ def recombination_model():
     reionization fraction, the opacity and the sound speed.
     """
 
-    from ._component import Equations
-
-    if not _ALONE:
-        _ALONE.append(Equations([Recombination()]))
-    return _ALONE[0]
+    return Equations([Recombination()])
