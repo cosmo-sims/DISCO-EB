@@ -394,6 +394,7 @@ def _matter_power(k_values, batch, tau_today=None, **options):
     batch's oldest, which needs the parameters as numbers.
     """
 
+    import jax
     import jax.numpy as jnp
 
     from discoeb.models import Model
@@ -414,7 +415,8 @@ def _matter_power(k_values, batch, tau_today=None, **options):
         key: jnp.stack([jnp.asarray(getattr(c, key)) for c in cosmologies])
         for key in ("Omegam", "Omegab", "A_s", "n_s", "k_p")
     }
-    return matter_power_spectrum(k_values, **today, tau0=tau0, **params)
+    batched = jax.vmap(matter_power_spectrum, in_axes=(None,))
+    return batched(k_values, **today, tau0=tau0, **params)
 
 
 # The parameters of the densities, which the derivative tests below have

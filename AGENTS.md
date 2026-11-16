@@ -518,11 +518,13 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    `directed_inputs`, `conformal_ages`, `state_names(model)`
 
 10. **observables/power_spectrum.py** - `matter_power_spectrum(k, *, clxc, clxb,
-    z, vb, tau0, Omegam, Omegab, A_s, n_s, k_p)`, JAX only, takes arrays and
-    no solution or batch: the four quantities today `(..., n_k)` from a
+    z, vb, tau0, Omegam, Omegab, A_s, n_s, k_p)`, JAX only, is one
+    cosmology's (2026-11-16): the four quantities today `(n_k,)` from a
     `solve_eb(..., keep=("clxc", "clxb", "z", "vb"),
-    thermo_weight=0.1)` at a last time at or past every
-    `tau0`, and the parameters `(...)`. Differentiable like `solve_eb`; it
+    thermo_weight=0.1)` at a last time at or past its `tau0`, and the
+    parameters as scalars. A batch is
+    `jax.vmap(matter_power_spectrum, in_axes=(None,))(k, **today, ...)`,
+    the keyword arguments mapped over their leading axis. Differentiable like `solve_eb`; it
     adds the end-time term (`clxc' = -k z`, `clxb' = -k (z + vb)` times
     `tau0 - stop_gradient(tau0)`), so `tau0` must come from
     `conformal_ages(batch)`: a `tau0` under `stop_gradient` drops the term

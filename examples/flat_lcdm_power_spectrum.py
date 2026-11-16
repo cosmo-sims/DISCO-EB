@@ -40,14 +40,17 @@ def matter_power(key: jax.Array) -> jax.Array:
     omega_b = 0.02238280 * (1.0 + 0.006 * u[0])
     omega_c = 0.1201075 * (1.0 + 0.008 * u[1])
     h = 0.6732117 * (1.0 + 0.004 * u[2])
+    Omegam = (omega_b + omega_c) / h**2
+    Omegab = omega_b / h**2
+    A_s, n_s, k_p = 2.100549e-9, 0.9660499, 0.05  # k_p: pivot scale of A_s, 1/Mpc
     cosmologies = [
         LCDM(
-            Omegam=(omega_b[i] + omega_c[i]) / h[i] ** 2,
-            Omegab=omega_b[i] / h[i] ** 2,
+            Omegam=Omegam[i],
+            Omegab=Omegab[i],
             H0=100.0 * h[i],
-            A_s=2.100549e-9,
-            n_s=0.9660499,
-            k_p=0.05,  # pivot scale of A_s, 1/Mpc
+            A_s=A_s,
+            n_s=n_s,
+            k_p=k_p,
             Tcmb=2.7255,
             YHe=0.2454006,
             Neff=3.046,
@@ -56,22 +59,30 @@ def matter_power(key: jax.Array) -> jax.Array:
     ]
 
     tau0 = conformal_ages(cosmologies)
-    keep = ("clxc", "clxb", "z", "vb")
     values = solve_eb(  # (cosmology, name, k, tau)
         cosmologies,
         K,
         tau0.max().reshape(1),  # today: each trajectory stops at its own age
-        keep=keep,
+        keep=("clxc", "clxb", "z", "vb"),
         # recombination ten times looser than the hierarchy: moves P(k) by
         # under 6e-4 and takes 150 steps per trajectory instead of 225
         thermo_weight=0.1,
     )
-    today = dict(zip(keep, jnp.unstack(values[..., -1], axis=1)))
-    parameters = {
-        key: jnp.stack([jnp.asarray(getattr(c, key)) for c in cosmologies])
-        for key in ("Omegam", "Omegab", "A_s", "n_s", "k_p")
-    }
-    return matter_power_spectrum(K, **today, tau0=tau0, **parameters)
+    clxc, clxb, z, vb = jnp.unstack(values[..., -1], axis=1)  # each (cosmology, k)
+    # one cosmology's P(k), mapped over the batch with K held
+    return jax.vmap(matter_power_spectrum, in_axes=(None,))(
+        K,
+        clxc=clxc,
+        clxb=clxb,
+        z=z,
+        vb=vb,
+        tau0=tau0,
+        Omegam=Omegam,
+        Omegab=Omegab,
+        A_s=jnp.full(N_COSMOLOGIES, A_s),
+        n_s=jnp.full(N_COSMOLOGIES, n_s),
+        k_p=jnp.full(N_COSMOLOGIES, k_p),
+    )
 
 
 def timed(key: jax.Array) -> tuple[np.ndarray, float]:

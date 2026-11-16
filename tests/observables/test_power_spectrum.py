@@ -15,6 +15,39 @@ from helpers import (
     cosmologies_of,
 )
 
+
+def test_matter_power_spectrum_takes_one_cosmology_and_vmaps_over_a_batch():
+    """One cosmology per call; ``jax.vmap`` over a batch gives each one's ``P(k)``."""
+
+    import jax
+    import jax.numpy as jnp
+
+    from discoeb import matter_power_spectrum
+
+    k = jnp.geomspace(1e-3, 0.1, 5)
+    rng = np.random.default_rng(0)
+    per_mode = {
+        n: jnp.asarray(rng.normal(size=(3, 5))) for n in ("clxc", "clxb", "z", "vb")
+    }
+    scalars = {
+        "tau0": jnp.full(3, 14000.0),
+        "Omegam": jnp.asarray([0.30, 0.31, 0.32]),
+        "Omegab": jnp.full(3, 0.049),
+        "A_s": jnp.full(3, 2.1e-9),
+        "n_s": jnp.full(3, 0.966),
+        "k_p": jnp.full(3, 0.05),
+    }
+    batched = jax.vmap(matter_power_spectrum, in_axes=(None,))(k, **per_mode, **scalars)
+    assert batched.shape == (3, 5)
+    for i in range(3):
+        one = matter_power_spectrum(
+            k,
+            **{n: v[i] for n, v in per_mode.items()},
+            **{n: v[i] for n, v in scalars.items()},
+        )
+        np.testing.assert_allclose(batched[i], one, rtol=1e-14)
+
+
 # --- GPU perturbation solves against CLASS: the matter power spectrum and its derivatives.
 
 
