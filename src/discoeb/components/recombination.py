@@ -531,7 +531,7 @@ class Recombination(Component):
     kappa = State()
 
     # The rates read YHe, Tcmb and grhob, which the species declare.
-    z_re: ArrayLike = Parameter(0.0, directed=True)
+    z_re: ArrayLike = Parameter(0.0, directed=True, differentiable=True)
     """The redshift half way through CAMB's reionization step (0: none)."""
 
     def fHe(self, YHe):

@@ -127,7 +127,7 @@ class Curvature(Gravity):
     ``Kcurv`` and none of the sums.
     """
 
-    omega_k: ArrayLike = Parameter(0.0)
+    omega_k: ArrayLike = Parameter(0.0, differentiable=True)
     grhok: ArrayLike = Derived(lambda omega_k: GRHO_PER_OMEGA * omega_k, directed=True)
 
     def s2(self, grhok, inv_k2):

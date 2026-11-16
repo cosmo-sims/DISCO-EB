@@ -2,7 +2,7 @@
 
 :func:`solve_eb` is the interface the CMB code uses. It runs one modax launch
 over every (wave mode, cosmology) pair and records only the named quantities,
-differentiable in :data:`~discoeb.models._cosmology.DIFFERENTIABLE_PARAMETERS`.
+differentiable in the model's :func:`differentiable_parameters`.
 """
 
 import functools
@@ -13,9 +13,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..components.recombination import THERMO_ERROR_WEIGHT, ReionizationDepth
+from ..components.recombination import THERMO_ERROR_WEIGHT
 from ..models._cosmology import (
-    DIFFERENTIABLE_PARAMETERS,
     UNUSED_BY_THE_SOLVE,
     _columns,
     _is_concrete,
@@ -59,7 +58,7 @@ def solve_perturbation_history_batch(
     batch = _batch_of(cosmologies)
     sol, prepared, k_sorted = _solve_batch(
         batch.model,
-        batch.cosmologies,
+        batch,
         k_values,
         a_save,
         rtol=rtol,
@@ -208,7 +207,7 @@ def solve_eb(
         keys=model.parameter_keys(),
         differentiable=differentiable_parameters(model),
     )
-    prepared = _prepare_solve(model, batch.cosmologies, k_values, extra, columns)
+    prepared = _prepare_solve(model, batch, k_values, extra, columns)
     # The variables of the derivative. JAX arithmetic maps them to the
     # directed inputs (_directed_inputs), and the rule of _kept_values
     # launches one sensitivity replica per variable actually differentiated.
@@ -273,22 +272,28 @@ def _inputs_of(model, extra, given, variables) -> jax.Array:
 
 
 def differentiable_parameters(model: type[Model] | ModelSpec) -> tuple[str, ...]:
-    """Return the keys of :data:`DIFFERENTIABLE_PARAMETERS` a solve of ``model`` differentiates.
+    """Return the cosmology keys :func:`solve_eb` differentiates for ``model``.
 
-    Those the model's components declare (:meth:`Model.parameter_keys
-    <discoeb.models.Model.parameter_keys>`): ``w_DE_0`` and
-    ``w_DE_a`` need :class:`~discoeb.components.species.DarkEnergy` and ``mnu``
-    :class:`~discoeb.components.species.MassiveNeutrinos`. ``z_re`` needs
-    :class:`~discoeb.components.recombination.ReionizationDepth`, whose
-    state makes the steps resolve the reionization step's derivative.
-    Differentiating another key raises.
+    Each component marks its own: ``Parameter(differentiable=True)``
+    (:meth:`ModelSpec.differentiable_parameters
+    <discoeb.models.ModelSpec.differentiable_parameters>`). For the built-in
+    components these are ``omega_b``, ``omega_c``, ``omega_de``, ``Tcmb``,
+    ``Neff`` and ``omega_k``, ``mnu`` with
+    :class:`~discoeb.components.species.MassiveNeutrinos`, ``w_DE_0`` and
+    ``w_DE_a`` with :class:`~discoeb.components.species.DarkEnergy` and
+    ``z_re`` with :class:`~discoeb.components.recombination.ReionizationDepth`.
+    They reach the solve through the directed inputs, and the forward
+    sensitivities carry them through the hierarchy and the recombination
+    history. The derivative holds fixed the conformal age ``tau0`` at which
+    a trajectory stops (:func:`matter_power_spectrum` adds its term), ``ln
+    a`` at the start and the initial state.
+
+    Differentiating another key raises: ``Nmnu``, a count, and ``YHe`` and
+    ``cs2_DE``, whose derivatives of ``P(k)`` miss central differences by
+    0.8 and 1 percent. The solve never reads ``A_s``, ``n_s`` and ``k_p``.
     """
 
-    spec = _spec_of(model)
-    keys = dict(spec.parameter_keys())
-    if not spec.has(ReionizationDepth):
-        keys.pop("z_re", None)
-    return tuple(key for key in DIFFERENTIABLE_PARAMETERS if key in keys)
+    return _spec_of(model).differentiable_parameters()
 
 
 def directed_inputs(cosmologies) -> jax.Array:

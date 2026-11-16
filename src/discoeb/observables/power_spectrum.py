@@ -65,7 +65,8 @@ def matter_power_spectrum(
 
     Notes
     -----
-    Differentiable in :data:`DIFFERENTIABLE_PARAMETERS` given as JAX values,
+    Differentiable in the model's
+    :func:`~discoeb.solver.differentiable_parameters` given as JAX values,
     as ``solve_eb``'s values are: the derivative at fixed scale factor,
     since the solve integrates in ``ln a``.
     """

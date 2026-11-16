@@ -253,7 +253,7 @@ def test_solve_eb_keeps_what_the_history_holds():
         prepared.model
     )  # the joint model: the thermal quantities come from the thermal states
 
-    for ci, cosmology in enumerate(prepared.cosmologies):
+    for ci, cosmology in enumerate(cosmologies_of(LCDM, cosmologies)):
         for name in ("clxc", "clxb", "theta_2", "n_15"):
             j = names.index(name)
             expected = hist[:, ci, :, model.index[name]]

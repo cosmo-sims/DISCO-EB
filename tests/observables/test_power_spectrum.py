@@ -182,7 +182,7 @@ def test_matter_power_spectrum_under_jit():
 
     One trace serves every cosmology of the same keys, the values agree with
     the eager solve, the gradient under ``jit`` with the eager one, and a key
-    outside :data:`DIFFERENTIABLE_PARAMETERS` still refuses a derivative.
+    outside :func:`~discoeb.solver.differentiable_parameters` still refuses a derivative.
     """
 
     import jax

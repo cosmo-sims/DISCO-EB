@@ -46,8 +46,8 @@ from ..components._component import (
     derive_parameters,
 )
 from ..components.gravity import GRHOM_PER_H0SQ
-from ..components.recombination import Recombination
-from ._cosmology import DIFFERENTIABLE_PARAMETERS, _cosmology_dictionary, _is_concrete
+from ..components.recombination import Recombination, ReionizationDepth
+from ._cosmology import _is_concrete
 
 __all__ = ["Model", "ModelSpec"]
 
@@ -215,6 +215,23 @@ class ModelSpec:
         """
 
         return {n: p.default for n, p in self.parameters().items() if p.is_key}
+
+    def differentiable_parameters(self) -> tuple[str, ...]:
+        """Return the keys a solve of this model differentiates, in declaration order.
+
+        Those declared ``Parameter(differentiable=True)``, except ``z_re``
+        without :class:`~discoeb.components.recombination.ReionizationDepth`,
+        whose state makes the steps resolve the reionization step's
+        derivative.
+        """
+
+        return tuple(
+            n
+            for n, p in self.parameters().items()
+            if p.is_key
+            and p.differentiable
+            and (n != "z_re" or self.has(ReionizationDepth))
+        )
 
     def state_names(self) -> tuple[str, ...]:
         """Return the perturbation state's element names in index order."""
@@ -387,6 +404,14 @@ def _is_number(value) -> bool:
     """Whether ``value`` is a plain number, not a JAX or numpy array."""
 
     return isinstance(value, (int, float))
+
+
+def _cosmology_dictionary(cosmology) -> dict:
+    """Return the parameters of a cosmology or of a parameter dictionary."""
+
+    if isinstance(cosmology, dict):
+        return dict(cosmology)
+    return cosmology.to_dict()
 
 
 _STATE_NAMES: dict = {}
@@ -684,10 +709,11 @@ def _documented(cls: type[Model]) -> str:
 
     own = inspect.cleandoc(vars(cls).get("__doc__") or "")
     keys = cls.spec.parameter_keys()
+    differentiable = cls.spec.differentiable_parameters()
     lines = ["Parameters", "----------"]
     for key, default in keys.items():
         line = "Required." if default is REQUIRED else f"Default {default!r}."
-        if key in DIFFERENTIABLE_PARAMETERS:
+        if key in differentiable:
             line += " Differentiable through solve_eb."
         lines += [f"{key} : float or jax.Array", f"    {line}"]
     return "\n\n".join(part for part in (own, "\n".join(lines)) if part)

@@ -59,7 +59,7 @@ class ColdDarkMatter(Species):
     # adiabatic mode: 3/4 of the photon density contrast
     clxc = State(initial=lambda theta: 0.75 * theta[0])
 
-    omega_c: ArrayLike = Parameter()  # Omega_c h^2
+    omega_c: ArrayLike = Parameter(differentiable=True)  # Omega_c h^2
     grhoc: ArrayLike = Derived(lambda omega_c: GRHO_PER_OMEGA * omega_c, directed=True)
 
     def grhoc_t(self, grhoc, inv_a):
@@ -92,7 +92,8 @@ class Baryons(Species):
     vb = State(initial=lambda theta: 0.75 * theta[1])
 
     # The recombination rates read grhob and the helium fraction YHe too.
-    omega_b: ArrayLike = Parameter()  # Omega_b h^2
+    omega_b: ArrayLike = Parameter(differentiable=True)  # Omega_b h^2
+    # not differentiable: dP/dYHe misses central differences by 0.8 percent
     YHe: ArrayLike = Parameter(directed=True)
     grhob: ArrayLike = Derived(lambda omega_b: GRHO_PER_OMEGA * omega_b, directed=True)
 
@@ -319,7 +320,9 @@ class Photons(Species):
     theta = State(lambda self: self.LMAX_G + 1, initial=_theta_initial)
     e = State(lambda self: self.LMAX_POL - 1)
 
-    Tcmb: ArrayLike = Parameter(directed=True)  # K, read by the recombination rates too
+    Tcmb: ArrayLike = Parameter(
+        directed=True, differentiable=True
+    )  # K, read by the recombination rates too
     grhog: ArrayLike = Derived(lambda Tcmb: GRHOG_PER_TCMB4 * Tcmb**4, directed=True)
 
     def __init__(self, **settings):
@@ -422,7 +425,7 @@ class MasslessNeutrinos(Species):
 
     n = State(lambda self: self.LMAX_NR + 1, initial=_n_initial)
 
-    Neff: ArrayLike = Parameter()
+    Neff: ArrayLike = Parameter(differentiable=True)
     grhornomass: ArrayLike = Derived(
         lambda Neff, Tcmb: Neff * (GRHOR_PER_TCMB4 * Tcmb**4), directed=True
     )
@@ -504,8 +507,8 @@ class MassiveNeutrinos(Species):
 
     psi = State(lambda self: (self.NQMAX, self.LMAX_NU + 1), initial=_psi_initial)
 
-    Nmnu: ArrayLike = Parameter(0.0)  # flavours
-    mnu: ArrayLike = Parameter(0.0)  # eV, each
+    Nmnu: ArrayLike = Parameter(0.0)  # flavours, a count: not differentiable
+    mnu: ArrayLike = Parameter(0.0, differentiable=True)  # eV, each
     grhor_nu: ArrayLike = Derived(lambda Tcmb: GRHOR_PER_TCMB4 * Tcmb**4, directed=True)
     n_mnu: ArrayLike = Derived(lambda Nmnu: Nmnu, column=True)
     amnu: ArrayLike = Derived(lambda mnu, Tcmb: mnu * C2OK / Tcmb, directed=True)
@@ -594,7 +597,7 @@ class _DarkEnergyDensity(Species):
     a model expand at a given ``H0``.
     """
 
-    omega_de: ArrayLike = Parameter()
+    omega_de: ArrayLike = Parameter(differentiable=True)
     grhov: ArrayLike = Derived(
         lambda omega_de: GRHO_PER_OMEGA * omega_de, directed=True
     )
@@ -633,8 +636,9 @@ class DarkEnergy(_DarkEnergyDensity):
     clxq = State(initial=lambda w_DE_0, clxc: (1.0 + w_DE_0) * clxc)
     thetaq = State()
 
-    w_DE_0: ArrayLike = Parameter(-1.0, directed=True)
-    w_DE_a: ArrayLike = Parameter(0.0, directed=True)
+    w_DE_0: ArrayLike = Parameter(-1.0, directed=True, differentiable=True)
+    w_DE_a: ArrayLike = Parameter(0.0, directed=True, differentiable=True)
+    # not differentiable: dP/dcs2_DE misses central differences by 1 percent
     cs2_DE: ArrayLike = Parameter(1.0, directed=True)
 
     @classmethod

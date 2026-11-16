@@ -30,8 +30,7 @@
 
 .. autofunction:: discoeb.directed_inputs
 
-.. autodata:: discoeb.DIFFERENTIABLE_PARAMETERS
-   :no-value:
+.. autofunction:: discoeb.differentiable_parameters
 
 .. autodata:: discoeb.DIRECTED_NAMES
    :no-value:

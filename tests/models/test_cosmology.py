@@ -54,7 +54,12 @@ def test_a_held_key_raises_when_differentiated():
 
     def column(key):
         def of(value):
-            return _columns([{**reference, key: value}], LCDM.parameter_keys())[key][0]
+            cosmology = {**reference, key: value}
+            differentiable = LCDM.spec.differentiable_parameters()
+            columns = _columns(
+                [cosmology], LCDM.parameter_keys(), differentiable=differentiable
+            )
+            return columns[key][0]
 
         return jax.grad(of)(reference[key])
 

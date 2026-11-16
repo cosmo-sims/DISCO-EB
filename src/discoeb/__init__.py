@@ -6,7 +6,6 @@ from . import _jax_config  # noqa: F401
 from .components import Component
 from .components.recombination import THERMO_ERROR_WEIGHT
 from .models import (
-    DIFFERENTIABLE_PARAMETERS,
     LCDM,
     LCDM_MNU,
     W0WACDM,
@@ -33,7 +32,6 @@ __all__ = [
     "Component",
     "Model",
     "ModelSpec",
-    "DIFFERENTIABLE_PARAMETERS",
     "DIRECTED_NAMES",
     "A_START",
     "PERTURB_ATOL",

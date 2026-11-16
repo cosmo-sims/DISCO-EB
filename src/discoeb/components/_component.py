@@ -246,7 +246,9 @@ class ParameterDeclaration:
     in JAX. ``column`` puts it in the kernel's parameter row under its name,
     for the providers to read. ``directed`` puts it there as ``x_nominal`` and
     ``dir_x`` instead and generates the provider ``x = x_nominal + eps *
-    dir_x``, so the forward sensitivities may move it.
+    dir_x``, so the forward sensitivities may move it. ``differentiable``
+    lets ``solve_eb`` differentiate a key; any other key raises if
+    differentiated.
     """
 
     def __init__(
@@ -256,14 +258,18 @@ class ParameterDeclaration:
         value: Callable | None = None,
         column: bool = False,
         directed: bool = False,
+        differentiable: bool = False,
     ):
         if value is not None and not callable(value):
             raise TypeError("value must be a function of other parameters")
         if value is not None and default is not REQUIRED:
             raise TypeError("a derived parameter has no default")
+        if value is not None and differentiable:
+            raise TypeError("only a key is differentiable, not a derived parameter")
         self.default = default
         self.value: Any = value
         self.directed = directed
+        self.differentiable = differentiable
         self.column = column or directed
         self.name: str | None = None
         self.reads: tuple[str, ...] = ()
@@ -314,6 +320,7 @@ class ParameterDeclaration:
             self.default if self.value is None else REQUIRED,
             column=self.column,
             directed=self.directed,
+            differentiable=self.differentiable,
         )
         copy.value = self.value
         copy.reads = tuple(renames.get(r, r) for r in self.reads)
@@ -336,7 +343,11 @@ def _annotated_names(cls) -> set[str]:
 
 
 def Parameter(
-    default: Any = REQUIRED, *, column: bool = False, directed: bool = False
+    default: Any = REQUIRED,
+    *,
+    column: bool = False,
+    directed: bool = False,
+    differentiable: bool = False,
 ) -> Any:
     """Declare a cosmology key: ``omega_c: ArrayLike = Parameter()``.
 
@@ -344,12 +355,16 @@ def Parameter(
     required without a ``default``, optional with one. ``column`` puts it in
     the kernel's parameter row under its name, for the providers to read, and
     ``directed`` as ``x_nominal`` and ``dir_x``, so the forward sensitivities
-    may move it (:class:`ParameterDeclaration`). The annotation is required:
+    may move it (:class:`ParameterDeclaration`). ``differentiable`` lets
+    ``solve_eb`` differentiate it: set it where the derivative through the
+    directed inputs it reaches matches central differences. The annotation is required:
     it is what lets a type checker see the argument (the
     ``dataclass_transform`` on :class:`Component`).
     """
 
-    return ParameterDeclaration(default, column=column, directed=directed)
+    return ParameterDeclaration(
+        default, column=column, directed=directed, differentiable=differentiable
+    )
 
 
 def Derived(

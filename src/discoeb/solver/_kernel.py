@@ -20,8 +20,8 @@ import numpy as np
 
 from ..components._component import Equations, _compile, derive_parameters
 from ..components.recombination import THERMO_ERROR_WEIGHT, Recombination
-from ..models._cosmology import _as_batch, _columns
-from ..models._model import Model, ModelSpec, _spec_of
+from ..models._cosmology import _columns
+from ..models._model import Model, ModelSpec, _batch_of, _spec_of
 
 A_START = 2.0e-7
 """The scale factor where every trajectory starts, deep in radiation
@@ -302,7 +302,8 @@ def _prepare_solve(
 ) -> _PreparedSolve:
     """Return a batch packed for launch at ``k_values``: parameter rows and initial states.
 
-    The cosmologies' values may be traced under ``jit``. ``k_values`` must be
+    ``cosmologies`` is a cosmology, a sequence of one model's or their
+    :class:`~discoeb.models._model.CosmologyBatch`; their values may be traced under ``jit``. ``k_values`` must be
     numbers: they set the launch's shape and order. ``columns`` are the
     cosmologies' :func:`~discoeb.models._cosmology._columns` if already at hand. Every
     cosmology must suit
@@ -316,7 +317,7 @@ def _prepare_solve(
     """
 
     resolved = _spec_of(model).resolved()
-    cosmologies = tuple(cosmologies)
+    cosmologies = _batch_of(cosmologies).cosmologies
     for cosmology in cosmologies:
         resolved.check(cosmology)
     joint, hierarchy = joint_kernel(resolved, extra)
@@ -324,7 +325,11 @@ def _prepare_solve(
     order = np.argsort(k, kind="stable")
     k_sorted = k[order]
     if columns is None:
-        columns = _columns(cosmologies, keys=resolved.parameter_keys())
+        columns = _columns(
+            cosmologies,
+            keys=resolved.parameter_keys(),
+            differentiable=resolved.differentiable_parameters(),
+        )
     columns = jax.lax.stop_gradient(columns)
     params, y0 = _pack(resolved, tuple(extra), tuple(k_sorted.tolist()), columns)
     return _PreparedSolve(
@@ -399,7 +404,9 @@ def make_params(
     The row is ``model``'s (:func:`parameter_layout`).
     """
 
-    columns = _columns((cosmology,), held=False, keys=model.parameter_keys())
+    columns = _columns(
+        _batch_of(cosmology).cosmologies, held=False, keys=model.parameter_keys()
+    )
     row = _rows(parameter_layout(model), density_parameters(columns, model=model), 1)
     params = np.tile(np.asarray(row), (len(k_values), 1))
     params[:, parameter_layout(model).columns["k"]] = k_values
@@ -424,7 +431,9 @@ def make_initial_states(
     """
 
     columns = _columns(
-        _as_batch(cosmology), held=False, keys=cosmology_model.parameter_keys()
+        _batch_of(cosmology).cosmologies,
+        held=False,
+        keys=cosmology_model.parameter_keys(),
     )
     inputs = density_parameters(columns, model=cosmology_model)
 

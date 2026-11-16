@@ -54,9 +54,12 @@ def test_solve_eb_derivatives():
 
     def inputs_of(theta):
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
-        return _directed_inputs(
-            _columns([physical(LCDM, param)], LCDM.parameter_keys()), LCDM
+        columns = _columns(
+            [physical(LCDM, param)],
+            LCDM.parameter_keys(),
+            differentiable=LCDM.spec.differentiable_parameters(),
         )
+        return _directed_inputs(columns, LCDM)
 
     densities = inputs_of(theta)
     a = np.geomspace(1.0e-5, 1.0, 12)

@@ -114,8 +114,7 @@ a, keep=names, extra=components)`, the cosmologies instances of one model
 class (`[LCDM(omega_b=..., ...), ...]`): named quantities evaluated in the kernel at the
 saved scale factors, the CMB's sources being a `LineOfSightSources` component passed as
 `extra`; error weights by state name; differentiable in
-`DIFFERENTIABLE_PARAMETERS` (those `differentiable_parameters(model)` keeps)
-or in the model's directed inputs passed as `inputs=`: all of them, as
+`differentiable_parameters(model)` or in the model's directed inputs passed as `inputs=`: all of them, as
 `directed_inputs` gives them, or the seven `DIRECTED_NAMES` every built-in
 model leads with (`N_COMMON_DIRECTED`: the five densities, `YHe`, `Tcmb`),
 which DISCO-CMB's `cl_power_spectrum_jax` passes. There is no default model
@@ -215,7 +214,10 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      annotated since 2026-11-15: `omega_c: ArrayLike = Parameter()` a key, a
      constructor argument of every model with the component (with a default
      it may be left out), `w_DE_0: ArrayLike = Parameter(-1.0, column=True)`
-     a key the kernel reads as a row column, `grhoc: ArrayLike =
+     a key the kernel reads as a row column, `Parameter(differentiable=True)`
+     a key `solve_eb` may differentiate (2026-11-17; before, a global
+     `DIFFERENTIABLE_PARAMETERS` tuple listed them, so a component from
+     outside could never add one), `grhoc: ArrayLike =
      Derived(lambda omega_c: ..., directed=True)` a kernel
      input derived on the host by name from other parameters. `Parameter`
      and `Derived` are `dataclass_transform` field specifiers returning a
@@ -404,13 +406,14 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    - The momentum bins (`neutrino_momentum_bins`, cached) live in `util.py`
      beside the Gauss-Laguerre rule
 
-5. **models/_cosmology.py** - Cosmologies as the solver reads them: parameter
-   dictionaries (`_cosmology_dictionary` of an instance is its `to_dict()`)
-   and `DIFFERENTIABLE_PARAMETERS`. `_columns(cosmologies, keys=model.parameter_keys())`
+5. **models/_cosmology.py** - The batch's parameter columns.
+   `_columns(cosmologies, keys=model.parameter_keys(), differentiable=...)`,
+   the cosmologies `_batch_of`'s dictionaries,
    stacks a batch into JAX columns `(n_cosmo,)` by key, values traced or
    not, plus any key another component declares that a cosmology gives
    (`w_DE_0` in an LCDM dict); a key the solve reads but the model does not
-   differentiate (outside `differentiable` = `differentiable_parameters(model)`:
+   differentiate (outside `differentiable` = `ModelSpec.differentiable_parameters()`,
+   by default none:
    `Nmnu`, `YHe`, `cs2_DE`, `w_DE_*` without `DarkEnergy`,
    `mnu` without `MassiveNeutrinos`) passes through `_not_differentiable`, a `custom_jvp`
    whose rule raises, so a derivative is never a silent zero.
@@ -443,7 +446,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      (`LCDM.add(ReionizationDepth, name=...)`, `helpers.LCDM_REIO`): in
      every model's block it cost a solve 4 to 7 percent (2026-11-17), so
      only a model with it reads `tau_reio` or differentiates `z_re`
-     (`differentiable_parameters` drops `z_re` otherwise, and the
+     (`ModelSpec.differentiable_parameters` drops `z_re` otherwise, and the
      derivative raises). Same parametrization as CLASS `reio_camb`:
      `kappa_reio` today against its `tau_reio` at the same `z_reio`
      (`tests/components/test_recombination.py`). A sensitivity launch
@@ -560,10 +563,10 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    tests). `a` runs from `A_START` on, strictly increasing, and 1 is today
    for every cosmology. Traces
    under `jit` with every cosmology key traced (only k and the names
-   static). The values are differentiable in `differentiable_parameters(model)`
-   of `DIFFERENTIABLE_PARAMETERS` (`omega_b`, `omega_c`, `omega_de`, `Tcmb`,
-   `Neff`, `omega_k`, and `mnu`, `w_DE_0`, `w_DE_a`, `z_re` where the model
-   has the component): plain JAX from them to the directed inputs
+   static). The values are differentiable in `differentiable_parameters(model)`,
+   the keys declared `Parameter(differentiable=True)` (`omega_b`, `omega_c`,
+   `omega_de`, `Tcmb`, `Neff`, `omega_k`, and `mnu`, `w_DE_0`, `w_DE_a`,
+   `z_re` where the model has the component): plain JAX from them to the directed inputs
    (`_directed_inputs`), then the `custom_jvp` of `_kept_values`. `jax.jvp`, `jacfwd`, `grad` all cost one joint launch,
    with or without `jit` (`test_matter_power_spectrum_under_jit`). `test_solve_eb_derivatives` gates the densities-level rule
    against central differences, `test_more_parameters_*` each added

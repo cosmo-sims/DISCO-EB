@@ -72,6 +72,30 @@ def test_the_rhs_builds_and_is_finite(name):
     assert dy.shape == (model.nvar,) and np.isfinite(dy).all()
 
 
+def test_each_component_marks_its_differentiable_keys():
+    """A key is differentiable where its declaration says so, and only there."""
+
+    from helpers import LCDM_REIO, LCDM_X
+
+    from discoeb.components._component import ParameterDeclaration
+    from discoeb.models import LCDM_MNU, W0WACDM, W0WACDM_MNU
+
+    lcdm = {"omega_b", "omega_c", "omega_de", "Tcmb", "Neff", "omega_k"}
+    assert set(LCDM.spec.differentiable_parameters()) == lcdm
+    assert set(LCDM_MNU.spec.differentiable_parameters()) == lcdm | {"mnu"}
+    dark_energy = lcdm | {"w_DE_0", "w_DE_a"}
+    assert set(W0WACDM.spec.differentiable_parameters()) == dark_energy
+    assert set(W0WACDM_MNU.spec.differentiable_parameters()) == dark_energy | {"mnu"}
+    # z_re only where ReionizationDepth resolves its derivative
+    assert set(LCDM_REIO.spec.differentiable_parameters()) == lcdm | {"z_re"}
+    # a component from outside marks none unless it says so
+    assert set(LCDM_X.spec.differentiable_parameters()) == lcdm
+    assert "Differentiable through solve_eb." in LCDM.__doc__.split("omega_c :")[1]
+    assert "Differentiable" not in LCDM.__doc__.split("YHe :")[1].split("\n")[1]
+    with pytest.raises(TypeError, match="only a key"):
+        ParameterDeclaration(value=lambda omega_c: omega_c, differentiable=True)
+
+
 def test_models_derive_from_each_other():
     from discoeb.components.species import CosmologicalConstant
     from discoeb.models import LCDM, LCDM_MNU, W0WACDM, Model
