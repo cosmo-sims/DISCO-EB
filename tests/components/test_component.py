@@ -751,13 +751,13 @@ def test_a_named_copy_prefixes_what_the_component_declares():
     assert issubclass(X, Fluid) and X.__name__ == "Fluid_x"
     assert [n for n, _ in X.declared_states()] == ["x_delta", "x_theta"]
     assert [n for n, _ in X.declared_parameters()] == [
-        "x_Omega",
+        "x_omega",
         "x_w",
         "x_cs2",
         "x_grho0",
     ]
-    # the derived density reads the copy's own Omega and the model's grhom
-    assert dict(X.declared_parameters())["x_grho0"].reads == ("grhom", "x_Omega")
+    # the derived density reads the copy's own omega
+    assert dict(X.declared_parameters())["x_grho0"].reads == ("x_omega",)
     with pytest.raises(TypeError, match="already carries a name"):
         X.named("z")
     with pytest.raises(ValueError, match="not a name"):

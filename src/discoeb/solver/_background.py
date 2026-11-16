@@ -42,79 +42,20 @@ def _background_model(model: ModelSpec) -> Equations:
     return model.build()
 
 
-CLOSURE_STEPS = 6
-"""Secant steps that close the budget of a model with background states of its own."""
-
-
 def density_parameters(param, model: ModelSpec, xp=jnp) -> dict:
     """The parameters of ``model`` for a parameter dictionary, keyed as the components name them.
 
     The keys pass through, and every derived parameter comes from its
-    declaration (:class:`~discoeb.components._component.Parameter`): ``grhom`` the
-    critical density, ``grhog``, ``grhornomass``, ``grhoc``, ``grhob`` and
-    ``grhok`` the photons, massless neutrinos, cold dark matter, baryons and
+    declaration (:class:`~discoeb.components._component.Parameter`): ``grhog``,
+    ``grhornomass``, ``grhoc``, ``grhob``, ``grhov`` and ``grhok`` the
+    photons, massless neutrinos, cold dark matter, baryons, dark energy and
     curvature, ``grhor_nu``, ``n_mnu`` and ``amnu`` the massive neutrinos.
-
-    The parameter that closes the budget (``grhov``, the dark energy's, for
-    the built-in models) is the root of ``3 (a'/a)^2 = grhom`` today: the
-    model's own expansion rate at ``a = 1`` must be ``H0``. Where the rate
-    is a function of ``a`` that is linear in the parameter, one secant step
-    from zero finds it exactly, whatever its coefficient. A model with
-    background states of its own (a scalar field whose potential closes the
-    budget) gets today's rate from integrating them
-    (:func:`_background_solution`) and :data:`CLOSURE_STEPS` more secant
-    steps, differentiable through the iteration.
 
     Pass ``xp=jnp`` for a traced cosmology and ``xp=np`` for one given as floats.
     """
 
-    background = background_model(model)
-    math_module = math if xp is np else jnp
-    evolves = bool(background.stages()[0])
-
-    def today(values):
-        """``3 (a'/a)^2`` at ``a = 1``, the density the Friedmann equation sees."""
-        states = {}
-        if evolves:
-            arrays = {k: jnp.asarray(v, dtype=jnp.float64) for k, v in values.items()}
-            shape = jnp.broadcast_shapes(*(v.shape for v in arrays.values()))
-
-            def at_the_end(d):
-                solution = _background_solution(d, model)[2]
-                return {n: v[-1] for n, v in solution.items()}
-
-            if shape:  # a batch's columns: one integration per cosmology
-                (n,) = shape
-                arrays = {k: jnp.broadcast_to(v, (n,)) for k, v in arrays.items()}
-                states = jax.vmap(at_the_end)(arrays)
-            else:
-                states = at_the_end(arrays)
-        module = jnp if evolves else math_module
-        adotoa = background.evaluate("adotoa", math=module, a=1.0, **states, **values)
-        return 3.0 * adotoa**2
-
-    def close(name, values):
-        critical = values["grhom"]
-
-        def miss(x):
-            return today({**values, name: x}) - critical
-
-        before, x = 0.0 * critical, critical
-        miss_before, missed = miss(before), miss(x)
-        for step in range(1 + (CLOSURE_STEPS if evolves else 0)):
-            if step:
-                missed = miss(x)
-            slope = missed - miss_before
-            # stop moving once the budget closes to rounding
-            moving = (slope != 0.0) & (abs(missed) > 1.0e-14 * critical)
-            move = xp.where(
-                moving, missed * (x - before) / xp.where(moving, slope, 1.0), 0.0
-            )
-            before, miss_before, x = x, missed, x - move
-        return x
-
     parameters = model.parameters()
-    return derive_parameters(parameters, param, math=math_module, close=close)
+    return derive_parameters(parameters, param, math=math if xp is np else jnp)
 
 
 def expansion_rate(a, densities, model: ModelSpec):

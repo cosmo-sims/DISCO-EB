@@ -13,6 +13,7 @@ from helpers import (
     _more_parameter_case,
     _perturbed_cosmologies,
     cosmologies_of,
+    physical,
 )
 
 
@@ -31,8 +32,8 @@ def test_matter_power_spectrum_takes_one_cosmology_and_vmaps_over_a_batch():
     }
     scalars = {
         "tau0": jnp.full(3, 14000.0),
-        "Omegam": jnp.asarray([0.30, 0.31, 0.32]),
-        "Omegab": jnp.full(3, 0.049),
+        "omega_c": jnp.asarray([0.11, 0.12, 0.13]),
+        "omega_b": jnp.full(3, 0.022),
         "A_s": jnp.full(3, 2.1e-9),
         "n_s": jnp.full(3, 0.966),
         "k_p": jnp.full(3, 0.05),
@@ -153,7 +154,7 @@ def test_matter_power_spectrum_derivatives(benchmark):
     cosmology = _perturbed_cosmologies(1)[0]
     theta = jnp.asarray([cosmology[name] for name in DIFFERENTIABLE_PARAMETERS])
     # past the age of every shifted cosmology; the parameters are traced
-    tau_today = 2.0 * conformal_ages(LCDM.from_dict(cosmology)).max()
+    tau_today = 2.0 * conformal_ages(cosmologies_of(LCDM, cosmology)).max()
 
     def total_power(t):
         params = {**cosmology, **dict(zip(DIFFERENTIABLE_PARAMETERS, t))}
@@ -213,16 +214,22 @@ def test_matter_power_spectrum_under_jit():
         )
         today = dict(zip(keep, jnp.unstack(values[0, :, :, -1])))
         params = {
-            key: cosmology[key] for key in ("Omegam", "Omegab", "A_s", "n_s", "k_p")
+            key: getattr(batch[0], key)
+            for key in ("omega_c", "omega_b", "A_s", "n_s", "k_p")
         }
         return matter_power_spectrum(SOLVE_EB_K, **today, tau0=tau0, **params)
 
     jitted = jax.jit(power)
+    to_physical = jax.jit(lambda c: physical(LCDM, c))
     for cosmology in _perturbed_cosmologies(2):
+        # The eager solve of the same physical parameters. Converted under
+        # jit as well: compiled, the closure rounds omega_de differently in
+        # the last bit, which moves a step-acceptance and P(k) by 1e-5.
+        eager = power(to_physical(cosmology))
         np.testing.assert_allclose(
-            np.asarray(jitted(cosmology)), np.asarray(power(cosmology)), rtol=1e-12
+            np.asarray(jitted(cosmology)), np.asarray(eager), rtol=1e-12
         )
-    assert sum(isinstance(c["H0"], jax.core.Tracer) for c in traces) == 1
+    assert sum(isinstance(c.get("H0"), jax.core.Tracer) for c in traces) == 1
 
     cosmology = _perturbed_cosmologies(1)[0]
     theta = jnp.asarray([cosmology[n] for n in DIFFERENTIABLE_PARAMETERS])
@@ -230,7 +237,7 @@ def test_matter_power_spectrum_under_jit():
     def total(t, of):
         return jnp.sum(of({**cosmology, **dict(zip(DIFFERENTIABLE_PARAMETERS, t))}))
 
-    eager = np.asarray(jax.grad(total)(theta, power))
+    eager = np.asarray(jax.grad(total)(theta, lambda c: power(to_physical(c))))
     under_jit = np.asarray(jax.jit(jax.grad(lambda t: total(t, jitted)))(theta))
     np.testing.assert_allclose(under_jit, eager, rtol=1e-12)
 
@@ -261,7 +268,7 @@ def test_more_parameters_matter_power(name):
     from discoeb.solver._solver import conformal_ages
 
     model, cosmology, step = _more_parameter_case(name)
-    tau_today = 2.0 * conformal_ages(model.from_dict(cosmology)).max()
+    tau_today = 2.0 * conformal_ages(cosmologies_of(model, cosmology)).max()
 
     def total_power(p, **options):
         batch = cosmologies_of(model, {**cosmology, name: p})

@@ -84,7 +84,7 @@ def _matter_power_and_steps(model, cosmologies, **options):
     pk = np.asarray(jax.block_until_ready(_matter_power(SWEEP_K, batch, **options)))
     (_, stats), _, k_sorted = _solve_batch(
         model.spec,
-        cosmologies,
+        batch,
         SWEEP_K,
         thermo_weight=MATTER_THERMO_WEIGHT,
         return_stats=True,
@@ -264,8 +264,8 @@ def _converged_matter_power(model, cosmology):
     from discoeb.solver._kernel import _solve_batch
     from discoeb.solver._solver import conformal_ages
 
-    instance = model.from_dict(cosmology)
-    tau_today = float(conformal_ages(instance).max())
+    cosmology = cosmologies_of(model, cosmology)
+    tau_today = float(conformal_ages(cosmology).max())
     (hist, stats), prepared, k_sorted = _solve_batch(
         model,
         (cosmology,),
@@ -277,12 +277,12 @@ def _converged_matter_power(model, cosmology):
     # SWEEP_K is ascending, so k_sorted is SWEEP_K
     final = np.asarray(hist).reshape(len(k_sorted), -1, prepared.model.nvar)[:, -1]
     index = prepared.model.index
-    grhoc, grhob = density_coefficients(instance)[2:4]
+    grhoc, grhob = density_coefficients(cosmology)[2:4]
     delta_m = (grhoc * final[:, index["clxc"]] + grhob * final[:, index["clxb"]]) / (
         grhoc + grhob
     )
     k = np.asarray(k_sorted)
-    c = instance
+    c = cosmology
     pk = 2.0 * np.pi**2 / k**3 * c.A_s * (k / c.k_p) ** (c.n_s - 1.0) * delta_m**2
     return pk, np.asarray(stats["loop_steps"])
 

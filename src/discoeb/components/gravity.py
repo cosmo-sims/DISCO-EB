@@ -23,6 +23,7 @@ from ._component import Component, Derived, Gravity, Parameter, State, Sum
 # are these times ``a^2``.
 
 GRHOM_PER_H0SQ = 3.33795017e-11  # 8 pi G rho_crit / c^2 per (H0 in km/s/Mpc)^2
+GRHO_PER_OMEGA = 1.0e4 * GRHOM_PER_H0SQ  # per unit physical density omega = Omega h^2
 GRHOG_PER_TCMB4 = 1.49594245e-13  # photons, per K^4
 GRHOR_PER_TCMB4 = 3.39739477e-14  # one massless neutrino flavour, per K^4
 C2OK = 1.62581581e4  # K / eV: amnu = m_nu c^2 / (k_B T_nu0) = mnu * C2OK / Tcmb
@@ -50,15 +51,13 @@ class Kinematics(Component):
 class Background(Gravity):
     """The Friedmann equation of general relativity: the expansion rate from the fluids.
 
-    It declares the Hubble constant ``H0`` (km/s/Mpc), which the
-    recombination rates read too, and the critical density ``grhom`` derived
-    from it. A theory with another Friedmann equation replaces this
-    component and provides ``adotoa`` (and ``adotoa_prime`` if something
-    reads it) its own way.
+    The species give their densities as physical ones, ``omega = Omega
+    h^2``, so the Hubble constant is no parameter: it is what this rate
+    comes to today, ``H0 = adotoa(a = 1)``
+    (:attr:`Model.H0 <discoeb.models.Model.H0>`). A theory with another
+    Friedmann equation replaces this component and provides ``adotoa`` (and
+    ``adotoa_prime`` if something reads it) its own way.
     """
-
-    H0: ArrayLike = Parameter(directed=True)
-    grhom: ArrayLike = Derived(lambda H0: GRHOM_PER_H0SQ * H0**2)
 
     grho = Sum()
     """The Friedmann density ``Sum 8 pi G rho_i a^2``. Curvature is no fluid
@@ -118,14 +117,14 @@ class AdiabaticMode(Component):
 
 
 class Curvature(Gravity):
-    """Spatial curvature ``K = -grhok / 3``, with ``grhok = Omegak grhom``, and the metric factors.
+    """Spatial curvature ``K = -grhok / 3``, with ``omega_k = Omega_k h^2``, and the metric factors.
 
     It is geometry, not a fluid: it enters the Friedmann equation through
     ``Kcurv`` and none of the sums.
     """
 
-    Omegak: ArrayLike = Parameter(0.0)
-    grhok: ArrayLike = Derived(lambda grhom, Omegak: grhom * Omegak, directed=True)
+    omega_k: ArrayLike = Parameter(0.0)
+    grhok: ArrayLike = Derived(lambda omega_k: GRHO_PER_OMEGA * omega_k, directed=True)
 
     def s2(self, grhok, inv_k2):
         """``s2^2 = 1 - 3K/k^2 = 1 + grhok/k^2`` (1 when flat)."""

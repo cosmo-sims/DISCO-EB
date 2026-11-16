@@ -41,8 +41,6 @@ DIRECTED_NAMES = (
     "grhov",
     "YHe",
     "Tcmb",
-    "H0",
-    "Omegab",
 )
 """The directed inputs every built-in model leads with: the five background
 densities and the recombination rates' ``YHe``, ``Tcmb``, ``H0`` and

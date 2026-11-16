@@ -1,8 +1,8 @@
 """Cosmologies as the solver reads them: parameter dictionaries and their hashable form.
 
-A cosmology is an instance of a model (:mod:`discoeb.models`), ``LCDM(H0=...,
-...)``. Inside, the solver reads its parameters as a dictionary (``Omegam``,
-``Omegab``, ``H0``, ``Tcmb``, ``YHe``, ``Neff``, ``A_s``, ``n_s``, ...), and
+A cosmology is an instance of a model (:mod:`discoeb.models`), ``LCDM(omega_b=...,
+...)``. Inside, the solver reads its parameters as a dictionary (``omega_b``,
+``omega_c``, ``omega_de``, ``Tcmb``, ``YHe``, ``Neff``, ``A_s``, ``n_s``, ...), and
 :func:`as_cosmology` gives a hashable form for caching the background.
 """
 
@@ -19,15 +19,15 @@ from ..components._component import REQUIRED, declarations_of
 class _ParamCosmology(NamedTuple):
     """Hashable form of the DISCO-EB parameter dictionary."""
 
-    Omegam: float
-    Omegab: float
+    omega_b: float
+    omega_c: float
+    omega_de: float
     w_DE_0: float
     w_DE_a: float
     cs2_DE: float
-    Omegak: float
+    omega_k: float
     A_s: float
     n_s: float
-    H0: float
     T_cmb: float
     Y_He: float
     Neff_massless: float
@@ -39,15 +39,15 @@ class _ParamCosmology(NamedTuple):
 
     def to_background_params(self):
         return {
-            "Omegam": self.Omegam,
-            "Omegab": self.Omegab,
+            "omega_b": self.omega_b,
+            "omega_c": self.omega_c,
+            "omega_de": self.omega_de,
             "w_DE_0": self.w_DE_0,
             "w_DE_a": self.w_DE_a,
             "cs2_DE": self.cs2_DE,
-            "Omegak": self.Omegak,
+            "omega_k": self.omega_k,
             "A_s": self.A_s,
             "n_s": self.n_s,
-            "H0": self.H0,
             "Tcmb": self.T_cmb,
             "YHe": self.Y_He,
             "Neff": self.Neff_massless,
@@ -59,15 +59,15 @@ class _ParamCosmology(NamedTuple):
 
 
 _FIELD_KEYS = {
-    "Omegam": "Omegam",
-    "Omegab": "Omegab",
+    "omega_b": "omega_b",
+    "omega_c": "omega_c",
+    "omega_de": "omega_de",
     "w_DE_0": "w_DE_0",
     "w_DE_a": "w_DE_a",
     "cs2_DE": "cs2_DE",
-    "Omegak": "Omegak",
+    "omega_k": "omega_k",
     "A_s": "A_s",
     "n_s": "n_s",
-    "H0": "H0",
     "T_cmb": "Tcmb",
     "Y_He": "YHe",
     "Neff_massless": "Neff",
@@ -119,15 +119,15 @@ def _as_cosmology(cosmology):
         )
     )
     return _ParamCosmology(
-        Omegam=float(c["Omegam"]),
-        Omegab=float(c["Omegab"]),
+        omega_b=float(c["omega_b"]),
+        omega_c=float(c["omega_c"]),
+        omega_de=float(c["omega_de"]),
         w_DE_0=float(c["w_DE_0"]),
         w_DE_a=float(c["w_DE_a"]),
         cs2_DE=float(c["cs2_DE"]),
-        Omegak=float(c["Omegak"]),
+        omega_k=float(c["omega_k"]),
         A_s=float(c["A_s"]),
         n_s=float(c["n_s"]),
-        H0=float(c["H0"]),
         T_cmb=float(c["Tcmb"]),
         Y_He=float(c["YHe"]),
         Neff_massless=float(c["Neff"]),
@@ -150,18 +150,18 @@ def _is_model_instance(cosmology) -> bool:
 def _as_batch(cosmologies) -> tuple:
     """Return a cosmology or a sequence of them as a tuple (dictionaries unchanged)."""
 
-    if isinstance(cosmologies, dict) or hasattr(cosmologies, "Omegam"):
+    if isinstance(cosmologies, dict) or hasattr(cosmologies, "omega_b"):
         return (cosmologies,)
     return tuple(cosmologies)
 
 
 DIFFERENTIABLE_PARAMETERS = (
-    "Omegam",
-    "Omegab",
-    "H0",
+    "omega_b",
+    "omega_c",
+    "omega_de",
     "Tcmb",
     "Neff",
-    "Omegak",
+    "omega_k",
     "mnu",
     "w_DE_0",
     "w_DE_a",
@@ -269,7 +269,7 @@ def _is_concrete(value) -> bool:
 
 
 as_cosmology = _as_cosmology
-"""Return a cosmology, or a parameter dictionary (``Omegam``, ``Omegab``, ``H0``,
+"""Return a cosmology, or a parameter dictionary (``omega_b``, ``omega_c``, ``omega_de``,
 ``Tcmb``, ``YHe``, ``Neff``, ``A_s``, ``n_s``, ...), in the hashable form the
 background caches on. Returns one already in that form as it is. The form
 keeps the parameters, not the model."""

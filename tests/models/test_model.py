@@ -102,11 +102,11 @@ def test_models_derive_from_each_other():
 
 
 BASE_COSMOLOGY = dict(
-    Omegam=0.31,
-    Omegab=0.049,
+    omega_b=0.022,
+    omega_c=0.117,
+    omega_de=0.31,
     A_s=2.1e-9,
     n_s=0.966,
-    H0=67.0,
     Tcmb=2.7255,
     YHe=0.245,
     Neff=3.046,
@@ -125,13 +125,16 @@ def test_a_model_rejects_a_cosmology_it_cannot_represent():
         W0WACDM(**BASE_COSMOLOGY)
     with pytest.raises(TypeError, match="no parameter 'Nmnu'.*MassiveNeutrinos"):
         LCDM(**BASE_COSMOLOGY, Nmnu=1.0)  # ty: ignore[unknown-argument]
-    with pytest.raises(TypeError, match=r"needs the parameters \['H0'\]"):
-        LCDM(**{k: v for k, v in BASE_COSMOLOGY.items() if k != "H0"})
+    with pytest.raises(TypeError, match=r"needs the parameters \['omega_c'\]"):
+        LCDM(**{k: v for k, v in BASE_COSMOLOGY.items() if k != "omega_c"})
     with pytest.raises(TypeError, match="by keyword"):
         LCDM(BASE_COSMOLOGY)  # ty: ignore[too-many-positional-arguments]
     # from_dict takes a dictionary written for another model, as long as the
     # keys this model lacks keep their defaults
-    assert LCDM.from_dict({**BASE_COSMOLOGY, "w_DE_0": -1.0, "unknown": 3.0}).H0 == 67.0
+    assert (
+        LCDM.from_dict({**BASE_COSMOLOGY, "w_DE_0": -1.0, "unknown": 3.0}).omega_c
+        == 0.117
+    )
     with pytest.raises(ValueError, match="DarkEnergy"):
         LCDM.from_dict({**BASE_COSMOLOGY, "w_DE_0": -0.9})
     # traced, a key the model lacks can't be checked yet: the cosmology holds
@@ -154,29 +157,70 @@ def test_a_cosmology_is_an_immutable_pytree_of_its_parameters():
     from discoeb.models import LCDM
 
     planck = LCDM(**BASE_COSMOLOGY)
-    assert isinstance(planck, LCDM) and planck.H0 == 67.0 and planck.k_p == 0.05
+    assert isinstance(planck, LCDM) and planck.omega_c == 0.117 and planck.k_p == 0.05
     assert planck.to_dict() == {**LCDM.parameter_keys(), **BASE_COSMOLOGY} | {
         "k_p": 0.05,
-        "Omegak": 0.0,
+        "omega_k": 0.0,
         "z_re": 0.0,
     }
-    later = planck.replace(H0=70.0)
-    assert later.H0 == 70.0 and planck.H0 == 67.0
+    later = planck.replace(omega_c=0.13)
+    assert later.omega_c == 0.13 and planck.omega_c == 0.117
     with pytest.raises(AttributeError, match="immutable"):
-        planck.H0 = 70.0
+        planck.omega_c = 0.13
     # JAX values are kept as given, so they stay differentiable
-    traced = planck.replace(Omegam=jnp.asarray(0.31))
-    assert isinstance(traced.Omegam, jax.Array)
+    traced = planck.replace(omega_c=jnp.asarray(0.117))
+    assert isinstance(traced.omega_c, jax.Array)
     leaves, tree = jax.tree_util.tree_flatten(planck)
     assert leaves == list(planck.to_dict().values())
     doubled = jax.tree_util.tree_unflatten(tree, [2.0 * x for x in leaves])
-    assert isinstance(doubled, LCDM) and doubled.H0 == 134.0
+    assert isinstance(doubled, LCDM) and doubled.omega_c == 0.234
     # the constructor's signature and docstring list the parameters
     signature = inspect.signature(LCDM)
     assert list(signature.parameters) == list(LCDM.parameter_keys())
     assert signature.parameters["k_p"].default == 0.05
-    assert signature.parameters["H0"].default is inspect.Parameter.empty
-    assert "Parameters" in (LCDM.__doc__ or "") and "\nH0 : " in (LCDM.__doc__ or "")
+    assert signature.parameters["omega_c"].default is inspect.Parameter.empty
+    assert "Parameters" in (LCDM.__doc__ or "") and "\nomega_c : " in (
+        LCDM.__doc__ or ""
+    )
+
+
+def test_density_parameters_give_the_physical_ones_and_the_hubble_constant_back():
+    """``from_density_parameters`` closes the budget, and ``H0`` is what the densities sum to."""
+
+    import jax
+    import jax.numpy as jnp
+
+    from discoeb.models import LCDM, LCDM_MNU, W0WACDM
+
+    fractions = dict(Omegam=0.31, Omegab=0.049, H0=67.0)
+    rest = {k: v for k, v in BASE_COSMOLOGY.items() if not k.startswith("omega")}
+    planck = LCDM.from_density_parameters(**fractions, **rest)
+    h2 = 0.67**2
+    assert planck.omega_b == pytest.approx(0.049 * h2, rel=1e-15)
+    assert planck.omega_c == pytest.approx((0.31 - 0.049) * h2, rel=1e-15)
+    assert planck.H0 == pytest.approx(67.0, rel=1e-13)
+    # dark energy takes what matter and radiation leave of the critical density
+    assert 0.68 * h2 < planck.omega_de < 0.69 * h2
+    # curvature, massive neutrinos and a fluid with w != -1 close the same way
+    for model, more in (
+        (LCDM, {"Omegak": 0.02}),
+        (LCDM_MNU, {"Nmnu": 1.0, "mnu": 0.3}),
+        (W0WACDM, {"w_DE_0": -0.9, "w_DE_a": 0.1}),
+    ):
+        other = model.from_density_parameters(**fractions, **rest, **more)
+        assert other.H0 == pytest.approx(67.0, rel=1e-13), model.__name__
+    assert LCDM.from_density_parameters(
+        **fractions, **rest, Omegak=0.02
+    ).omega_k == pytest.approx(0.02 * h2, rel=1e-15)
+    with pytest.raises(TypeError, match="omega_de or H0"):
+        LCDM.from_density_parameters(**fractions, **rest, omega_de=0.3)
+    # plain JAX arithmetic: a derivative in H0 goes through the closure
+    slope = jax.grad(
+        lambda H0: (
+            LCDM.from_density_parameters(**{**fractions, "H0": H0}, **rest).omega_de
+        )
+    )(jnp.asarray(67.0))
+    assert float(slope) == pytest.approx(2.0 * planck.omega_de / 67.0, rel=1e-2)
 
 
 def test_a_solve_takes_cosmologies_of_one_model():
@@ -184,15 +228,15 @@ def test_a_solve_takes_cosmologies_of_one_model():
     from discoeb.models._model import _batch_of
 
     planck = LCDM(**BASE_COSMOLOGY)
-    batch = _batch_of([planck, planck.replace(H0=70.0)])
+    batch = _batch_of([planck, planck.replace(omega_c=0.13)])
     assert batch.model == LCDM.spec and batch.model_class is LCDM and len(batch) == 2
-    assert batch.cosmologies[1]["H0"] == 70.0
+    assert batch.cosmologies[1]["omega_c"] == 0.13
     assert len(_batch_of(planck)) == 1
     with pytest.raises(TypeError, match="share a model"):
         _batch_of([planck, W0WACDM(**BASE_COSMOLOGY, w_DE_0=-0.9)])
     with pytest.raises(TypeError, match="non-empty"):
         _batch_of([])
-    with pytest.raises(TypeError, match=r"LCDM\(H0="):
+    with pytest.raises(TypeError, match=r"LCDM\(omega_b="):
         _batch_of([BASE_COSMOLOGY])
 
 
@@ -204,14 +248,14 @@ from discoeb import LCDM, W0WACDM
 from discoeb.components.species import MassiveNeutrinos
 
 good = LCDM(
-    Omegam=0.31, Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
+    omega_b=0.022, omega_c=0.117, omega_de=0.31, A_s=2.1e-9, n_s=0.966,
     Tcmb=2.7255, YHe=0.245, Neff=3.046,
 )
 dark = W0WACDM(
-    Omegam=0.31, Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
+    omega_b=0.022, omega_c=0.117, omega_de=0.31, A_s=2.1e-9, n_s=0.966,
     Tcmb=2.7255, YHe=0.245, Neff=3.046, w_DE_0=-0.9,
 )
-moved = good.replace(H0=70.0)
+moved = good.replace(omega_c=0.13)
 
 
 class Mine(LCDM, MassiveNeutrinos):
@@ -219,21 +263,21 @@ class Mine(LCDM, MassiveNeutrinos):
 
 
 mine = Mine(
-    Omegam=0.31, Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
+    omega_b=0.022, omega_c=0.117, omega_de=0.31, A_s=2.1e-9, n_s=0.966,
     Tcmb=2.7255, YHe=0.245, Neff=3.046, mnu=0.06,
 )
 
 LCDM(  # missing
-    Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
+    omega_b=0.022, omega_de=0.31, A_s=2.1e-9, n_s=0.966,
     Tcmb=2.7255, YHe=0.245, Neff=3.046,
 )
 LCDM(  # foreign
-    Omegam=0.31, Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
+    omega_b=0.022, omega_c=0.117, omega_de=0.31, A_s=2.1e-9, n_s=0.966,
     Tcmb=2.7255, YHe=0.245, Neff=3.046, mnu=0.06,
 )
 LCDM(  # derived
-    Omegam=0.31, Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
-    Tcmb=2.7255, YHe=0.245, Neff=3.046, grhom=1.0,
+    omega_b=0.022, omega_c=0.117, omega_de=0.31, A_s=2.1e-9, n_s=0.966,
+    Tcmb=2.7255, YHe=0.245, Neff=3.046, grhoc=1.0,
 )
 LCDM(0.31)  # positional
 '''

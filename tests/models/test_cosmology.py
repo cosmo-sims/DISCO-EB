@@ -1,7 +1,9 @@
 """Cosmologies as the solver reads them (``_cosmology``): dictionaries, columns, what is differentiable."""
 
 import pytest
-from helpers import COSMOLOGY, LCDM_X, _split, cosmologies_of
+from helpers import COSMOLOGY, LCDM_X, _split, cosmologies_of, physical
+
+from discoeb.models import LCDM
 
 # --- A species with a parameter of its own, added without touching the package.
 
@@ -34,20 +36,18 @@ def test_columns_fill_defaults_and_require_the_rest():
     import numpy as np
     from helpers import REFERENCE_COSMOLOGY
 
-    from discoeb.models import LCDM
     from discoeb.models._cosmology import _columns
 
     keys = LCDM.parameter_keys()
-    lean = {k: v for k, v in REFERENCE_COSMOLOGY.items() if k in ("H0", "Omegam")}
+    reference = physical(LCDM, REFERENCE_COSMOLOGY)
+    lean = {k: v for k, v in reference.items() if k in ("omega_b", "omega_c")}
     with pytest.raises(KeyError):
         _columns([lean], keys=keys)
-    required = {
-        k: REFERENCE_COSMOLOGY[k]
-        for k in ("H0", "Omegam", "Omegab", "Tcmb", "YHe", "Neff", "A_s", "n_s")
-    }
-    columns = _columns([required, {**required, "H0": 70.0}], keys=keys)
-    np.testing.assert_array_equal(columns["H0"], [required["H0"], 70.0])
-    assert columns["Omegak"].shape == (2,) and float(columns["Omegak"][0]) == 0.0
+    names = ("omega_b", "omega_c", "omega_de", "Tcmb", "YHe", "Neff", "A_s", "n_s")
+    required = {k: reference[k] for k in names}
+    columns = _columns([required, {**required, "omega_c": 0.13}], keys=keys)
+    np.testing.assert_array_equal(columns["omega_c"], [required["omega_c"], 0.13])
+    assert columns["omega_k"].shape == (2,) and float(columns["omega_k"][0]) == 0.0
     assert "not_a_parameter" not in _columns(
         [{**required, "not_a_parameter": 1.0}], keys=keys
     )
@@ -61,14 +61,15 @@ def test_a_held_key_raises_when_differentiated():
     from discoeb.models import LCDM
     from discoeb.models._cosmology import _columns
 
+    reference = physical(LCDM, REFERENCE_COSMOLOGY)
+
     def column(key):
         def of(value):
-            cosmology = {**REFERENCE_COSMOLOGY, key: value}
-            return _columns([cosmology], LCDM.parameter_keys())[key][0]
+            return _columns([{**reference, key: value}], LCDM.parameter_keys())[key][0]
 
-        return jax.grad(of)(REFERENCE_COSMOLOGY[key])
+        return jax.grad(of)(reference[key])
 
-    assert float(column("H0")) == 1.0
+    assert float(column("omega_c")) == 1.0
     with pytest.raises(Exception, match="YHe"):
         column("YHe")
 
@@ -76,9 +77,10 @@ def test_a_held_key_raises_when_differentiated():
 def test_as_cosmology_is_hashable_and_takes_an_instance():
     from helpers import REFERENCE_COSMOLOGY
 
-    from discoeb import LCDM, as_cosmology
+    from discoeb import as_cosmology
 
-    from_dict = as_cosmology(REFERENCE_COSMOLOGY)
-    from_instance = as_cosmology(LCDM.from_dict(REFERENCE_COSMOLOGY))
+    reference = physical(LCDM, REFERENCE_COSMOLOGY)
+    from_dict = as_cosmology(reference)
+    from_instance = as_cosmology(LCDM.from_dict(reference))
     assert hash(from_dict) == hash(from_instance) and from_dict == from_instance
-    assert from_dict.H0 == REFERENCE_COSMOLOGY["H0"]
+    assert from_dict.omega_c == reference["omega_c"]

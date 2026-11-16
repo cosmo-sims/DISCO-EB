@@ -15,8 +15,8 @@ def matter_power_spectrum(
     z: ArrayLike,
     vb: ArrayLike,
     tau0: ArrayLike,
-    Omegam: ArrayLike,
-    Omegab: ArrayLike,
+    omega_c: ArrayLike,
+    omega_b: ArrayLike,
     A_s: ArrayLike,
     n_s: ArrayLike,
     k_p: ArrayLike,
@@ -48,8 +48,8 @@ def matter_power_spectrum(
             z=z,
             vb=vb,
             tau0=tau0,
-            Omegam=cosmology.Omegam,
-            Omegab=cosmology.Omegab,
+            omega_c=cosmology.omega_c,
+            omega_b=cosmology.omega_b,
             A_s=cosmology.A_s,
             n_s=cosmology.n_s,
             k_p=cosmology.k_p,
@@ -73,8 +73,8 @@ def matter_power_spectrum(
     tau0
         The conformal age in Mpc, a scalar, from
         :func:`~discoeb.solver.conformal_ages`. Only its derivative enters.
-    Omegam, Omegab, A_s, n_s, k_p
-        The matter and baryon density parameters, the primordial amplitude
+    omega_c, omega_b, A_s, n_s, k_p
+        The cold dark matter and baryon densities, the primordial amplitude
         and tilt, and the pivot scale in 1/Mpc, each a scalar.
 
     Returns
@@ -96,8 +96,9 @@ def matter_power_spectrum(
     ks, clxc, clxb, z, vb = (
         jnp.asarray(x, dtype=jnp.float64) for x in (k, clxc, clxb, z, vb)
     )
-    tau0, Omegam, Omegab, A_s, n_s, k_p = (
-        jnp.asarray(x, dtype=jnp.float64) for x in (tau0, Omegam, Omegab, A_s, n_s, k_p)
+    tau0, omega_c, omega_b, A_s, n_s, k_p = (
+        jnp.asarray(x, dtype=jnp.float64)
+        for x in (tau0, omega_c, omega_b, A_s, n_s, k_p)
     )
 
     # End-time term: the contrasts' rates at tau0 times d tau0 / dp.
@@ -105,6 +106,6 @@ def matter_power_spectrum(
     clxc = clxc - ks * z * dtau
     clxb = clxb - ks * (z + vb) * dtau
 
-    # density-weighted, grho_c : grho_b = (Omegam - Omegab) : Omegab
-    delta_m = ((Omegam - Omegab) * clxc + Omegab * clxb) / Omegam
+    # density-weighted, grho_c : grho_b = omega_c : omega_b
+    delta_m = (omega_c * clxc + omega_b * clxb) / (omega_c + omega_b)
     return 2.0 * jnp.pi**2 / ks**3 * A_s * (ks / k_p) ** (n_s - 1.0) * delta_m**2

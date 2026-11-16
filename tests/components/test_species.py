@@ -51,11 +51,11 @@ def test_a_cold_pressureless_copy_moves_as_the_dark_matter():
 
 
 def test_a_built_in_species_takes_a_name_too():
-    """A second cold dark matter, with its own ``Omegam`` and the model's ``Omegab``."""
+    """A second cold dark matter, with a density ``warm_omega_c`` of its own."""
 
     second = ColdDarkMatter.named("warm")
     parameters = dict(second.declared_parameters())
-    assert parameters["warm_grhoc"].reads == ("grhom", "warm_Omegam", "Omegab")
+    assert parameters["warm_grhoc"].reads == ("warm_omega_c",)
     assert LCDM.add(second, name="two").state_names()[-1] == "warm_clxc"
 
 

@@ -12,10 +12,10 @@ from helpers import (
     X,
     _matter_power,
     _perturbed_cosmologies,
-    _qcdm_densities,
     _split,
     by_name,
     cosmologies_of,
+    qcdm_parameters,
 )
 
 from discoeb.models import LCDM
@@ -35,12 +35,13 @@ def test_splitting_the_dark_matter_into_a_named_fluid_leaves_the_solve_unchanged
     k = np.geomspace(1.0e-3, 0.3, 8)
     tau = np.geomspace(1.0, 2.0e4, 16)
     lcdm = cosmologies_of(LCDM, COSMOLOGY)
-    with_fluid = model.from_dict(
+    with_fluid = cosmologies_of(
+        model,
         {
             **COSMOLOGY,
             "Omegam": COSMOLOGY["Omegam"] - OMEGA_FLUID,
             "x_Omega": OMEGA_FLUID,
-        }
+        },
     )
     plain = by_name(solve_eb(lcdm, k, tau, keep=("clxc", "R")), ("clxc", "R"))
     keep = ("clxc", "R", "x_delta")
@@ -120,7 +121,7 @@ def test_splitting_the_dark_matter_leaves_the_solve_unchanged():
 def _power(model, cosmology, k):
     from discoeb import conformal_ages, matter_power_spectrum, solve_eb
 
-    batch = cosmologies_of(model, [cosmology])
+    batch = [cosmologies_of(model, cosmology)]
     tau0 = conformal_ages(batch)[0]
     keep = ("clxc", "clxb", "z", "vb", "a")
     values = solve_eb(batch, k, tau0.reshape(1), keep=keep, thermo_weight=0.1)
@@ -130,7 +131,9 @@ def _power(model, cosmology, k):
         k,
         **today,
         tau0=tau0,
-        **{n: cosmology[n] for n in ("Omegam", "Omegab", "A_s", "n_s", "k_p")},
+        **{
+            n: getattr(batch[0], n) for n in ("omega_c", "omega_b", "A_s", "n_s", "k_p")
+        },
     )
     return np.asarray(pk), a_today
 
@@ -144,12 +147,17 @@ def _growth(model, cosmology):
 
     import jax.numpy as jnp
 
-    from discoeb.solver._background import _background_solution, background_model
+    from discoeb.solver._background import (
+        _background_solution,
+        background_model,
+        density_parameters,
+    )
 
-    d = _qcdm_densities(model, cosmology)
-    a, _, states = _background_solution(d, model)
+    native = cosmologies_of(model, cosmology).to_dict()
+    d = density_parameters(native, model=model.spec)
+    a, _, states = _background_solution(d, model.spec)
     rate = np.asarray(
-        background_model(model).evaluate("adotoa", math=jnp, a=a, **states, **d)
+        background_model(model.spec).evaluate("adotoa", math=jnp, a=a, **states, **d)
     )
     a = np.asarray(a)
     source = 0.5 * float(d["grhoc"] + d["grhob"]) / a
@@ -182,11 +190,11 @@ def test_the_solve_matches_lcdm_and_the_growth_in_the_fields_background():
 
     k = np.geomspace(1.0e-3, 0.3, 8)
     lcdm, _ = _power(LCDM, QCDM_COSMOLOGY, k)
-    flat, a_flat = _power(QCDM, QCDM_COSMOLOGY, k)
+    flat, a_flat = _power(QCDM, qcdm_parameters(), k)
     np.testing.assert_allclose(a_flat, 1.0, rtol=1e-4)
     np.testing.assert_allclose(flat, lcdm, rtol=2e-3)
 
-    rolling = {**QCDM_COSMOLOGY, "lam": LAM}
+    rolling = qcdm_parameters(lam=LAM)
     field, a_field = _power(QCDM, rolling, k)
     # the kernel's own integration of the field ends today where the host's did
     np.testing.assert_allclose(a_field, 1.0, rtol=1e-4)

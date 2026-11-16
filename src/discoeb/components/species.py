@@ -26,7 +26,7 @@ from ._component import (
     contributes,
 )
 from ._util import neutrino_momentum_bins
-from .gravity import C2OK, GRHOG_PER_TCMB4, GRHOR_PER_TCMB4
+from .gravity import C2OK, GRHO_PER_OMEGA, GRHOG_PER_TCMB4, GRHOR_PER_TCMB4
 
 
 def _needs_octupole(**lmax):
@@ -59,10 +59,8 @@ class ColdDarkMatter(Species):
     # adiabatic mode: 3/4 of the photon density contrast
     clxc = State(initial=lambda theta: 0.75 * theta[0])
 
-    Omegam: ArrayLike = Parameter()  # CDM and baryons
-    grhoc: ArrayLike = Derived(
-        lambda grhom, Omegam, Omegab: grhom * (Omegam - Omegab), directed=True
-    )
+    omega_c: ArrayLike = Parameter()  # Omega_c h^2
+    grhoc: ArrayLike = Derived(lambda omega_c: GRHO_PER_OMEGA * omega_c, directed=True)
 
     def grhoc_t(self, grhoc, inv_a):
         return grhoc * inv_a
@@ -93,10 +91,10 @@ class Baryons(Species):
     clxb = State(initial=lambda theta: 0.75 * theta[0])
     vb = State(initial=lambda theta: 0.75 * theta[1])
 
-    # The recombination rates read Omegab and the helium fraction YHe too.
-    Omegab: ArrayLike = Parameter(directed=True)
+    # The recombination rates read grhob and the helium fraction YHe too.
+    omega_b: ArrayLike = Parameter()  # Omega_b h^2
     YHe: ArrayLike = Parameter(directed=True)
-    grhob: ArrayLike = Derived(lambda grhom, Omegab: grhom * Omegab, directed=True)
+    grhob: ArrayLike = Derived(lambda omega_b: GRHO_PER_OMEGA * omega_b, directed=True)
 
     def grhob_t(self, grhob, inv_a):
         return grhob * inv_a
@@ -134,8 +132,8 @@ class Fluid(Species):
                - 9 (1+w)(cs2 - w) (aH)^2 theta / k^2``,
     ``theta' = -(1 - 3 cs2) aH theta + cs2 k^2 delta / (1+w)``,
 
-    with no anisotropic stress. Its density today is ``Omega`` of the
-    critical one and scales as ``a^(-3(1+w))``. It starts in the adiabatic
+    with no anisotropic stress. Its physical density today is ``omega``
+    (``Omega h^2``) and scales as ``a^(-3(1+w))``. It starts in the adiabatic
     mode, ``delta = (1 + w) clxc`` at rest. ``w = cs2 = 0`` is a second cold
     dark matter and ``w = cs2 = 1/3`` a dark radiation without shear. The
     growing mode's series does not count it: a subclass that is matter or
@@ -145,24 +143,24 @@ class Fluid(Species):
     Its names (``delta``, ``theta``, ``w``, ``cs2``) are generic, so a model
     must rename it appropriately::
 
-        LCDM.add(Fluid.named("dr"), name="LCDM+dr")   # dr_Omega, dr_w, dr_delta ...
+        LCDM.add(Fluid.named("dr"), name="LCDM+dr")   # dr_omega, dr_w, dr_delta ...
     """
 
     delta = State(initial=lambda w, clxc: (1.0 + w) * clxc)
     theta = State()
 
-    Omega: ArrayLike = Parameter(0.0)
+    omega: ArrayLike = Parameter(0.0)
     w: ArrayLike = Parameter(0.0, column=True)
     cs2: ArrayLike = Parameter(0.0, column=True)
-    grho0: ArrayLike = Derived(lambda grhom, Omega: grhom * Omega, directed=True)
+    grho0: ArrayLike = Derived(lambda omega: GRHO_PER_OMEGA * omega, directed=True)
 
     @classmethod
-    def check(cls, Omega, w):
+    def check(cls, omega, w):
         """The Euler equation divides by ``1 + w``."""
         if float(w) == -1.0:
             raise ValueError("a fluid needs w != -1; use a cosmological constant")
-        if float(Omega) < 0.0:
-            raise ValueError(f"a fluid's density Omega = {Omega} must not be negative")
+        if float(omega) < 0.0:
+            raise ValueError(f"a fluid's density omega = {omega} must not be negative")
 
     def grho_t(self, grho0, a, w):
         return grho0 * a ** (-1.0 - 3.0 * w)
@@ -590,11 +588,16 @@ class MassiveNeutrinos(Species):
 class _DarkEnergyDensity(Species):
     """The dark-energy density today and its part of the Friedmann sum, for either kind.
 
-    Its density today closes the budget: the background sets it so that the
-    densities sum to the critical one.
+    ``omega_de`` is its physical density today, ``Omega_de h^2``.
+    :meth:`Model.from_density_parameters
+    <discoeb.models.Model.from_density_parameters>` finds the one that makes
+    a model expand at a given ``H0``.
     """
 
-    grhov: ArrayLike = Derived(directed=True, closes_budget=True)
+    omega_de: ArrayLike = Parameter()
+    grhov: ArrayLike = Derived(
+        lambda omega_de: GRHO_PER_OMEGA * omega_de, directed=True
+    )
 
     @contributes("grho")
     def grho_de(self, grhov_t):

@@ -8,9 +8,14 @@ takes exactly the model's, and a type checker sees them::
     class LCDM_MNU(LCDM, MassiveNeutrinos):
         \"\"\"LCDM with massive neutrinos.\"\"\"
 
-    planck = LCDM(H0=67.32, Omegam=0.3158, Omegab=0.0494, A_s=2.1e-9,
-                  n_s=0.966, Tcmb=2.7255, YHe=0.2454, Neff=3.046)
-    solve_eb([planck, planck.replace(H0=70.0)], k, tau, keep=("R",))
+    planck = LCDM(omega_b=0.02238, omega_c=0.1201, omega_de=0.3107,
+                  A_s=2.1e-9, n_s=0.966, Tcmb=2.7255, YHe=0.2454, Neff=3.046)
+    solve_eb([planck, planck.replace(omega_c=0.125)], k, tau, keep=("R",))
+
+The densities are physical ones, ``omega = Omega h^2``, and the Hubble
+constant is what they sum to (:attr:`Model.H0`).
+:meth:`Model.from_density_parameters` takes ``Omegam``, ``Omegab`` and ``H0``
+instead and finds the dark-energy density that closes the budget.
 
 A model's bases are its components in state order, a model among them
 standing for its own components: ``LCDM_MNU`` is LCDM's components, then
@@ -24,10 +29,12 @@ from __future__ import annotations
 
 import functools
 import inspect
+import math
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 import jax
+import jax.numpy as jnp
 
 from ..components._component import (
     REQUIRED,
@@ -36,7 +43,9 @@ from ..components._component import (
     ParameterDeclaration,
     declarations_of,
     declared_parameters,
+    derive_parameters,
 )
+from ..components.gravity import GRHOM_PER_H0SQ
 from ..components.recombination import Recombination
 from ._cosmology import DIFFERENTIABLE_PARAMETERS, _cosmology_dictionary, _is_concrete
 
@@ -263,6 +272,74 @@ class ModelSpec:
             except ValueError as e:
                 raise ValueError(f"{self.name}: {e}") from None
 
+    def hubble_constant(self, cosmology):
+        """Return ``H0`` in km/s/Mpc: the model's expansion rate today, ``adotoa(a = 1)``.
+
+        The densities are physical, so ``H0`` follows from them. A model
+        whose expansion rate reads a state of its own (a scalar field) has
+        it only from a solve, as ``adotoa`` today, and raises ``TypeError``.
+        """
+
+        if _expansion_reads_state(self):
+            raise TypeError(
+                f"{self.name}: the expansion rate reads a state of the model, "
+                "so its value today needs a solve: keep 'adotoa' today"
+            )
+        values = _cosmology_dictionary(cosmology)
+        module = math if all(map(_is_number, values.values())) else jnp
+        adotoa = _host_equations(self).evaluate(
+            "adotoa",
+            math=module,
+            a=1.0,
+            **derive_parameters(self.parameters(), values, math=module),
+        )
+        return adotoa * math.sqrt(3.0 / GRHOM_PER_H0SQ)
+
+    def physical_parameters(self, params) -> dict:
+        """Return a dictionary in ``Omegam``, ``Omegab``, ``H0`` as one in the model's own parameters.
+
+        ``omega_b = Omegab h^2``, ``omega_c = (Omegam - Omegab) h^2``,
+        ``omega_k = Omegak h^2`` (``Omegak`` defaults to 0), any other
+        component's ``x_omega = x_Omega h^2``, and ``omega_de`` the
+        dark-energy density
+        that makes the model expand at ``H0`` today. The expansion rate
+        squared is linear in a density, so one secant step from two
+        evaluations finds it exactly. Every other key passes through. Plain
+        JAX arithmetic, so a derivative in ``H0`` or ``Omegam`` goes through it.
+        """
+
+        given = dict(params)
+        keys = self.parameter_keys()
+        if "omega_de" not in keys:
+            raise TypeError(
+                f"{self.name} has no dark-energy density to close the budget "
+                "with; give its own parameters"
+            )
+        if "omega_de" in given:
+            raise TypeError("give omega_de or H0, not both")
+        try:
+            Omegam, Omegab, H0 = (given.pop(k) for k in ("Omegam", "Omegab", "H0"))
+        except KeyError as e:
+            raise TypeError(f"from density parameters: missing {e}") from None
+        h2 = (H0 / 100.0) ** 2
+        native = {
+            "omega_b": Omegab * h2,
+            "omega_c": (Omegam - Omegab) * h2,
+            "omega_k": given.pop("Omegak", 0.0) * h2,
+        }
+        for key in list(given):
+            physical = key.replace("Omega", "omega")
+            if physical != key and declarations_of(physical):
+                native[physical] = given.pop(key) * h2
+        native = {**given, **native}
+
+        def miss(omega_de):
+            return self.hubble_constant({**native, "omega_de": omega_de}) ** 2 - H0**2
+
+        none, all_of_it = miss(0.0 * h2), miss(h2)
+        native["omega_de"] = -none * h2 / (all_of_it - none)
+        return native
+
     def check_keys(self, cosmology) -> None:
         """Raise ``ValueError`` if ``cosmology`` sets a parameter of a component this model lacks.
 
@@ -286,6 +363,24 @@ class ModelSpec:
                     f"{self.name} has no component with the parameter {key} "
                     f"(set to {value}, default {default}); use a model with {names}"
                 )
+
+
+@functools.lru_cache(maxsize=None)
+def _host_equations(model: ModelSpec) -> Equations:
+    """The model's equations for evaluating its providers on the host."""
+
+    return model.build()
+
+
+@functools.lru_cache(maxsize=None)
+def _expansion_reads_state(model: ModelSpec) -> bool:
+    return _host_equations(model).reads_state("adotoa")
+
+
+def _is_number(value) -> bool:
+    """Whether ``value`` is a plain number, not a JAX or numpy array."""
+
+    return isinstance(value, (int, float))
 
 
 _STATE_NAMES: dict = {}
@@ -325,7 +420,7 @@ class Model(Recombination):
     parameters, so ``jax.jit`` traces them and ``jax.grad`` returns a
     cosmology of derivatives. Differentiating one outside the model's
     :func:`~discoeb.solver.differentiable_parameters` raises, so take the
-    gradient in chosen parameters: ``grad(lambda om: f(planck.replace(Omegam=om)))``.
+    gradient in chosen parameters: ``grad(lambda om: f(planck.replace(omega_c=om)))``.
     """
 
     spec: ClassVar[ModelSpec]
@@ -372,7 +467,7 @@ class Model(Recombination):
         if args:
             raise TypeError(
                 f"{cls.__name__} takes its parameters by keyword, "
-                f"{cls.__name__}(H0=..., ...); from a dictionary, "
+                f"{cls.__name__}(omega_b=..., ...); from a dictionary, "
                 f"{cls.__name__}(**params) or {cls.__name__}.from_dict(params)"
             )
         unknown = [key for key in values if key not in cls._keys]
@@ -415,6 +510,35 @@ class Model(Recombination):
         }
         object.__setattr__(cosmology, "_held", held)
         return cosmology
+
+    @classmethod
+    def from_density_parameters(
+        cls, *, Omegam, Omegab, H0, Omegak=0.0, **others
+    ) -> Model:
+        """Return the cosmology with matter fraction ``Omegam``, baryon fraction ``Omegab`` and Hubble constant ``H0``.
+
+        The model's own parameters are physical densities. This converts,
+        ``omega_b = Omegab h^2`` and ``omega_c = (Omegam - Omegab) h^2``, and
+        sets ``omega_de`` so that the model expands at ``H0`` (km/s/Mpc)
+        today (:meth:`ModelSpec.physical_parameters`). ``others`` are the
+        model's remaining parameters (``Tcmb``, ``A_s``, ...). JAX values
+        stay differentiable, so this is how to take a derivative in ``H0``
+        or ``Omegam``. A model with no ``omega_de`` (a scalar field) has no
+        such constructor.
+        """
+
+        return cls(
+            **cls.spec.physical_parameters(
+                {"Omegam": Omegam, "Omegab": Omegab, "H0": H0, "Omegak": Omegak}
+                | others
+            )
+        )
+
+    @property
+    def H0(self):
+        """The Hubble constant in km/s/Mpc, which the densities sum to (:meth:`ModelSpec.hubble_constant`)."""
+
+        return type(self).spec.hubble_constant(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
         """Return the parameters by name, every one of the model's."""
@@ -592,7 +716,7 @@ def _batch_of(cosmologies) -> CosmologyBatch:
     batch = (cosmologies,) if isinstance(cosmologies, Model) else tuple(cosmologies)
     if not batch or not all(isinstance(c, Model) for c in batch):
         raise TypeError(
-            "cosmologies must be a cosmology, such as LCDM(H0=..., ...), or a "
+            "cosmologies must be a cosmology, such as LCDM(omega_b=..., ...), or a "
             f"non-empty sequence of them, not {type(cosmologies).__name__}"
         )
     classes = list(dict.fromkeys(type(c) for c in batch))

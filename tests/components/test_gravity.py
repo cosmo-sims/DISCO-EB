@@ -14,6 +14,7 @@ from helpers import (
     ConstantThermalHistory,
     _split,
     build_rhs,
+    cosmologies_of,
     state_index,
 )
 from jax.typing import ArrayLike
@@ -25,7 +26,12 @@ from discoeb.components._component import (
     Parameter,
     State,
 )
-from discoeb.components.gravity import Background, Curvature, Metric
+from discoeb.components.gravity import (
+    GRHOM_PER_H0SQ,
+    Background,
+    Curvature,
+    Metric,
+)
 from discoeb.components.species import (
     ColdDarkMatter,
     NoRadiationStreaming,
@@ -126,11 +132,16 @@ ROUND_COSMOLOGY = {
 }
 
 
+GRHOM = GRHOM_PER_H0SQ * ROUND_COSMOLOGY["H0"] ** 2
+"""The critical density of ``ROUND_COSMOLOGY``, which its densities sum to."""
+
+
 def _densities(model, cosmology):
     from discoeb.models._cosmology import _columns
     from discoeb.solver._background import density_parameters
 
-    columns = _columns([cosmology], held=False, keys=model.parameter_keys())
+    native = cosmologies_of(model, cosmology).to_dict()
+    columns = _columns([native], held=False, keys=model.parameter_keys())
     return {k: v[0] for k, v in density_parameters(columns, model=model).items()}
 
 
@@ -156,8 +167,8 @@ def test_curvature_is_geometry_and_not_a_fluid():
         "adotoa", "grho", math=jnp, a=1.0, **d
     )
     # the fluids fall short of the critical density by the curvature's share
-    assert float(grho / d["grhom"]) == pytest.approx(0.95, rel=1e-12)
-    assert float(3.0 * adotoa**2 / d["grhom"]) == pytest.approx(1.0, rel=1e-12)
+    assert float(grho / GRHOM) == pytest.approx(0.95, rel=1e-12)
+    assert float(3.0 * adotoa**2 / GRHOM) == pytest.approx(1.0, rel=1e-12)
 
 
 @pytest.mark.parametrize("a", [1.0e-4, 1.0e-2, 0.5, 1.0])
@@ -213,10 +224,10 @@ def test_another_friedmann_equation_replaces_the_background():
     d = _densities(scaled, {**ROUND_COSMOLOGY, "mu": 1.1})
     adotoa = background_model(scaled).evaluate("adotoa", math=jnp, a=1.0, **d)
     # the model still expands at H0 today, with less dark energy to do it
-    assert float(3.0 * adotoa**2 / d["grhom"]) == pytest.approx(1.0, rel=1e-12)
+    assert float(3.0 * adotoa**2 / GRHOM) == pytest.approx(1.0, rel=1e-12)
     assert float(d["grhov"]) < float(plain["grhov"])
     total = 1.1 * (d["grhov"] + d["grhoc"] + d["grhob"] + d["grhog"] + d["grhornomass"])
-    assert float(total / d["grhom"]) == pytest.approx(1.0, rel=1e-12)
+    assert float(total / GRHOM) == pytest.approx(1.0, rel=1e-12)
     # and the right-hand side builds with it
     from discoeb.solver._kernel import parameter_layout
 
@@ -344,10 +355,18 @@ def test_the_growing_mode_counts_the_new_species_as_matter():
 
     k = np.array([1.0e-2, 1.0e-1])
     plain = make_initial_states(
-        COSMOLOGY, k, joint_model(LCDM), -15.0, cosmology_model=LCDM
+        cosmologies_of(LCDM, COSMOLOGY),
+        k,
+        joint_model(LCDM),
+        -15.0,
+        cosmology_model=LCDM,
     )
     split = make_initial_states(
-        _split(COSMOLOGY), k, joint_model(LCDM_X), -15.0, cosmology_model=LCDM_X
+        cosmologies_of(LCDM_X, _split(COSMOLOGY)),
+        k,
+        joint_model(LCDM_X),
+        -15.0,
+        cosmology_model=LCDM_X,
     )
     n = len(LCDM.state_names())
     np.testing.assert_allclose(split[:, :n], plain[:, :n], rtol=1e-12)

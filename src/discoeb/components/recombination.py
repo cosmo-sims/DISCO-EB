@@ -35,6 +35,7 @@ import os
 from jax.typing import ArrayLike
 
 from ._component import Component, Parameter, State, float32, float64
+from .gravity import GRHO_PER_OMEGA
 
 # RECFAST's physical and atomic constants (PDG 2023 where noted).
 const_mH = 1.67353284e-27  # H atom mass [kg], PDG 2023
@@ -162,6 +163,11 @@ batch with reionization 14 percent, so primal launches go without it
 AKTHOM_PER_OMEGAB_H0SQ = 2.3038921003709498e-9
 """``n_H sigma_T c / (H_0 units)``: ``kappa' = x_e akthom / a^2`` with
 ``akthom = this (1 - Y_He) Omega_b H_0^2``."""
+
+AKTHOM_PER_GRHOB = 1.0e4 * AKTHOM_PER_OMEGAB_H0SQ / GRHO_PER_OMEGA
+DENS_FAC_PER_GRHOB = const_dens_fac / GRHO_PER_OMEGA
+"""The same and the hydrogen density's factor per unit ``grhob``, the baryon
+density the kernel holds (``omega_b = Omega_b h^2`` times ``GRHO_PER_OMEGA``)."""
 
 FP32_MATH = os.environ.get("DISCO_THERMO_FP32_MATH", "1") == "1"
 """Evaluate the exponentials, fractional powers and logarithms of RECFAST's
@@ -437,14 +443,19 @@ def peebles_K(Hz, zred):
     )
 
 
-def matter_temperature_rate(Tmat, xe, fHe, zred, Hz, H0, Tcmb):
-    """RECFAST's matter-temperature equation ``dT_m/dz``, ``T_m`` locked to ``T_rad`` in tight Compton coupling."""
+def matter_temperature_rate(Tmat, xe, fHe, zred, Hz, Tcmb):
+    """RECFAST's matter-temperature equation ``dT_m/dz``, ``T_m`` locked to ``T_rad`` in tight Compton coupling.
+
+    The Hubble time of the switch is the model's own, ``2 / (3 H)``.
+    RECFAST estimates it as ``2 / (3 H0 (1+z)^1.5)``, which needs ``H0``
+    ahead of the solve.
+    """
 
     z_term = 1.0 + zred
     inv_z = 1.0 / z_term
     Trad = Tcmb * z_term
     compton = CT * Trad**4 * xe / (1.0 + xe + fHe)  # 1 / timeTh
-    inv_timeH = 1.5 * (H0 / 100.0) * bigH * pow_(z_term, 1.5)
+    inv_timeH = 1.5 * Hz
     locked = Tmat * inv_z
     full = compton * (Tmat - Trad) / Hz * inv_z + 2.0 * locked
     w_full = 1.0 if inv_timeH >= H_frac * compton else 0.0  # timeTh >= H_frac timeH
@@ -501,7 +512,7 @@ class Recombination(Component):
     kappa = State()
     kappa_reio = State()
 
-    # The rates read YHe, Tcmb, H0 and Omegab, which the species declare.
+    # The rates read YHe, Tcmb and grhob, which the species declare.
     z_re: ArrayLike = Parameter(0.0, directed=True)
     """The redshift half way through CAMB's reionization step (0: none)."""
 
@@ -550,8 +561,8 @@ class Recombination(Component):
     def xe(self, xe_rec, xe_reio):
         return xe_rec + xe_reio
 
-    def akthom(self, YHe, Omegab, H0):
-        return AKTHOM_PER_OMEGAB_H0SQ * (1.0 - YHe) * Omegab * H0**2
+    def akthom(self, YHe, grhob):
+        return AKTHOM_PER_GRHOB * (1.0 - YHe) * grhob
 
     def opacity(self, xe, akthom, inv_a2):
         return max(xe * akthom * inv_a2, 1.0e-30)
@@ -574,9 +585,9 @@ class Recombination(Component):
         """``H`` in 1/s, from the model's conformal Hubble rate in 1/Mpc."""
         return adotoa * inv_a * const_c_Mpc_s
 
-    def Nnow(self, H0, Omegab, YHe):
+    def Nnow(self, grhob, YHe):
         """The hydrogen number density today, in 1/m^3."""
-        return const_dens_fac * (H0 / 100.0) ** 2 * Omegab * (1.0 - YHe)
+        return DENS_FAC_PER_GRHOB * grhob * (1.0 - YHe)
 
     def n_H(self, Nnow, inv_a):
         return Nnow * inv_a**3
@@ -584,8 +595,8 @@ class Recombination(Component):
     def K_peebles(self, Hz, zred):
         return peebles_K(Hz, zred)
 
-    def dTm_dz(self, Tmat, xe_rec, fHe, zred, Hz, H0, Tcmb):
-        return matter_temperature_rate(Tmat, xe_rec, fHe, zred, Hz, H0, Tcmb)
+    def dTm_dz(self, Tmat, xe_rec, fHe, zred, Hz, Tcmb):
+        return matter_temperature_rate(Tmat, xe_rec, fHe, zred, Hz, Tcmb)
 
     def d_lna(self, adotoa):
         return adotoa

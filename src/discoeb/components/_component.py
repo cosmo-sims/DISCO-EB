@@ -40,7 +40,7 @@ A provider may also be decorated with ``@contributes`` to contribute to
 a sum over components, such as ``grho``, ``dgrho`` and ``dgq``. The
 component that reads a sum declares it: ``grho = Sum()``.
 
-**Parameters.** ``Omegam: ArrayLike = Parameter()`` declares a cosmological
+**Parameters.** ``omega_c: ArrayLike = Parameter()`` declares a cosmological
 parameter.
 
 **Sparsity.** The sparsity pattern of the E-B system is automatically
@@ -246,10 +246,7 @@ class ParameterDeclaration:
     in JAX. ``column`` puts it in the kernel's parameter row under its name,
     for the providers to read. ``directed`` puts it there as ``x_nominal`` and
     ``dir_x`` instead and generates the provider ``x = x_nominal + eps *
-    dir_x``, so the forward sensitivities may move it. ``closes_budget`` marks
-    the parameter the background solves for so that the model expands at
-    ``H0`` today: a density, or anything else the expansion rate depends on,
-    such as the height of a scalar field's potential.
+    dir_x``, so the forward sensitivities may move it.
     """
 
     def __init__(
@@ -259,19 +256,15 @@ class ParameterDeclaration:
         value: Callable | None = None,
         column: bool = False,
         directed: bool = False,
-        closes_budget: bool = False,
     ):
         if value is not None and not callable(value):
             raise TypeError("value must be a function of other parameters")
-        if (value is not None or closes_budget) and default is not REQUIRED:
+        if value is not None and default is not REQUIRED:
             raise TypeError("a derived parameter has no default")
-        if value is not None and closes_budget:
-            raise TypeError("the budget closure derives the parameter itself")
         self.default = default
         self.value: Any = value
         self.directed = directed
         self.column = column or directed
-        self.closes_budget = closes_budget
         self.name: str | None = None
         self.reads: tuple[str, ...] = ()
         if value is not None:
@@ -298,7 +291,7 @@ class ParameterDeclaration:
     @property
     def is_key(self) -> bool:
         """Whether a cosmology dictionary gives it (else it is derived)."""
-        return self.value is None and not self.closes_budget
+        return self.value is None
 
     @property
     def column_name(self) -> str:
@@ -318,10 +311,9 @@ class ParameterDeclaration:
         """A copy for a named component: it reads its component's own parameters under their new names."""
 
         copy = ParameterDeclaration(
-            self.default if self.value is None and not self.closes_budget else REQUIRED,
+            self.default if self.value is None else REQUIRED,
             column=self.column,
             directed=self.directed,
-            closes_budget=self.closes_budget,
         )
         copy.value = self.value
         copy.reads = tuple(renames.get(r, r) for r in self.reads)
@@ -346,7 +338,7 @@ def _annotated_names(cls) -> set[str]:
 def Parameter(
     default: Any = REQUIRED, *, column: bool = False, directed: bool = False
 ) -> Any:
-    """Declare a cosmology key: ``Omegam: ArrayLike = Parameter()``.
+    """Declare a cosmology key: ``omega_c: ArrayLike = Parameter()``.
 
     It is an argument of every model whose components include the class:
     required without a ``default``, optional with one. ``column`` puts it in
@@ -361,27 +353,21 @@ def Parameter(
 
 
 def Derived(
-    value: Callable | None = None,
+    value: Callable,
     *,
     column: bool = False,
     directed: bool = False,
-    closes_budget: bool = False,
     init: Literal[False] = False,
 ) -> Any:
-    """Declare a parameter derived from others: ``grhom: ArrayLike = Derived(lambda H0: ...)``.
+    """Declare a parameter derived from others: ``grhoc: ArrayLike = Derived(lambda omega_c: ...)``.
 
-    ``value`` is a function whose parameter names are other parameters. Or
-    ``closes_budget`` marks the one parameter the background solves for, so
-    that the model expands at ``H0`` today. Either way it is not a
-    constructor argument: ``init`` is there for type checkers, which read
-    its default (``False``) to leave it out of the model's signature.
+    ``value`` is a function whose parameter names are other parameters. It
+    is not a constructor argument: ``init`` is there for type checkers,
+    which read its default (``False``) to leave it out of the model's
+    signature.
     """
 
-    if value is None and not closes_budget:
-        raise TypeError("Derived needs a value function, or closes_budget=True")
-    return ParameterDeclaration(
-        value=value, column=column, directed=directed, closes_budget=closes_budget
-    )
+    return ParameterDeclaration(value=value, column=column, directed=directed)
 
 
 def declared_parameters(classes) -> dict[str, ParameterDeclaration]:
@@ -401,9 +387,6 @@ def declared_parameters(classes) -> dict[str, ParameterDeclaration]:
                 )
             if name not in found:
                 found[name], owner[name] = parameter, cls.__name__
-    closing = [n for n, p in found.items() if p.closes_budget]
-    if len(closing) > 1:
-        raise ValueError(f"only one parameter may close the budget, not {closing}")
     return found
 
 
@@ -418,26 +401,18 @@ def derive_parameters(
     given: Mapping,
     *,
     math=math,
-    close=None,
 ) -> dict:
     """Return the value of every parameter in ``parameters``.
 
     A key's value is ``given[key]``, or its default. A derived parameter's is
     its ``value`` function of the others, evaluated with ``math`` as the
     module its ``math.sqrt`` and friends use (``jax.numpy`` for traced
-    values). The parameter that closes the budget is ``close(name, values)``,
-    where ``values`` holds every parameter that does not depend on it.
+    values).
     """
 
     names = _host_names(math)
     memo: dict = {}
     values: dict = {}
-
-    def reaches(name, target, seen=()):
-        p = parameters.get(name)
-        if p is None or name in seen:
-            return False
-        return any(r == target or reaches(r, target, (*seen, name)) for r in p.reads)
 
     def get(name, stack=()):
         if name in values:
@@ -450,16 +425,7 @@ def derive_parameters(
                 f"{stack[-1] if stack else 'a parameter'} reads {name!r}, "
                 "which no component of the model declares"
             )
-        if p.closes_budget:
-            if close is None:
-                raise ValueError(f"nothing closes the budget for {name!r}")
-            others = {
-                m: get(m, (*stack, name))
-                for m in parameters
-                if m != name and not reaches(m, name)
-            }
-            value = close(name, others)
-        elif p.value is None:
+        if p.value is None:
             if name in given:
                 value = given[name]
             elif p.default is REQUIRED:
@@ -1384,6 +1350,11 @@ class Equations:
         for s, i, on in self._rate_dependencies(_TracedValues(self)):
             entries.update((s.offset + i, column) for column in on)
         return np.array(sorted(entries), dtype=np.int64).reshape(-1, 2)
+
+    def reads_state(self, quantity: str) -> bool:
+        """Whether ``quantity`` depends on any state element, by the trace of :meth:`sparsity`."""
+
+        return bool(_depends(_TracedValues(self)[quantity]))
 
     def _rate_dependencies(self, values):
         """``(state, element, what it depends on)`` of every contribution to a derivative, traced on ``values``."""

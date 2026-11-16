@@ -19,6 +19,7 @@ from discoeb.components._component import (
     Species,
     State,
 )
+from discoeb.components.gravity import GRHO_PER_OMEGA
 from discoeb.components.species import (
     CosmologicalConstant,
     Fluid,
@@ -71,12 +72,22 @@ def cosmologies_of(model, params):
 
     Through :meth:`Model.from_dict <discoeb.models.Model.from_dict>`, so a
     dictionary written for another model passes while its other keys keep
-    their defaults.
+    their defaults. One in ``Omegam``, ``Omegab`` and ``H0`` is converted
+    first (:meth:`ModelSpec.physical_parameters
+    <discoeb.models.ModelSpec.physical_parameters>`).
     """
 
-    if isinstance(params, dict):
-        return model.from_dict(params)
-    return [model.from_dict(p) for p in params]
+    if not isinstance(params, dict):
+        return [cosmologies_of(model, p) for p in params]
+    if "Omegam" in params:
+        params = model.spec.physical_parameters(params)
+    return model.from_dict(params)
+
+
+def physical(model, params) -> dict:
+    """A dictionary in ``Omegam``, ``Omegab`` and ``H0`` in the model's own parameters."""
+
+    return model.spec.physical_parameters(params)
 
 
 def state_index(model) -> dict[str, int]:
@@ -184,13 +195,13 @@ class SecondDarkMatter(Species):
 
     clxx = State(initial=lambda theta: 0.75 * theta[0])
 
-    Omega_x: ArrayLike = Parameter(0.0)
-    grhox: ArrayLike = Derived(lambda grhom, Omega_x: grhom * Omega_x, directed=True)
+    omega_x: ArrayLike = Parameter(0.0)
+    grhox: ArrayLike = Derived(lambda omega_x: GRHO_PER_OMEGA * omega_x, directed=True)
 
     @classmethod
-    def check(cls, Omega_x):
-        if Omega_x < 0.0:
-            raise ValueError(f"Omega_x = {Omega_x} must not be negative")
+    def check(cls, omega_x):
+        if omega_x < 0.0:
+            raise ValueError(f"omega_x = {omega_x} must not be negative")
 
     def grhox_t(self, grhox, inv_a):
         return grhox * inv_a
@@ -253,7 +264,7 @@ class Quintessence(Species):
     ddphi = State()
 
     lam: ArrayLike = Parameter(0.0, column=True)
-    V0: ArrayLike = Derived(directed=True, closes_budget=True)
+    V0: ArrayLike = Parameter(directed=True)  # 1/Mpc^2, as grhov
 
     def V(self, V0, lam, phi):
         return V0 * math.exp(-lam * phi)
@@ -303,17 +314,23 @@ QCDM_COSMOLOGY = {
     "YHe": 0.2454006,
     "Neff": 3.046,
 }
+"""The LCDM cosmology the field's are made from (:func:`qcdm_parameters`)."""
 
 
 LAM = 1.0
 
 
-def _qcdm_densities(model, cosmology):
-    from discoeb.models._cosmology import _columns
-    from discoeb.solver._background import density_parameters
+def qcdm_parameters(lam=0.0, V0=None):
+    """QCDM's own parameters: LCDM's, with the potential's height ``V0`` for the dark-energy density.
 
-    columns = _columns([cosmology], held=False, keys=model.parameter_keys())
-    return {k: v[0] for k, v in density_parameters(columns, model=model).items()}
+    By default ``V0`` is that LCDM's ``grhov``, so a flat potential (``lam =
+    0``) is the same universe. No budget closes: a rolling field's Hubble
+    constant comes out of the solve.
+    """
+
+    lcdm = LCDM.spec.physical_parameters(QCDM_COSMOLOGY)
+    grhov = GRHO_PER_OMEGA * lcdm.pop("omega_de")
+    return {**lcdm, "lam": lam, "V0": grhov if V0 is None else V0}
 
 
 # --- GPU perturbation solves against CLASS: the matter power spectrum and its derivatives.
@@ -419,7 +436,7 @@ def _matter_power(k_values, batch, tau_today=None, **options):
     today = dict(zip(keep, jnp.unstack(values[..., -1], axis=1)))
     params = {
         key: jnp.stack([jnp.asarray(getattr(c, key)) for c in cosmologies])
-        for key in ("Omegam", "Omegab", "A_s", "n_s", "k_p")
+        for key in ("omega_c", "omega_b", "A_s", "n_s", "k_p")
     }
     batched = jax.vmap(matter_power_spectrum, in_axes=(None,))
     return batched(k_values, **today, tau0=tau0, **params)

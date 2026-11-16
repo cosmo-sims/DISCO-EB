@@ -38,8 +38,8 @@ def test_two_copies_share_a_model():
     from discoeb.solver._kernel import parameter_layout
 
     keys = LCDM_XY.parameter_keys()
-    assert {"x_Omega", "x_w", "x_cs2", "y_Omega", "y_w", "y_cs2"} <= set(keys)
-    assert "Omega" not in keys and "x_Omega" not in LCDM.parameter_keys()
+    assert {"x_omega", "x_w", "x_cs2", "y_omega", "y_w", "y_cs2"} <= set(keys)
+    assert "omega" not in keys and "x_omega" not in LCDM.parameter_keys()
     names = LCDM_XY.state_names()
     assert names[-4:] == ("x_delta", "x_theta", "y_delta", "y_theta")
     layout = parameter_layout(LCDM_XY)
@@ -59,15 +59,15 @@ def test_make_initial_states_uses_the_model():
 
     cosmology = _as_cosmology(
         dict(
-            Omegam=0.31,
-            Omegab=0.049,
+            omega_b=0.022,
+            omega_c=0.117,
+            omega_de=0.31,
             w_DE_0=-1.0,
             w_DE_a=0.0,
             cs2_DE=1.0,
-            Omegak=0.0,
+            omega_k=0.0,
             A_s=2.1e-9,
             n_s=0.966,
-            H0=67.0,
             Tcmb=2.7255,
             YHe=0.245,
             Neff=3.046,
@@ -205,12 +205,12 @@ def test_the_colouring_keeps_every_entry_apart():
 def test_the_parameter_reaches_the_dictionary_the_row_and_the_inputs():
     from discoeb.solver._kernel import parameter_layout
 
-    assert LCDM_X.parameter_keys()["Omega_x"] == 0.0
-    assert "Omega_x" not in LCDM.parameter_keys()
+    assert LCDM_X.parameter_keys()["omega_x"] == 0.0
+    assert "omega_x" not in LCDM.parameter_keys()
     layout = parameter_layout(LCDM_X)
-    # in component order after the shared nine
+    # in component order after the shared seven
     own = parameter_layout(LCDM).directed
-    assert layout.directed[:9] == own[:9]
+    assert layout.directed[:7] == own[:7]
     assert sorted(layout.directed) == sorted((*own, "grhox"))
     assert {"grhox_nominal", "dir_grhox"} <= set(layout.columns)
     i = layout.directed.index("grhox")
@@ -320,7 +320,7 @@ def test_the_kernel_carries_the_state_to_today():
         cosmologies_of(LCDM_T, COSMOLOGY), k, tau, keep=("t", "a", "clxc")
     )
     plain = solve_eb(cosmologies_of(LCDM, COSMOLOGY), k, tau, keep=("a", "clxc"))
-    a, tau_bg = background_history(LCDM.from_dict(COSMOLOGY))
+    a, tau_bg = background_history(cosmologies_of(LCDM, COSMOLOGY))
     age = np.sum(0.5 * (a[1:] + a[:-1]) * np.diff(tau_bg))
     t = np.asarray(with_time[0, 0])  # keep order: t, a, clxc
     np.testing.assert_allclose(t[:, -1], age, rtol=1e-4)

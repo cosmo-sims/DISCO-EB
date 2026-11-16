@@ -51,10 +51,10 @@ def kernel_thermal_history(cosmologies, n_tau: int = N_TAU):
 
     from discoeb import LCDM, TAU_START, conformal_ages, solve_eb
 
-    cosmologies = cosmologies_of(LCDM, cosmologies)
-    tau0 = np.asarray(conformal_ages(cosmologies))
+    batch = cosmologies_of(LCDM, cosmologies)
+    tau0 = np.asarray(conformal_ages(batch))
     tau = np.geomspace(TAU_START, float(tau0.max()), n_tau)
-    values = solve_eb(cosmologies, THERMAL_K, tau, keep=THERMAL_KEEP)
+    values = solve_eb(batch, THERMAL_K, tau, keep=THERMAL_KEEP)
     kept = np.asarray(values)[:, :, 0, :]  # one wave mode
     return tau, tau0, {name: kept[:, i] for i, name in enumerate(THERMAL_KEEP)}
 
