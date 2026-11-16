@@ -32,7 +32,7 @@ MATTER_THERMO_WEIGHT = 0.1
 
 
 def _model(name):
-    from discoeb.models.models import LCDM, LCDM_MNU, W0WACDM
+    from discoeb.models import LCDM, LCDM_MNU, W0WACDM
 
     return {"lcdm": LCDM, "w0wacdm": W0WACDM, "lcdm-mnu": LCDM_MNU}[name]
 

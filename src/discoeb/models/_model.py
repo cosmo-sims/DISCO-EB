@@ -1,4 +1,4 @@
-"""Cosmological models, built from the species, interactions and gravity components.
+"""The base classes of cosmological models: :class:`Model` and :class:`ModelSpec`.
 
 A model is a class whose bases are its components, and an instance of it is
 a cosmology: the model with values for its parameters. The components declare
@@ -37,38 +37,11 @@ from ..components.component import (
     declarations_of,
     declared_parameters,
 )
-from ..components.gravity import (
-    GRAVITY_INTERFACE,
-    SUMS,
-    AdiabaticMode,
-    Background,
-    Curvature,
-    Kinematics,
-    Metric,
-)
-from ..components.interactions import ThomsonScattering
+from ..components.gravity import GRAVITY_INTERFACE, SUMS
 from ..components.recombination import Recombination
-from ..components.species import (
-    Baryons,
-    ColdDarkMatter,
-    CosmologicalConstant,
-    DarkEnergy,
-    MassiveNeutrinos,
-    MasslessNeutrinos,
-    Photons,
-    RadiationStreaming,
-)
 from .cosmology import DIFFERENTIABLE_PARAMETERS, _cosmology_dictionary, _is_concrete
 
-__all__ = [
-    "DEFAULT_MODEL",
-    "LCDM",
-    "LCDM_MNU",
-    "W0WACDM",
-    "W0WACDM_MNU",
-    "Model",
-    "ModelSpec",
-]
+__all__ = ["Model", "ModelSpec"]
 
 
 @dataclass(frozen=True)
@@ -597,76 +570,6 @@ def _documented(cls: type[Model]) -> str:
             line += " Differentiable through solve_eb."
         lines += [f"{key} : float or jax.Array", f"    {line}"]
     return "\n\n".join(part for part in (own, "\n".join(lines)) if part)
-
-
-class LCDM(
-    Model,
-    Kinematics,
-    Background,
-    RadiationStreaming,
-    AdiabaticMode,
-    Curvature,
-    Metric,
-    ColdDarkMatter,
-    Baryons,
-    Photons,
-    MasslessNeutrinos,
-    CosmologicalConstant,
-    ThomsonScattering,
-):
-    """LCDM with massless neutrinos.
-
-    CDM, baryons, photons coupled by Thomson scattering, ``Neff`` massless
-    neutrino flavours and a cosmological constant. Flat unless ``Omegak`` is
-    given.
-    """
-
-
-class LCDM_MNU(LCDM, MassiveNeutrinos, name="LCDM+mnu"):
-    """LCDM with ``Nmnu`` massive neutrino flavours of mass ``mnu`` on ``NQMAX`` momentum bins."""
-
-
-class W0WACDM(
-    Model,
-    Kinematics,
-    Background,
-    RadiationStreaming,
-    AdiabaticMode,
-    Curvature,
-    Metric,
-    ColdDarkMatter,
-    Baryons,
-    Photons,
-    MasslessNeutrinos,
-    DarkEnergy,
-    ThomsonScattering,
-    name="w0waCDM",
-):
-    """LCDM with a perturbed dark-energy fluid in place of the cosmological constant.
-
-    Its equation of state is ``w = w_DE_0 + w_DE_a (1 - a)`` and its sound
-    speed ``cs2_DE``. Needs ``w != -1``.
-    """
-
-
-class W0WACDM_MNU(W0WACDM, MassiveNeutrinos, name="w0waCDM+mnu"):
-    """w0waCDM with massive neutrinos."""
-
-
-DEFAULT_MODEL = W0WACDM_MNU
-"""The model a bare parameter dictionary stands for where nothing names one.
-
-:func:`~discoeb.solver.background.density_coefficients`,
-:func:`~discoeb.solver.background.background_history`,
-:func:`~discoeb.solver.conformal_ages` and
-:func:`~discoeb.solver.directed_inputs` take a cosmology, or a dictionary
-for this model. Its components declare every built-in parameter, and on a
-cosmology another built-in model accepts, its background is that model's. A
-dictionary that sets a parameter of a component outside it raises there
-(:meth:`ModelSpec.check_keys`)."""
-
-DEFAULT_SPEC = DEFAULT_MODEL.spec
-"""The :class:`ModelSpec` of :data:`DEFAULT_MODEL`."""
 
 
 # --- what a solve takes ---------------------------------------------------------

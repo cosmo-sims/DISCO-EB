@@ -142,7 +142,7 @@ def _as_cosmology(cosmology):
 def _is_model_instance(cosmology) -> bool:
     """Whether ``cosmology`` is an instance of a :class:`~discoeb.models.Model`."""
 
-    from .models import Model
+    from ._model import Model
 
     return isinstance(cosmology, Model)
 
@@ -237,7 +237,7 @@ def _columns(
     """
 
     if keys is None:
-        from .models import DEFAULT_SPEC
+        from . import DEFAULT_SPEC
 
         keys = DEFAULT_SPEC.parameter_keys()
     rows = [_cosmology_dictionary(c) for c in cosmologies]

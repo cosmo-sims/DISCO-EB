@@ -14,7 +14,7 @@ from discoeb.components.species import (
     NoRadiationStreaming,
     RadiationStreaming,
 )
-from discoeb.models.models import LCDM, W0WACDM_MNU
+from discoeb.models import LCDM, W0WACDM_MNU
 
 COSMOLOGY = {
     "Omegam": 0.3,

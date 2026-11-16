@@ -17,7 +17,7 @@ from jax.typing import ArrayLike
 
 from discoeb.components.component import Derived, Parameter, Species, State
 from discoeb.components.species import CosmologicalConstant
-from discoeb.models.models import LCDM
+from discoeb.models import LCDM
 from discoeb.solver.kernel import joint_model
 
 

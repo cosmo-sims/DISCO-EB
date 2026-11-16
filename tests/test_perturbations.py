@@ -104,7 +104,7 @@ def _matter_power(k_values, batch, tau_today=None, **options):
 
     import jax.numpy as jnp
 
-    from discoeb.models.models import Model
+    from discoeb.models import Model
     from discoeb.observables.power_spectrum import (
         matter_power_spectrum,
     )
@@ -132,7 +132,7 @@ def test_matter_power_spectrum_matches_class(n_cosmologies, benchmark):
 
     import jax
 
-    from discoeb.models.models import LCDM
+    from discoeb.models import LCDM
 
     cosmologies = _perturbed_cosmologies(n_cosmologies)
 
@@ -191,7 +191,7 @@ def test_matter_power_spectrum_derivatives(benchmark):
     import jax
     import jax.numpy as jnp
 
-    from discoeb.models.models import LCDM
+    from discoeb.models import LCDM
     from discoeb.solver.solver import conformal_ages
 
     DIFFERENTIABLE_PARAMETERS = DENSITY_PARAMETERS
@@ -238,7 +238,7 @@ def test_matter_power_spectrum_under_jit():
     import jax
     import jax.numpy as jnp
 
-    from discoeb.models.models import LCDM
+    from discoeb.models import LCDM
     from discoeb.observables.power_spectrum import (
         matter_power_spectrum,
     )
@@ -302,8 +302,8 @@ def test_solve_eb_keeps_what_the_history_holds():
     """
 
     from discoeb.components.recombination import THERMO_ERROR_WEIGHT
+    from discoeb.models import LCDM
     from discoeb.models.cosmology import as_cosmology
-    from discoeb.models.models import LCDM
     from discoeb.solver.background import TAU_START, density_coefficients
     from discoeb.solver.kernel import PARAM_COLUMNS, make_params
     from discoeb.solver.solver import solve_eb, solve_perturbation_history_batch
@@ -378,7 +378,7 @@ def test_solve_eb_comoving_curvature_is_conserved_outside_the_horizon():
     the potentials. A one-quantity solve stores ``n_k * n_tau`` numbers.
     """
 
-    from discoeb.models.models import LCDM
+    from discoeb.models import LCDM
     from discoeb.solver.solver import solve_eb
 
     k = np.array([1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1])
@@ -421,8 +421,8 @@ def test_solve_eb_derivatives():
     import jax
     import jax.numpy as jnp
 
+    from discoeb.models import LCDM
     from discoeb.models.cosmology import _columns
-    from discoeb.models.models import LCDM
     from discoeb.solver.background import TAU_START
     from discoeb.solver.kernel import _prepare_solve, parameter_layout
     from discoeb.solver.sensitivities import _directed_inputs, _kept_values
@@ -573,7 +573,7 @@ MORE_NAMES = ("R", "clxb", "kappa")
 
 
 def _more_parameter_case(name):
-    import discoeb.models.models as models
+    import discoeb.models as models
 
     model_name, changes, step = MORE_PARAMETERS[name]
     cosmology = {**REFERENCE_COSMOLOGY, **changes}

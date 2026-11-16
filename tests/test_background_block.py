@@ -11,7 +11,7 @@ import pytest
 from conftest import _cuda_available, cosmologies_of
 
 from discoeb.components.component import Component, Interaction, State
-from discoeb.models.models import LCDM
+from discoeb.models import LCDM
 from discoeb.solver.kernel import joint_model
 
 

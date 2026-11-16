@@ -284,7 +284,12 @@ re-exports its public names. The modules:
      model's `with_settings(LMAX_G=...)`, or rebind `Photons.LMAX_G`
    - Host-only tests: `tests/test_eb_model.py`
 
-3. **models/models.py** - Cosmological models built from those components
+3. **models/_model.py, lcdm.py, w0wacdm.py** - Cosmological models built from those components
+   - Split on 2026-11-16: `_model.py` has the base classes (`Model`,
+     `ModelSpec`, `CosmologyBatch`, `_batch_of`, `_spec_of`), `lcdm.py`
+     `LCDM` and `LCDM_MNU`, `w0wacdm.py` `W0WACDM` and `W0WACDM_MNU`, and
+     `models/__init__.py` exports them and defines `DEFAULT_MODEL` and
+     `DEFAULT_SPEC`
    - Since 2026-11-15 a model is a class and a cosmology an instance of it:
      `class LCDM(Model, Kinematics, Background, ..., ThomsonScattering)`,
      `class LCDM_MNU(LCDM, MassiveNeutrinos, name="LCDM+mnu")`, then

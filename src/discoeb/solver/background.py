@@ -26,8 +26,9 @@ from ..components.gravity import (  # noqa: F401 (the density constants, re-expo
     GRHOR_PER_TCMB4,
 )
 from ..components.recombination import recombination_model
+from ..models import DEFAULT_SPEC
+from ..models._model import ModelSpec
 from ..models.cosmology import _as_cosmology, _ParamCosmology
-from ..models.models import DEFAULT_SPEC, ModelSpec
 
 
 def background_model(model: ModelSpec | None = None) -> Equations:

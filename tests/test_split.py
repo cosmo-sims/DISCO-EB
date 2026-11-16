@@ -2,7 +2,7 @@
 
 import pytest
 
-from discoeb.models.models import LCDM
+from discoeb.models import LCDM
 from discoeb.solver.kernel import joint_kernel, thermal_indices
 
 

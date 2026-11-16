@@ -14,20 +14,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..components.recombination import THERMO_ERROR_WEIGHT
+from ..models import DEFAULT_SPEC
+from ..models._model import CosmologyBatch, Model, ModelSpec, _batch_of, _spec_of
 from ..models.cosmology import (
     DIFFERENTIABLE_PARAMETERS,
     UNUSED_BY_THE_SOLVE,
     _as_batch,
     _columns,
     _is_concrete,
-)
-from ..models.models import (
-    DEFAULT_SPEC,
-    CosmologyBatch,
-    Model,
-    ModelSpec,
-    _batch_of,
-    _spec_of,
 )
 from .background import TAU_START, background_endpoints
 from .kernel import (

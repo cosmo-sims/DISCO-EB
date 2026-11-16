@@ -59,8 +59,7 @@ a hashable form.
 from . import _jax_config  # noqa: F401
 from .components.component import Component
 from .components.recombination import THERMO_ERROR_WEIGHT
-from .models.cosmology import DIFFERENTIABLE_PARAMETERS, as_cosmology
-from .models.models import (
+from .models import (
     LCDM,
     LCDM_MNU,
     W0WACDM,
@@ -68,6 +67,7 @@ from .models.models import (
     Model,
     ModelSpec,
 )
+from .models.cosmology import DIFFERENTIABLE_PARAMETERS, as_cosmology
 from .observables.power_spectrum import (
     matter_power_spectrum,
 )

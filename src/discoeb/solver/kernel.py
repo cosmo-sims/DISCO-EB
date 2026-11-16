@@ -19,8 +19,9 @@ import numpy as np
 
 from ..components.component import Equations, _compile
 from ..components.recombination import THERMO_ERROR_WEIGHT, Recombination
+from ..models import DEFAULT_SPEC
+from ..models._model import Model, ModelSpec, _spec_of
 from ..models.cosmology import _as_batch, _columns
-from ..models.models import DEFAULT_SPEC, Model, ModelSpec, _spec_of
 from .background import TAU_START, background_endpoints, density_parameters
 
 PERTURB_RTOL = 1.0e-4

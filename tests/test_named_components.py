@@ -11,7 +11,7 @@ from conftest import HOST, ConstantThermalHistory, _cuda_available, cosmologies_
 
 from discoeb.components.component import Component, Equations, State
 from discoeb.components.species import ColdDarkMatter, Fluid
-from discoeb.models.models import LCDM
+from discoeb.models import LCDM
 
 X, Y = Fluid.named("x"), Fluid.named("y")
 LCDM_XY = LCDM.add(X, Y, name="LCDM+x+y")

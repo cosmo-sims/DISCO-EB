@@ -17,7 +17,7 @@ import numpy as np
 from jax.custom_derivatives import SymbolicZero
 
 from ..components.recombination import THERMO_ERROR_WEIGHT
-from ..models.models import DEFAULT_SPEC
+from ..models import DEFAULT_SPEC
 from .background import density_parameters
 from .kernel import (
     PERTURB_ATOL,

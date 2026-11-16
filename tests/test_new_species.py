@@ -14,7 +14,7 @@ from conftest import HOST, ConstantThermalHistory, _cuda_available, cosmologies_
 from jax.typing import ArrayLike
 
 from discoeb.components.component import Derived, Parameter, Species, State
-from discoeb.models.models import LCDM
+from discoeb.models import LCDM
 
 
 class SecondDarkMatter(Species):
