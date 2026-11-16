@@ -1272,10 +1272,33 @@ def _minimum_vertex_cut(weight, edges, sources, sinks) -> set:
 
 
 class Equations:
-    """Components, their state in declaration order, and the functions built from them."""
+    """Components, their state in declaration order, and the functions built from them.
 
-    def __init__(self, components: Iterable[Component]):
+    ``time`` names the independent variable of :meth:`build`. The
+    components write their rates per unit of a time of their own (the
+    conformal time), and ``clock`` names the quantity that converts: the
+    rate of ``time`` in it, so that the built right-hand side is every
+    rate divided by ``clock``. With ``time="lna"`` and ``clock="adotoa"``
+    (``d ln a / d tau``) the equations integrate in ``ln a``, the conformal
+    time being a state whose rate is one. Without a clock the rates are
+    returned as written.
+
+    The flat state holds the states in declaration order, except those
+    named in ``last``, which follow all the others (in declaration order
+    too). A solve in two blocks lays the blocks out one after the other, so
+    the joint model puts its background states last.
+    """
+
+    def __init__(
+        self,
+        components: Iterable[Component],
+        time: str = "tau",
+        clock: str | None = None,
+        last: Sequence[str] = (),
+    ):
         self.components = list(components)
+        self.time = time
+        self.clock = clock
         self.sums = tuple(
             dict.fromkeys(s for c in self.components for s in type(c).declared_sums())
         )
@@ -1283,19 +1306,28 @@ class Equations:
         duplicates = sorted({label for label in labels if labels.count(label) > 1})
         if duplicates:
             raise ValueError(f"two components of one class: {duplicates}")
-        self.states: dict[str, _State] = {}
-        offset = 0
+        declared_by: dict[str, tuple[Component, State]] = {}
         for c in self.components:
             for name, declared in type(c).declared_states():
-                if name in self.states:
+                if name in declared_by:
                     raise ValueError(
                         f"{c.label} declares {name!r}, already owned by "
-                        f"{self.states[name].component.label}"
+                        f"{declared_by[name][0].label}"
                     )
                 if not name.isidentifier() or name.startswith("d_") or name == OUTPUT:
                     raise ValueError(f"{c.label}: {name!r} is not a valid state name")
-                self.states[name] = _State(name, declared, c, offset)
-                offset += self.states[name].size
+                declared_by[name] = (c, declared)
+        unknown = [name for name in last if name not in declared_by]
+        if unknown:
+            raise ValueError(f"no component declares the states {unknown}")
+        order = [n for n in declared_by if n not in last]
+        order += [n for n in declared_by if n in last]
+        self.states: dict[str, _State] = {}
+        offset = 0
+        for name in order:
+            c, declared = declared_by[name]
+            self.states[name] = _State(name, declared, c, offset)
+            offset += self.states[name].size
         self.state: list[str] = [e for s in self.states.values() for e in s.elements]
         taken: dict[str, str] = {}
         for s in self.states.values():
@@ -1380,8 +1412,10 @@ class Equations:
                             ),
                         )
                     ]
+                # the clock divides every rate, so each reads what it reads
+                ticking = _depends(values[self.clock]) if self.clock else frozenset()
                 for i, traced in rows:
-                    yield s, i, traced.on
+                    yield s, i, traced.on | ticking
 
     # --- stages ------------------------------------------------------------------------
 
@@ -1466,6 +1500,8 @@ class Equations:
         direct = {
             d for name in perturbations for p in derivatives[name] for d in p.params
         }
+        if self.clock:
+            direct.add(self.clock)
         needed: set[str] = set()
         stack = list(direct)
         while stack:
@@ -1744,7 +1780,7 @@ class Equations:
         self,
         params: Mapping[str, int],
         *,
-        time: str = "tau",
+        time: str | None = None,
         name: str = "rhs",
         states: Sequence[str] | None = None,
         quantities: Sequence[str] = (),
@@ -1753,6 +1789,9 @@ class Equations:
         float64=None,
     ) -> Callable:
         """Generate ``rhs(y, tau, p) -> tuple`` and return it as a plain Python function.
+
+        The time is the model's (``time``, by default ``tau``), and with a
+        ``clock`` the rates returned are the components' divided by it.
 
         ``params`` maps parameter names to their column in the row ``p``. By
         default the build compiles the providers with
@@ -1770,6 +1809,7 @@ class Equations:
         """
 
         jit, names = self._device(jit, cuda, float64)
+        time = self.time if time is None else time
         if time in self.states or time in params or time in self.index:
             raise ValueError(f"the time {time!r} clashes with a state or parameter")
         for pname in params:
@@ -1787,6 +1827,8 @@ class Equations:
         wanted = [
             (p.label, d) for s in block for p in derivatives[s.name] for d in p.params
         ]
+        if self.clock:
+            wanted.append((name, self.clock))
         order = self._order(wanted, producers, contributions, given)
 
         namespace, call = self._codegen(jit, names)
@@ -1822,15 +1864,21 @@ class Equations:
                         s.shape, lambda ix, _, d=d, b=buffer: f"{d}[{ix}] += {b}[{ix}]"
                     )
                 )
+        # per unit of the model's time: the components' rates over the clock
+        per = " * inv_clock" if self.clock else ""
+        if self.clock:
+            lines.append(f"    inv_clock = 1.0 / {self.clock}")
         lines.append("    return (")
         for s in block:
             if not s.shape:
-                lines.append(f"        d_{s.name},")
+                lines.append(f"        d_{s.name}{per},")
             elif len(s.shape) == 1:
-                lines.extend(f"        d_{s.name}[{i}]," for i in range(s.shape[0]))
+                lines.extend(
+                    f"        d_{s.name}[{i}]{per}," for i in range(s.shape[0])
+                )
             else:
                 lines.extend(
-                    f"        d_{s.name}[{i}, {j}],"
+                    f"        d_{s.name}[{i}, {j}]{per},"
                     for i in range(s.shape[0])
                     for j in range(s.shape[1])
                 )

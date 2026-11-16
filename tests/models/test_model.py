@@ -223,6 +223,62 @@ def test_density_parameters_give_the_physical_ones_and_the_hubble_constant_back(
     assert float(slope) == pytest.approx(2.0 * planck.omega_de / 67.0, rel=1e-2)
 
 
+def test_the_budget_closes_with_densities_added_from_outside():
+    """A named fluid's and a new species' share comes out of the dark energy's, as fractions of the critical density."""
+
+    from helpers import (
+        COSMOLOGY,
+        LCDM_X,
+        LCDM_XY,
+        OMEGA_X,
+        _split,
+        model_parameters,
+    )
+
+    from discoeb.components.gravity import GRHO_PER_OMEGA
+    from discoeb.models import LCDM
+
+    h2 = (COSMOLOGY["H0"] / 100.0) ** 2
+    lcdm = model_parameters(LCDM, COSMOLOGY)
+    both = model_parameters(
+        LCDM_XY,
+        {
+            **COSMOLOGY,
+            "Omegam": COSMOLOGY["Omegam"] - 0.05,
+            "x_Omega": 0.03,
+            "y_Omega": 0.02,
+        },
+    )
+    assert both["x_grho0"] == pytest.approx(GRHO_PER_OMEGA * 0.03 * h2, rel=1e-15)
+    assert both["grhoc"] + both["x_grho0"] + both["y_grho0"] == pytest.approx(
+        lcdm["grhoc"], rel=1e-14
+    )
+    assert both["grhov"] == pytest.approx(lcdm["grhov"], rel=1e-12)
+    split = model_parameters(LCDM_X, _split(COSMOLOGY))
+    assert split["grhox"] == pytest.approx(GRHO_PER_OMEGA * OMEGA_X * h2, rel=1e-15)
+    assert split["grhoc"] + split["grhox"] == pytest.approx(lcdm["grhoc"], rel=1e-14)
+    assert split["grhov"] == pytest.approx(lcdm["grhov"], rel=1e-12)
+    assert "grhox" not in lcdm
+
+
+def test_a_scalar_field_has_no_hubble_constant_before_the_solve():
+    """Its potential is a parameter, and the expansion rate today reads the field."""
+
+    from helpers import QCDM, QCDM_COSMOLOGY, cosmologies_of, qcdm_parameters
+
+    from discoeb.components.gravity import GRHO_PER_OMEGA
+    from discoeb.models import LCDM
+
+    flat = QCDM.from_dict(qcdm_parameters())
+    lcdm = cosmologies_of(LCDM, QCDM_COSMOLOGY)
+    assert flat.V0 == pytest.approx(GRHO_PER_OMEGA * lcdm.omega_de, rel=1e-15)
+    assert lcdm.H0 == pytest.approx(QCDM_COSMOLOGY["H0"], rel=1e-12)
+    with pytest.raises(TypeError, match="needs a solve"):
+        flat.H0
+    with pytest.raises(TypeError, match="no dark-energy density"):
+        QCDM.from_density_parameters(**QCDM_COSMOLOGY)
+
+
 def test_a_solve_takes_cosmologies_of_one_model():
     from discoeb.models import LCDM, W0WACDM
     from discoeb.models._model import _batch_of

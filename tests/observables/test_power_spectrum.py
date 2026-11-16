@@ -27,11 +27,8 @@ def test_matter_power_spectrum_takes_one_cosmology_and_vmaps_over_a_batch():
 
     k = jnp.geomspace(1e-3, 0.1, 5)
     rng = np.random.default_rng(0)
-    per_mode = {
-        n: jnp.asarray(rng.normal(size=(3, 5))) for n in ("clxc", "clxb", "z", "vb")
-    }
+    per_mode = {n: jnp.asarray(rng.normal(size=(3, 5))) for n in ("clxc", "clxb")}
     scalars = {
-        "tau0": jnp.full(3, 14000.0),
         "omega_c": jnp.asarray([0.11, 0.12, 0.13]),
         "omega_b": jnp.full(3, 0.022),
         "A_s": jnp.full(3, 2.1e-9),
@@ -136,8 +133,9 @@ def test_matter_power_spectrum_derivatives(benchmark):
     """Time and check dP(k)/d(differentiable parameters) by forward sensitivity.
 
     The parameters enter the hierarchy, the recombination rates (through the
-    expansion rate), the matter weighting of ``delta_m`` and the conformal
-    age, so this is the total derivative, with the sensitivities of the
+    expansion rate) and the matter weighting of ``delta_m``. The solve
+    integrates in the scale factor, so this is the derivative of ``P(k)``
+    today with nothing to add, with the sensitivities of the
     recombination block carried through modax's split solve. Central
     differences are the noisy side of the comparison: the solve runs at
     rtol = atol = 1e-4, which bounds how well any finite difference of it can
@@ -148,19 +146,14 @@ def test_matter_power_spectrum_derivatives(benchmark):
     import jax.numpy as jnp
 
     from discoeb.models import LCDM
-    from discoeb.solver._solver import conformal_ages
 
     DIFFERENTIABLE_PARAMETERS = DENSITY_PARAMETERS
     cosmology = _perturbed_cosmologies(1)[0]
     theta = jnp.asarray([cosmology[name] for name in DIFFERENTIABLE_PARAMETERS])
-    # past the age of every shifted cosmology; the parameters are traced
-    tau_today = 2.0 * conformal_ages(cosmologies_of(LCDM, cosmology)).max()
 
     def total_power(t):
         params = {**cosmology, **dict(zip(DIFFERENTIABLE_PARAMETERS, t))}
-        return jnp.sum(
-            _matter_power(MATTER_POWER_K, cosmologies_of(LCDM, params), tau_today)
-        )
+        return jnp.sum(_matter_power(MATTER_POWER_K, cosmologies_of(LCDM, params)))
 
     value_and_grad = jax.value_and_grad(total_power)
 
@@ -199,7 +192,7 @@ def test_matter_power_spectrum_under_jit():
     from discoeb.observables.power_spectrum import (
         matter_power_spectrum,
     )
-    from discoeb.solver._solver import conformal_ages, solve_eb
+    from discoeb.solver._solver import solve_eb
 
     DIFFERENTIABLE_PARAMETERS = DENSITY_PARAMETERS
     traces = []
@@ -207,17 +200,14 @@ def test_matter_power_spectrum_under_jit():
     def power(cosmology):
         traces.append(cosmology)
         batch = cosmologies_of(LCDM, [cosmology])
-        tau0 = conformal_ages(batch)[0]
-        keep = ("clxc", "clxb", "z", "vb")
-        values = solve_eb(
-            batch, SOLVE_EB_K, tau0.reshape(1), keep=keep, thermo_weight=0.1
-        )
+        keep = ("clxc", "clxb")
+        values = solve_eb(batch, SOLVE_EB_K, [1.0], keep=keep, thermo_weight=0.1)
         today = dict(zip(keep, jnp.unstack(values[0, :, :, -1])))
         params = {
             key: getattr(batch[0], key)
             for key in ("omega_c", "omega_b", "A_s", "n_s", "k_p")
         }
-        return matter_power_spectrum(SOLVE_EB_K, **today, tau0=tau0, **params)
+        return matter_power_spectrum(SOLVE_EB_K, **today, **params)
 
     jitted = jax.jit(power)
     to_physical = jax.jit(lambda c: physical(LCDM, c))
@@ -256,23 +246,18 @@ at 0.5, which the converged solves' noise sets (2026-11-16)."""
 def test_more_parameters_matter_power(name):
     """``jax.grad`` of ``sum P(k)`` in each parameter beyond the densities' against central differences.
 
-    The total derivative: ``compute_matter_power_spectrum`` adds the
-    end-time term of the conformal age, which ``w_DE_*``, ``Omegak`` and
-    ``mnu`` move. Central differences at the default tolerance, as in
-    :func:`test_matter_power_spectrum_derivatives`.
+    The derivative of ``P(k)`` today, at fixed scale factor. Central
+    differences from converged solves.
     """
 
     import jax
     import jax.numpy as jnp
 
-    from discoeb.solver._solver import conformal_ages
-
     model, cosmology, step = _more_parameter_case(name)
-    tau_today = 2.0 * conformal_ages(cosmologies_of(model, cosmology)).max()
 
     def total_power(p, **options):
         batch = cosmologies_of(model, {**cosmology, name: p})
-        return jnp.sum(_matter_power(MATTER_POWER_K, batch, tau_today, **options))
+        return jnp.sum(_matter_power(MATTER_POWER_K, batch, **options))
 
     p0 = jnp.asarray(float(cosmology[name]))
     grad = float(jax.grad(total_power)(p0))

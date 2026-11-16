@@ -260,29 +260,20 @@ def _converged_matter_power(model, cosmology):
     ``compute_matter_power_spectrum`` does. Also returns the loop steps.
     """
 
-    from discoeb.solver._background import TAU_START, density_coefficients
     from discoeb.solver._kernel import _solve_batch
-    from discoeb.solver._solver import conformal_ages
 
-    cosmology = cosmologies_of(model, cosmology)
-    tau_today = float(conformal_ages(cosmology).max())
+    c = cosmologies_of(model, cosmology)
     (hist, stats), prepared, k_sorted = _solve_batch(
-        model,
-        (cosmology,),
-        SWEEP_K,
-        np.array([TAU_START, tau_today]),
-        return_stats=True,
-        **TIGHT,
+        model, (c,), SWEEP_K, return_stats=True, **TIGHT
     )
     # SWEEP_K is ascending, so k_sorted is SWEEP_K
     final = np.asarray(hist).reshape(len(k_sorted), -1, prepared.model.nvar)[:, -1]
     index = prepared.model.index
-    grhoc, grhob = density_coefficients(cosmology)[2:4]
+    grhoc, grhob = c.omega_c, c.omega_b
     delta_m = (grhoc * final[:, index["clxc"]] + grhob * final[:, index["clxb"]]) / (
         grhoc + grhob
     )
     k = np.asarray(k_sorted)
-    c = cosmology
     pk = 2.0 * np.pi**2 / k**3 * c.A_s * (k / c.k_p) ** (c.n_s - 1.0) * delta_m**2
     return pk, np.asarray(stats["loop_steps"])
 

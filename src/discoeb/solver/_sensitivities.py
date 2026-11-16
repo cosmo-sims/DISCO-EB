@@ -17,7 +17,6 @@ import numpy as np
 from jax.custom_derivatives import SymbolicZero
 
 from ..components.recombination import REIO_ERROR_WEIGHT, THERMO_ERROR_WEIGHT
-from ._background import density_parameters
 from ._kernel import (
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
@@ -26,6 +25,7 @@ from ._kernel import (
     _keep_hook,
     _launch,
     _named_error_weights,
+    density_parameters,
     parameter_layout,
 )
 
@@ -104,7 +104,7 @@ def _kept_values(
     order, k_sorted = prepared.order, prepared.k_sorted
     if isinstance(error_weights, dict):
         error_weights = _named_error_weights(
-            error_weights, model, np.repeat(k_sorted, n_cosmo)
+            error_weights, prepared.model, np.repeat(k_sorted, n_cosmo)
         )
     n_k, n_grid, n_keep = len(k_sorted), len(tau_grid), len(names)
     first = 1 if drop_first else 0

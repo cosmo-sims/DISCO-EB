@@ -149,7 +149,7 @@ hierarchy's steps. ``P(k)`` does not change between 0.3 and 100. A weight of
 0 leaves the block's steps uncontrolled."""
 
 REIO_ERROR_WEIGHT = 1.0e4
-"""Weight of ``kappa_reio`` in the error norm of a sensitivity launch.
+"""Weight of ``kappa_reio`` (:class:`ReionizationDepth`) in the error norm of a sensitivity launch.
 
 Reionization's step is 0.5 wide in ``z``, ~150 Mpc of conformal time. At
 the block's weight the steps across it resolve ``tau_reio`` (to 2e-4) but
@@ -158,7 +158,8 @@ control: ``d tau_reio / d z_re`` came out 6 percent high and ``dP/dz_re``
 3 percent off. ``kappa_reio`` changes only there, so its weight refines
 those steps alone; at 1e4 the derivative is converged. It costs a P(k)
 batch with reionization 14 percent, so primal launches go without it
-(2026-11-16)."""
+(2026-11-16). The state itself costs 4 to 7 percent of a solve, so it is a
+component a model adds, not one of every model's."""
 
 AKTHOM_PER_OMEGAB_H0SQ = 2.3038921003709498e-9
 """``n_H sigma_T c / (H_0 units)``: ``kappa' = x_e akthom / a^2`` with
@@ -481,25 +482,43 @@ def logistic(x):
 # The component
 
 
-def _thermo_initial(lna_start, Tcmb, output):
+def _thermo_initial(a, Tcmb, output):
     """Fully ionized and in Compton equilibrium: ``x_H = 1``, ``x_He = 2``, ``T_m = T_cmb / a``."""
 
     output[0] = 1.0
     output[1] = 2.0
-    output[2] = Tcmb * math.exp(-lna_start)
+    output[2] = Tcmb / a
+
+
+def _tau_initial(adotoa, grho_matter):
+    """The conformal time at the start, deep in radiation domination.
+
+    With radiation and matter alone, ``a'^2 = (R + M a) / 3`` integrates to
+    ``tau = 2 sqrt(3) a / (sqrt(R + M a) + sqrt(R))``, which is ``1 / adotoa``
+    times ``2 sqrt(1 + e) / (sqrt(1 + e) + 1)`` with ``e = M a / R`` the
+    matter-to-radiation ratio. The model's own ``adotoa`` carries every
+    species, so the radiation is what it leaves beside the matter (massive
+    neutrinos included, relativistic then), and the ratio, 1e-4 at the
+    start, only corrects it.
+    """
+
+    root = math.sqrt(1.0 + grho_matter / (3.0 * adotoa * adotoa - grho_matter))
+    return 2.0 * root / (root + 1.0) / adotoa
 
 
 class Recombination(Component):
-    """``ln a``, RECFAST's ``(x_H, x_He, T_m)`` and the optical depth as driver states.
+    """The conformal time, RECFAST's ``(x_H, x_He, T_m)`` and the optical depth as driver states.
 
-    ``lna`` integrates the model's conformal Hubble rate
-    (``d ln a / d tau = adotoa``). ``thermo`` holds RECFAST's three states,
+    The solve integrates in ``ln a``, so ``a`` is the time itself and the
+    conformal time ``tau`` a state whose rate is one (per unit of itself:
+    the solve divides every rate by ``adotoa``,
+    :class:`~discoeb.components._component.Equations`). It starts from the
+    radiation era's closed form, and its value today is the conformal age.
+    ``thermo`` holds RECFAST's three states,
     whose rates in ``z`` convert with ``dz/dtau = -adotoa / a``. ``kappa`` is
     ``int_{tau_start}^tau kappa' dtau``, from which the hook of
     :mod:`discocmb.cmb` forms the visibility
-    ``kappa'(tau) exp(-(kappa(tau_0) - kappa(tau)))``. ``kappa_reio`` is the
-    part of it from reionization's electrons, so ``kappa_reio(tau_0)`` is
-    ``tau_reio``. The hierarchy reads
+    ``kappa'(tau) exp(-(kappa(tau_0) - kappa(tau)))``. The hierarchy reads
     ``a``, ``opacity``
     (``kappa' = x_e n_H sigma_T a``, with reionization) and ``cs2`` (from
     ``T_m`` and its own rate, no spline derivative). Nothing marks these
@@ -507,27 +526,13 @@ class Recombination(Component):
     :meth:`Equations.stages <discoeb.components._component.Equations.stages>` finds that.
     """
 
-    lna = State(initial=lambda lna_start: lna_start)
+    tau = State(initial=_tau_initial)
     thermo = State(3, initial=_thermo_initial)
     kappa = State()
-    kappa_reio = State()
 
     # The rates read YHe, Tcmb and grhob, which the species declare.
     z_re: ArrayLike = Parameter(0.0, directed=True)
     """The redshift half way through CAMB's reionization step (0: none)."""
-
-    def a(self, lna):
-        """``exp(ln a)`` in double precision, since the hierarchy needs it smooth in the parameters.
-
-        Single precision rounds ``ln a`` first, so ``a`` becomes a staircase
-        of relative steps 5e-7 while its derivative (Enzyme's, through the
-        cast) stays smooth. The hierarchy reads the published value and rates
-        as one quintic, and the staircase made the spectra jump by 1e-5
-        between neighbouring parameter values at any tolerance. The block
-        publishes ``a`` once per recombination step, so the double-precision
-        ``exp`` costs nothing measurable.
-        """
-        return math.exp(lna)
 
     def fHe(self, YHe):
         return YHe / (const_mHe_mH * (1.0 - YHe))
@@ -598,8 +603,8 @@ class Recombination(Component):
     def dTm_dz(self, Tmat, xe_rec, fHe, zred, Hz, Tcmb):
         return matter_temperature_rate(Tmat, xe_rec, fHe, zred, Hz, Tcmb)
 
-    def d_lna(self, adotoa):
-        return adotoa
+    def d_tau(self):
+        return 1.0
 
     def d_thermo(
         self,
@@ -633,6 +638,22 @@ class Recombination(Component):
 
     def d_kappa(self, opacity):
         return opacity
+
+
+class ReionizationDepth(Component):
+    """The optical depth of reionization as a state: ``kappa_reio``, whose value today is ``tau_reio``.
+
+    A model adds it to read ``tau_reio`` off a solve or to differentiate in
+    the reionization redshift, ``LCDM.add(ReionizationDepth, name=...)``.
+    ``kappa_reio`` integrates the opacity of reionization's electrons alone,
+    a background state beside :class:`Recombination`'s. A sensitivity
+    launch weights it (:data:`REIO_ERROR_WEIGHT`) so that the steps resolve
+    the reionization step's derivative in ``z_re``: without the state,
+    ``dP/dz_re`` is 3 to 5 percent off, and :func:`~discoeb.solver.solve_eb`
+    refuses to differentiate ``z_re``.
+    """
+
+    kappa_reio = State()
 
     def d_kappa_reio(self, xe_reio, akthom, inv_a2):
         """The opacity of reionization's electrons alone, whose integral is ``tau_reio``."""

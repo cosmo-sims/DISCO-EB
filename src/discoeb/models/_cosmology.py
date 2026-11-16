@@ -1,82 +1,17 @@
-"""Cosmologies as the solver reads them: parameter dictionaries and their hashable form.
+"""Cosmologies as the solver reads them: parameter dictionaries.
 
 A cosmology is an instance of a model (:mod:`discoeb.models`), ``LCDM(omega_b=...,
 ...)``. Inside, the solver reads its parameters as a dictionary (``omega_b``,
-``omega_c``, ``omega_de``, ``Tcmb``, ``YHe``, ``Neff``, ``A_s``, ``n_s``, ...), and
-:func:`as_cosmology` gives a hashable form for caching the background.
+``omega_c``, ``omega_de``, ``Tcmb``, ``YHe``, ``Neff``, ``A_s``, ``n_s``, ...).
 """
 
 import functools
-from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from ..components._component import REQUIRED, declarations_of
-
-
-class _ParamCosmology(NamedTuple):
-    """Hashable form of the DISCO-EB parameter dictionary."""
-
-    omega_b: float
-    omega_c: float
-    omega_de: float
-    w_DE_0: float
-    w_DE_a: float
-    cs2_DE: float
-    omega_k: float
-    A_s: float
-    n_s: float
-    T_cmb: float
-    Y_He: float
-    Neff_massless: float
-    num_massive_neutrinos: float
-    mnu: float
-    k_pivot: float
-    z_re: float = 0.0  # the reionization redshift (0: no reionization)
-    extra: tuple = ()  # (key, value) of the parameters other components declare
-
-    def to_background_params(self):
-        return {
-            "omega_b": self.omega_b,
-            "omega_c": self.omega_c,
-            "omega_de": self.omega_de,
-            "w_DE_0": self.w_DE_0,
-            "w_DE_a": self.w_DE_a,
-            "cs2_DE": self.cs2_DE,
-            "omega_k": self.omega_k,
-            "A_s": self.A_s,
-            "n_s": self.n_s,
-            "Tcmb": self.T_cmb,
-            "YHe": self.Y_He,
-            "Neff": self.Neff_massless,
-            "Nmnu": self.num_massive_neutrinos,
-            "mnu": self.mnu,
-            "z_re": self.z_re,
-            **dict(self.extra),
-        }
-
-
-_FIELD_KEYS = {
-    "omega_b": "omega_b",
-    "omega_c": "omega_c",
-    "omega_de": "omega_de",
-    "w_DE_0": "w_DE_0",
-    "w_DE_a": "w_DE_a",
-    "cs2_DE": "cs2_DE",
-    "omega_k": "omega_k",
-    "A_s": "A_s",
-    "n_s": "n_s",
-    "T_cmb": "Tcmb",
-    "Y_He": "YHe",
-    "Neff_massless": "Neff",
-    "num_massive_neutrinos": "Nmnu",
-    "mnu": "mnu",
-    "k_pivot": "k_p",
-    "z_re": "z_re",
-}
-"""The cosmology object's fields and the dictionary keys they hold."""
 
 
 def _is_parameter(key) -> bool:
@@ -94,51 +29,6 @@ def _default(key):
     return REQUIRED
 
 
-def _as_cosmology(cosmology):
-    """Return a cosmology or a parameter dictionary as a ``_ParamCosmology``, anything else as is.
-
-    Keys a component declares besides the fields go into ``extra``. A key no
-    component declares is dropped, and a field's key left out takes its
-    declared default.
-    """
-
-    if _is_model_instance(cosmology):
-        cosmology = cosmology.to_dict()
-    if not isinstance(cosmology, dict):
-        return cosmology
-    c = dict(cosmology)
-    for key in _FIELD_KEYS.values():
-        if key not in c and _default(key) is not REQUIRED:
-            c[key] = _default(key)
-    fields = set(_FIELD_KEYS.values())
-    extra = tuple(
-        sorted(
-            (k, float(v))
-            for k, v in cosmology.items()
-            if k not in fields and _is_parameter(k)
-        )
-    )
-    return _ParamCosmology(
-        omega_b=float(c["omega_b"]),
-        omega_c=float(c["omega_c"]),
-        omega_de=float(c["omega_de"]),
-        w_DE_0=float(c["w_DE_0"]),
-        w_DE_a=float(c["w_DE_a"]),
-        cs2_DE=float(c["cs2_DE"]),
-        omega_k=float(c["omega_k"]),
-        A_s=float(c["A_s"]),
-        n_s=float(c["n_s"]),
-        T_cmb=float(c["Tcmb"]),
-        Y_He=float(c["YHe"]),
-        Neff_massless=float(c["Neff"]),
-        num_massive_neutrinos=float(c["Nmnu"]),
-        mnu=float(c["mnu"]),
-        k_pivot=float(c["k_p"]),
-        z_re=float(c["z_re"]),
-        extra=extra,
-    )
-
-
 def _is_model_instance(cosmology) -> bool:
     """Whether ``cosmology`` is an instance of a :class:`~discoeb.models.Model`."""
 
@@ -150,7 +40,7 @@ def _is_model_instance(cosmology) -> bool:
 def _as_batch(cosmologies) -> tuple:
     """Return a cosmology or a sequence of them as a tuple (dictionaries unchanged)."""
 
-    if isinstance(cosmologies, dict) or hasattr(cosmologies, "omega_b"):
+    if isinstance(cosmologies, dict) or _is_model_instance(cosmologies):
         return (cosmologies,)
     return tuple(cosmologies)
 
@@ -191,11 +81,7 @@ def _cosmology_dictionary(cosmology) -> dict:
 
     if isinstance(cosmology, dict):
         return dict(cosmology)
-    if _is_model_instance(cosmology):
-        return cosmology.to_dict()
-    d = cosmology.to_background_params()
-    d["k_p"] = cosmology.k_pivot
-    return d
+    return cosmology.to_dict()
 
 
 UNUSED_BY_THE_SOLVE = ("A_s", "n_s", "k_p")
@@ -266,10 +152,3 @@ def _is_concrete(value) -> bool:
     """Whether ``value`` is a number now: not a JAX tracer of ``jit`` or a derivative."""
 
     return not isinstance(value, jax.core.Tracer)
-
-
-as_cosmology = _as_cosmology
-"""Return a cosmology, or a parameter dictionary (``omega_b``, ``omega_c``, ``omega_de``,
-``Tcmb``, ``YHe``, ``Neff``, ``A_s``, ``n_s``, ...), in the hashable form the
-background caches on. Returns one already in that form as it is. The form
-keeps the parameters, not the model."""

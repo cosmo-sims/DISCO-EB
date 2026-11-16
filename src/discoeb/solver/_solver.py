@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..components.recombination import THERMO_ERROR_WEIGHT
+from ..components.recombination import THERMO_ERROR_WEIGHT, ReionizationDepth
 from ..models._cosmology import (
     DIFFERENTIABLE_PARAMETERS,
     UNUSED_BY_THE_SOLVE,
@@ -21,8 +21,8 @@ from ..models._cosmology import (
     _is_concrete,
 )
 from ..models._model import Model, ModelSpec, _batch_of, _spec_of
-from ._background import TAU_START, background_endpoints
 from ._kernel import (
+    A_START,
     N_COMMON_DIRECTED,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
@@ -39,20 +39,20 @@ def solve_perturbation_history_batch(
     k_values,
     cosmologies,
     *,
-    tau_save=None,
+    a_save=None,
     rtol: float = PERTURB_RTOL,
     atol: float = PERTURB_ATOL,
     first_step: float = PERTURB_FIRST_STEP,
     max_steps: int = PERTURB_MAX_STEPS,
 ):
-    """Solve a batch of cosmologies on a shared ``tau_save`` grid in one launch.
+    """Solve a batch of cosmologies on a shared ``a_save`` grid in one launch.
 
-    ``cosmologies`` is a cosmology, ``LCDM(H0=..., ...)``, or a sequence of
+    ``cosmologies`` is a cosmology, ``LCDM(omega_b=..., ...)``, or a sequence of
     cosmologies of one model. One modax launch integrates all ``n_cosmologies * n_k`` trajectories, each
     with its recombination block stepping ahead of its hierarchy
-    (:func:`joint_kernel`). Each trajectory stops at its own ``tau0``, and later
-    save times hold its final state. Returns ``(history, k_sorted, prepared)``,
-    with ``history`` a device array ``(n_k, n_cosmologies, len(tau_save),
+    (:func:`joint_kernel`), in the scale factor from :data:`A_START` to 1, today.
+    Returns ``(history, k_sorted, prepared)``,
+    with ``history`` a device array ``(n_k, n_cosmologies, len(a_save),
     nvar)`` in ascending ``k``.
     """
 
@@ -61,7 +61,7 @@ def solve_perturbation_history_batch(
         batch.model,
         batch.cosmologies,
         k_values,
-        tau_save,
+        a_save,
         rtol=rtol,
         atol=atol,
         first_step=first_step,
@@ -76,7 +76,7 @@ def solve_perturbation_history_batch(
 def solve_eb(
     cosmologies: Model | Sequence[Model],
     k_values,
-    tau,
+    a,
     *,
     keep: Sequence[str] | None = None,
     extra=(),
@@ -87,22 +87,22 @@ def solve_eb(
     max_steps: int = PERTURB_MAX_STEPS,
     error_weights=None,
     thermo_weight: float = THERMO_ERROR_WEIGHT,
-) -> Annotated[jax.Array, ("cosmology", "name", "k", "tau")]:
-    """Solve the Einstein-Boltzmann system of ``cosmologies`` and keep ``keep`` at ``tau``.
+) -> Annotated[jax.Array, ("cosmology", "name", "k", "a")]:
+    """Solve the Einstein-Boltzmann system of ``cosmologies`` and keep ``keep`` at the scale factors ``a``.
 
     Like :func:`solve_perturbation_history_batch`, this runs one modax Rodas5P
     launch over every (wave mode, cosmology) pair. Unlike it, the launch records
     only the quantities named in ``keep`` at the requested times, through
     modax's save hook. The kernel evaluates them from the dense-output state at
     each save and stores ``len(keep)`` numbers, so the device holds ``n_k *
-    n_cosmologies * len(tau) * len(keep)`` values and never the history. Keeping
+    n_cosmologies * len(a) * len(keep)`` values and never the history. Keeping
     only the comoving curvature perturbation at 1000 times for 128 modes and 128
     cosmologies stores 130 MB instead of the 7 GB of the 55-variable history.
 
     Parameters
     ----------
     cosmologies
-        A cosmology, ``LCDM(H0=..., ...)``, or a sequence of cosmologies of
+        A cosmology, ``LCDM(omega_b=..., ...)``, or a sequence of cosmologies of
         one model. The model says which species and interactions the solve
         evolves, and one kernel is compiled per model. Every parameter may be
         a JAX array, traced under ``jit`` or not. Only those of
@@ -110,17 +110,18 @@ def solve_eb(
     k_values
         Wave numbers in 1/Mpc, in any order. They must be numbers, not
         traced: they set the launch's shape.
-    tau
-        Strictly increasing conformal times in Mpc at which to record, starting
-        at or after ``TAU_START``. Traced times must start after it. Every launch starts at ``TAU_START``, so a
-        first time equal to it records the initial state. A cosmology's
-        trajectory ends at its conformal age ``tau0``, and later times hold its
-        state today. A last time past every ``tau0`` therefore returns the
-        present-day values of the whole batch.
+    a
+        Strictly increasing scale factors at which to record, from
+        :data:`A_START` on: the solve integrates in ``a``, and 1 is today
+        for every cosmology. Traced values must start after ``A_START``.
+        Every launch starts there, so a first value equal to it records the
+        initial state. Keep ``tau`` for the conformal time at each, whose
+        value at 1 is the conformal age.
     keep
         Names of the quantities to record: state elements
         (:meth:`~discoeb.models.Model.state_names`, or the recombination
-        block's ``lna``, ``thermo_0``, ``thermo_1``, ``thermo_2``, ``kappa``) or
+        block's ``tau``, ``thermo_0``, ``thermo_1``, ``thermo_2``, ``kappa``,
+        ``kappa_reio``) or
         quantities the joint model provides, such as the comoving curvature
         perturbation ``R``, the shear ``sigma``, the expansion rate ``adotoa`` or
         the opacity. Default: every element of the perturbation state, which
@@ -133,13 +134,12 @@ def solve_eb(
     inputs
         The ``(n_cosmologies, n_directed)`` directed inputs of the model
         (:func:`directed_inputs`, in the order of its
-        :func:`~discoeb.solver._kernel.parameter_layout`), or only the first nine
+        :func:`~discoeb.solver._kernel.parameter_layout`), or only the first seven
         every built-in model shares (the five background densities and the
-        recombination block's ``YHe``, ``Tcmb``, ``H0``, ``Omegab``),
+        recombination block's ``YHe`` and ``Tcmb``),
         replacing those the cosmologies imply. They are differentiable in
-        their own right: the solution becomes a function of them, at fixed
-        background endpoints of the cosmologies. Given nine, the rest come
-        from the cosmologies.
+        their own right: the solution becomes a function of them. Given
+        seven, the rest come from the cosmologies.
     rtol, atol, first_step, max_steps, error_weights, thermo_weight
         Solver settings, as in :func:`solve_perturbation_history_batch`.
         ``error_weights`` is either ``{state name: weight}`` or modax's array
@@ -151,17 +151,17 @@ def solve_eb(
     Returns
     -------
     jax.Array
-        The kept quantities, ``(n_cosmologies, len(keep), n_k, n_tau)``:
+        The kept quantities, ``(n_cosmologies, len(keep), n_k, n_a)``:
         cosmologies in the order given, quantities in ``keep`` order (the
         model's :func:`state_names` without ``keep``), wave modes and times
         in the caller's order. ``jnp.unstack(values, axis=1)`` splits it
-        into one ``(n_cosmologies, n_k, n_tau)`` array per name.
+        into one ``(n_cosmologies, n_k, n_a)`` array per name.
 
     Notes
     -----
     The hook compiles once per batch shape and set of names, like the
-    right-hand side. Everything before the launch is JAX: the background
-    endpoints, the parameter rows and the initial states
+    right-hand side. Everything before the launch is JAX and algebra: the
+    parameter rows and the initial states
     (:func:`~discoeb.solver._kernel._pack`), so ``solve_eb`` traces under ``jit``, and
     the whole solve then runs on the device. Under ``jit`` the cosmologies are
     not checked against the model, since their ``w_DE_*`` and ``Nmnu`` have no
@@ -174,8 +174,8 @@ def solve_eb(
     forward-sensitivity launch of :func:`_kept_values` carries it, with a hook
     that stores each kept quantity's derivative beside it, so it also costs
     one joint launch and no history, with one replica of every trajectory per
-    differentiated parameter. It is the derivative at fixed ``tau0``,
-    reionization redshift, ``ln a`` at the start and initial state.
+    differentiated parameter. It is the derivative at fixed scale factor,
+    so at fixed redshift, and at fixed initial state.
     """
 
     batch = _batch_of(cosmologies)
@@ -185,23 +185,23 @@ def solve_eb(
     if len(set(names)) != len(names):
         raise ValueError(f"keep names a quantity twice: {names}")
 
-    tau = jnp.asarray(tau, dtype=jnp.float64).reshape(-1)
-    if tau.size == 0:
-        raise ValueError("tau must be a non-empty array of conformal times")
-    if _is_concrete(tau):
-        checked = np.asarray(tau)
+    a = jnp.asarray(a, dtype=jnp.float64).reshape(-1)
+    if a.size == 0:
+        raise ValueError("a must be a non-empty array of scale factors")
+    if _is_concrete(a):
+        checked = np.asarray(a)
         if not np.all(np.isfinite(checked)):
-            raise ValueError("tau must be an array of finite conformal times")
-        if checked[0] < TAU_START or np.any(np.diff(checked) <= 0.0):
+            raise ValueError("a must be an array of finite scale factors")
+        if checked[0] < A_START or np.any(np.diff(checked) <= 0.0):
             raise ValueError(
-                f"tau must be strictly increasing and from TAU_START = {TAU_START} on"
+                f"a must be strictly increasing and from A_START = {A_START} on"
             )
-        # The launch starts at TAU_START, so the hook always records it. Drop
+        # The launch starts at A_START, so the hook always records it. Drop
         # that row unless the caller asked for it.
-        drop_first = bool(checked[0] > TAU_START)
+        drop_first = bool(checked[0] > A_START)
     else:
-        drop_first = True  # traced times must lie after TAU_START
-    tau_grid = jnp.concatenate((jnp.asarray([TAU_START]), tau)) if drop_first else tau
+        drop_first = True  # traced values must lie after A_START
+    tau_grid = jnp.concatenate((jnp.asarray([A_START]), a)) if drop_first else a
 
     columns = _columns(
         batch.cosmologies,
@@ -278,11 +278,16 @@ def differentiable_parameters(model: type[Model] | ModelSpec) -> tuple[str, ...]
     Those the model's components declare (:meth:`Model.parameter_keys
     <discoeb.models.Model.parameter_keys>`): ``w_DE_0`` and
     ``w_DE_a`` need :class:`~discoeb.components.species.DarkEnergy` and ``mnu``
-    :class:`~discoeb.components.species.MassiveNeutrinos`. Differentiating another key
-    raises.
+    :class:`~discoeb.components.species.MassiveNeutrinos`. ``z_re`` needs
+    :class:`~discoeb.components.recombination.ReionizationDepth`, whose
+    state makes the steps resolve the reionization step's derivative.
+    Differentiating another key raises.
     """
 
-    keys = _spec_of(model).parameter_keys()
+    spec = _spec_of(model)
+    keys = dict(spec.parameter_keys())
+    if not spec.has(ReionizationDepth):
+        keys.pop("z_re", None)
     return tuple(key for key in DIFFERENTIABLE_PARAMETERS if key in keys)
 
 
@@ -292,7 +297,7 @@ def directed_inputs(cosmologies) -> jax.Array:
     ``cosmologies`` is a cosmology or a sequence of cosmologies of one
     model. These are the model's directed
     parameters: the five background densities and the recombination block's
-    ``YHe``, ``Tcmb``, ``H0`` and ``Omegab``, then those of the model's other
+    ``YHe`` and ``Tcmb``, then those of the model's other
     components (curvature, dark energy, massive neutrinos): the variables
     :func:`solve_eb` takes as
     ``inputs`` and differentiates with respect to. A JAX array, traceable
@@ -302,19 +307,6 @@ def directed_inputs(cosmologies) -> jax.Array:
     batch = _batch_of(cosmologies)
     columns = _columns(batch.cosmologies, keys=batch.model.parameter_keys(), held=False)
     return _directed_inputs(columns, batch.model)
-
-
-def conformal_ages(cosmologies) -> jax.Array:
-    """Return each cosmology's conformal age ``tau0`` (Mpc), where its trajectories stop.
-
-    ``cosmologies`` is a cosmology or a sequence of cosmologies of one
-    model. A JAX array, traceable under ``jit``: the same vmapped quadrature
-    :func:`solve_eb` runs.
-    """
-
-    batch = _batch_of(cosmologies)
-    columns = _columns(batch.cosmologies, keys=batch.model.parameter_keys(), held=False)
-    return background_endpoints(columns, batch.model)[0]
 
 
 def state_names(model: type[Model] | ModelSpec) -> tuple[str, ...]:

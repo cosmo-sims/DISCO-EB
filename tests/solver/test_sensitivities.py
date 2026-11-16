@@ -41,8 +41,7 @@ def test_solve_eb_derivatives():
 
     from discoeb.models import LCDM
     from discoeb.models._cosmology import _columns
-    from discoeb.solver._background import TAU_START
-    from discoeb.solver._kernel import _prepare_solve, parameter_layout
+    from discoeb.solver._kernel import A_START, _prepare_solve, parameter_layout
     from discoeb.solver._sensitivities import _directed_inputs, _kept_values
     from discoeb.solver._solver import solve_eb
 
@@ -60,13 +59,15 @@ def test_solve_eb_derivatives():
         )
 
     densities = inputs_of(theta)
-    tau = np.geomspace(10.0, 2.0e4, 12)
+    a = np.geomspace(1.0e-5, 1.0, 12)
     names = ("R", "clxc", "theta_2")
     noise = {"R": 5.0e-6, "clxc": 5.0e-6, "theta_2": 1.0e-4}
 
-    plain = solve_eb(cosmologies_of(LCDM, cosmology), SOLVE_EB_K, tau, keep=names)
-    prepared = _prepare_solve(LCDM, (cosmology,), SOLVE_EB_K)
-    kept = _kept_values(prepared, np.concatenate(([TAU_START], tau)), names, ())
+    # converted from Omegam and H0 as JAX values, as inputs_of converts them
+    traced = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
+    plain = solve_eb(cosmologies_of(LCDM, traced), SOLVE_EB_K, a, keep=names)
+    prepared = _prepare_solve(LCDM, (cosmologies_of(LCDM, cosmology),), SOLVE_EB_K)
+    kept = _kept_values(prepared, np.concatenate(([A_START], a)), names, ())
     base = np.asarray(kept(densities))
     # The same launch, from densities formed in JAX rather than as floats.
     np.testing.assert_allclose(np.asarray(plain), base, rtol=1e-12)
@@ -82,7 +83,7 @@ def test_solve_eb_derivatives():
     # is the larger part of a difference.
     kept_converged = _kept_values(
         prepared,
-        np.concatenate(([TAU_START], tau)),
+        np.concatenate(([A_START], a)),
         names,
         (),
         rtol=1.0e-6,
@@ -105,8 +106,16 @@ def test_solve_eb_derivatives():
         ) / (2.0 * step)
         err = np.abs(jac[..., j] - finite) * step / scale
         for q, name in enumerate(names):
-            assert err[0, q].max() < noise[name], (
-                f"d{name}/d{dn}: {err[0, q].max():.3g} of the scale over a 1e-3 step"
+            # The photon quadrupole only while the hierarchy carries it. Once
+            # the radiation streaming approximation is on, its state is
+            # frozen where the switch found it, and the switch tests k tau:
+            # at fixed scale factor a density moves the conformal time and
+            # the switch with it, which a difference sees and a sensitivity,
+            # blind to the discontinuity, cannot (5e-4 of the scale).
+            compared = err[0, q][:, a < 1.0e-3] if name == "theta_2" else err[0, q]
+            worst = compared.max()
+            assert worst < noise[name], (
+                f"d{name}/d{dn}: {worst:.3g} of the scale over a 1e-3 step"
             )
 
     weights = 1.0 / scale
@@ -129,7 +138,7 @@ def test_solve_eb_derivatives():
     # not carried.
     def of_parameters(theta):
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
-        return solve_eb(cosmologies_of(LCDM, param), SOLVE_EB_K, tau, keep=names)
+        return solve_eb(cosmologies_of(LCDM, param), SOLVE_EB_K, a, keep=names)
 
     jac_theta = np.asarray(jax.jacfwd(of_parameters)(theta))
     d_densities = np.asarray(jax.jacfwd(lambda t: inputs_of(t)[0])(theta))
@@ -157,14 +166,15 @@ def test_solve_eb_derivatives():
     # mnu needs MassiveNeutrinos, cs2_DE DarkEnergy. The sensitivities in
     # YHe and cs2_DE miss central differences of P(k) by 0.8 and 1 percent
     # (2026-11-13), so they stay held.
-    for key, value in (("mnu", 0.0), ("YHe", 0.245)):
+    # z_re needs ReionizationDepth, whose state resolves its derivative.
+    for key, value in (("mnu", 0.0), ("YHe", 0.245), ("z_re", 7.0)):
         with pytest.raises(ValueError, match="cannot be differentiated"):
             jax.grad(
                 lambda v, key=key: jnp.sum(
                     solve_eb(
                         cosmologies_of(LCDM, {**cosmology, key: v}),
                         SOLVE_EB_K,
-                        tau,
+                        a,
                         keep=names,
                     )
                 )
@@ -201,11 +211,11 @@ def test_more_parameters_solve_eb(name):
     from discoeb.solver._solver import solve_eb
 
     model, cosmology, step = _more_parameter_case(name)
-    tau = np.geomspace(10.0, 1.2e4, 12)  # before every shifted tau0
+    a = np.geomspace(1.0e-5, 1.0, 12)
 
     def values(p, **options):
         batch = cosmologies_of(model, {**cosmology, name: p})
-        return solve_eb(batch, SOLVE_EB_K, tau, keep=MORE_NAMES, **options)
+        return solve_eb(batch, SOLVE_EB_K, a, keep=MORE_NAMES, **options)
 
     p0 = jnp.asarray(float(cosmology[name]))
     _, tangent = jax.jvp(values, (p0,), (jnp.ones_like(p0),))

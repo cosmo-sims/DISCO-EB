@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from helpers import (
     BATCH_SIZE_CASES,
+    LCDM_REIO,
     REFERENCE_COSMOLOGY,
     _class_base,
     _perturbed_cosmologies,
@@ -13,14 +14,14 @@ from helpers import (
 # --- The recombination history of the perturbation kernel against CLASS, and the time of its solve.
 
 
-THERMAL_KEEP = ("a", "xe", "Tmat", "cs2", "opacity", "kappa", "kappa_reio")
+THERMAL_KEEP = ("tau", "xe", "Tmat", "cs2", "opacity", "kappa")
 
 
 THERMAL_K = np.array([1.0e-3])
 """One wave mode per cosmology: the recombination block does not read the hierarchy."""
 
 
-N_TAU = 2000
+N_A = 2000
 
 
 Z_MIN, Z_MAX = 10.0, 5000.0
@@ -41,22 +42,20 @@ SWITCH_WINDOW = (800.0, 900.0)
 CS2_SWITCH_GATE = 0.2
 
 
-def kernel_thermal_history(cosmologies, n_tau: int = N_TAU):
-    """``(tau, tau0, history)`` of the kernel's recombination block on a ``log tau`` grid.
+def kernel_thermal_history(cosmologies, model=None, keep=THERMAL_KEEP, n_a: int = N_A):
+    """``(a, history)`` of the kernel's recombination block on a logarithmic grid of the scale factor.
 
-    ``tau`` runs from :data:`discoeb.TAU_START` to the batch's largest
-    conformal age; ``history[name]`` is ``(n_cosmologies, n_tau)`` for each
-    of :data:`THERMAL_KEEP`, a cosmology's values holding past its own ``tau0``.
+    ``a`` runs from :data:`discoeb.A_START` to 1, today for every cosmology.
+    ``history[name]`` is ``(n_cosmologies, n_a)`` for each name of ``keep``.
     """
 
-    from discoeb import LCDM, TAU_START, conformal_ages, solve_eb
+    from discoeb import A_START, LCDM, solve_eb
 
-    batch = cosmologies_of(LCDM, cosmologies)
-    tau0 = np.asarray(conformal_ages(batch))
-    tau = np.geomspace(TAU_START, float(tau0.max()), n_tau)
-    values = solve_eb(batch, THERMAL_K, tau, keep=THERMAL_KEEP)
+    batch = cosmologies_of(LCDM if model is None else model, cosmologies)
+    a = np.geomspace(A_START, 1.0, n_a)
+    values = solve_eb(batch, THERMAL_K, a, keep=keep)
     kept = np.asarray(values)[:, :, 0, :]  # one wave mode
-    return tau, tau0, {name: kept[:, i] for i, name in enumerate(THERMAL_KEEP)}
+    return a, {name: kept[:, i] for i, name in enumerate(keep)}
 
 
 def _class_thermodynamics(param):
@@ -89,7 +88,7 @@ def test_recfast_matches_class(n_cosmologies, benchmark):
     """Check the kernel's recombination history against CLASS and time one warmed batch solve."""
 
     cosmologies = _perturbed_cosmologies(n_cosmologies)
-    _, _, history = benchmark.pedantic(
+    a, history = benchmark.pedantic(
         kernel_thermal_history,
         args=(cosmologies,),
         rounds=1,
@@ -103,7 +102,7 @@ def test_recfast_matches_class(n_cosmologies, benchmark):
         return float(rel[i]), float(z[mask][i])
 
     for i, param in enumerate(cosmologies):
-        z = 1.0 / history["a"][i] - 1.0
+        z = 1.0 / a - 1.0
         inside = (z >= Z_MIN) & (z <= Z_MAX)
         switch = (z > SWITCH_WINDOW[0]) & (z < SWITCH_WINDOW[1])
         z_class, xe_class, tb_class, cb2_class = _class_thermodynamics(param)
@@ -124,6 +123,31 @@ def test_recfast_matches_class(n_cosmologies, benchmark):
         )
 
 
+# --- The conformal time, a state of the block.
+
+
+def test_the_conformal_time_starts_from_the_radiation_eras_closed_form():
+    """``tau`` at the start is the integral of ``da / (a^2 H)`` from zero, with no integration."""
+
+    from helpers import on_the_host
+
+    from discoeb import A_START, LCDM, LCDM_MNU
+    from discoeb.components.recombination import _tau_initial
+
+    for model, more in ((LCDM, {}), (LCDM_MNU, {"Nmnu": 1.0, "mnu": 0.3})):
+        name = model.__name__
+        cosmology = {**REFERENCE_COSMOLOGY, **more}
+        rate, matter = on_the_host(model, cosmology, "adotoa", "grho_matter", a=A_START)
+        closed = _tau_initial(float(rate), float(matter))
+        # in a, where the integrand 1 / (a^2 H) is nearly constant; below
+        # the grid the universe is radiation alone and tau = 1 / adotoa
+        grid = np.linspace(1.0e-3 * A_START, A_START, 4000)
+        rates = np.asarray(on_the_host(model, cosmology, "adotoa", a=grid))
+        integral = np.trapezoid(1.0 / (grid * rates), grid) + 1.0 / rates[0]
+        assert closed == pytest.approx(integral, rel=1e-6), name
+        assert 0.05 < closed < 0.2
+
+
 # --- Reionization in the thermal history.
 
 
@@ -131,9 +155,9 @@ Z_RE = 7.67
 """Planck 2018's midpoint of CAMB's step, for ``tau_reio`` near 0.054."""
 
 
-LATE = 0.3
-"""Conformal times past this fraction of ``tau0`` (``z < ~30``) hold the reionization step;
-the recombination tail adds ~1e-4 to their optical depth."""
+LATE = 1.0 / 31.0
+"""Scale factors past this one (``z < 30``) hold the reionization step; the
+recombination tail adds ~1e-4 to their optical depth."""
 
 
 def _class_tau_reio(z_re):
@@ -158,14 +182,22 @@ def _class_tau_reio(z_re):
 
 
 def _late_history(z_re):
-    """``(a, visibility, late optical depth, tau_reio)`` after :data:`LATE` ``tau0``, from the kernel."""
+    """``(a, visibility, late optical depth, tau_reio)`` after :data:`LATE`, from the kernel.
 
-    tau, tau0, history = kernel_thermal_history([{**REFERENCE_COSMOLOGY, "z_re": z_re}])
-    late = tau > LATE * tau0[0]
+    Of LCDM with :class:`~discoeb.components.recombination.ReionizationDepth`,
+    whose state ``kappa_reio`` is ``tau_reio`` today.
+    """
+
+    a, history = kernel_thermal_history(
+        [{**REFERENCE_COSMOLOGY, "z_re": z_re}],
+        model=LCDM_REIO,
+        keep=(*THERMAL_KEEP, "kappa_reio"),
+    )
+    late = a > LATE
     kappa = history["kappa"][0]
     visibility = history["opacity"][0] * np.exp(-(kappa[-1] - kappa))
     return (
-        history["a"][0][late],
+        a[late],
         visibility[late],
         float(kappa[-1] - kappa[late][0]),
         float(history["kappa_reio"][0][-1]),

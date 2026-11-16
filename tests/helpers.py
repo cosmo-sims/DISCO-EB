@@ -20,6 +20,7 @@ from discoeb.components._component import (
     State,
 )
 from discoeb.components.gravity import GRHO_PER_OMEGA
+from discoeb.components.recombination import ReionizationDepth
 from discoeb.components.species import (
     CosmologicalConstant,
     Fluid,
@@ -88,6 +89,27 @@ def physical(model, params) -> dict:
     """A dictionary in ``Omegam``, ``Omegab`` and ``H0`` in the model's own parameters."""
 
     return model.spec.physical_parameters(params)
+
+
+def model_parameters(model, cosmology) -> dict:
+    """Every parameter of the model, derived ones included, for a cosmology or a dictionary of one."""
+
+    from discoeb.solver._kernel import density_parameters
+
+    if isinstance(cosmology, dict):
+        cosmology = cosmologies_of(model, cosmology)
+    return density_parameters(cosmology.to_dict(), xp=np, model=model.spec)
+
+
+def on_the_host(model, cosmology, *quantities, **base):
+    """Quantities of the model's equations evaluated on the host in JAX, at ``base`` (``a=...``)."""
+
+    import jax.numpy as jnp
+
+    from discoeb.models._model import _host_equations
+
+    values = model_parameters(model, cosmology)
+    return _host_equations(model.spec).evaluate(*quantities, math=jnp, **base, **values)
 
 
 def state_index(model) -> dict[str, int]:
@@ -221,6 +243,10 @@ class SecondDarkMatter(Species):
 
 
 LCDM_X = LCDM.add(SecondDarkMatter, name="LCDM+x")
+
+
+LCDM_REIO = LCDM.add(ReionizationDepth, name="LCDM+reio")
+"""LCDM with the reionization depth as a state: ``tau_reio`` and the ``z_re`` derivative."""
 
 
 OMEGA_X = 0.08
@@ -410,11 +436,10 @@ def by_name(values, keep):
     return dict(zip(keep, np.moveaxis(np.asarray(values), 1, 0)))
 
 
-def _matter_power(k_values, batch, tau_today=None, **options):
+def _matter_power(k_values, batch, a=1.0, **options):
     """``P(k)`` of a cosmology or a list of them as a user computes it: ``solve_eb``, then the spectrum.
 
-    ``tau_today`` must lie at or past every conformal age. It defaults to the
-    batch's oldest, which needs the parameters as numbers.
+    At the scale factor ``a``, today by default.
     """
 
     import jax
@@ -424,22 +449,19 @@ def _matter_power(k_values, batch, tau_today=None, **options):
     from discoeb.observables.power_spectrum import (
         matter_power_spectrum,
     )
-    from discoeb.solver._solver import conformal_ages, solve_eb
+    from discoeb.solver._solver import solve_eb
 
     cosmologies = [batch] if isinstance(batch, Model) else list(batch)
-    tau0 = conformal_ages(batch)
-    if tau_today is None:
-        tau_today = tau0.max()
     options.setdefault("thermo_weight", 0.1)
-    keep = ("clxc", "clxb", "z", "vb")
-    values = solve_eb(batch, k_values, [tau_today], keep=keep, **options)
+    keep = ("clxc", "clxb")
+    values = solve_eb(batch, k_values, [a], keep=keep, **options)
     today = dict(zip(keep, jnp.unstack(values[..., -1], axis=1)))
     params = {
         key: jnp.stack([jnp.asarray(getattr(c, key)) for c in cosmologies])
         for key in ("omega_c", "omega_b", "A_s", "n_s", "k_p")
     }
     batched = jax.vmap(matter_power_spectrum, in_axes=(None,))
-    return batched(k_values, **today, tau0=tau0, **params)
+    return batched(k_values, **today, **params)
 
 
 # The parameters of the densities, which the derivative tests below have
@@ -461,7 +483,7 @@ MORE_PARAMETERS = {
     "mnu": ("LCDM_MNU", {"Nmnu": 1.0, "mnu": 0.1, "Neff": 2.0328}, 4.0e-3),
     # z_re moves sum P(k) by 1.4e-5 of itself per unit: a step of 0.05 sits
     # in the converged solve's noise (2026-11-16)
-    "z_re": ("LCDM", {"z_re": 7.67}, 1.0),
+    "z_re": ("LCDM_REIO", {"z_re": 7.67}, 1.0),
 }
 
 
@@ -470,7 +492,8 @@ def _more_parameter_case(name):
 
     model_name, changes, step = MORE_PARAMETERS[name]
     cosmology = {**REFERENCE_COSMOLOGY, **changes}
-    return getattr(models, model_name), cosmology, step
+    model = globals().get(model_name) or getattr(models, model_name)
+    return model, cosmology, step
 
 
 def ty_executable() -> str | None:

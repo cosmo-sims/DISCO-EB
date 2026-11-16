@@ -172,7 +172,14 @@ class ModelSpec:
             for cls in self.components
         ]
 
-    def build(self, thermal_history: Component | None = None, extra=()) -> Equations:
+    def build(
+        self,
+        thermal_history: Component | None = None,
+        extra=(),
+        time: str = "tau",
+        clock: str | None = None,
+        last=(),
+    ) -> Equations:
         """Return the component :class:`~discoeb.components._component.Equations` of this cosmological model.
 
         ``thermal_history`` provides ``a``, ``opacity``, ``cs2``, ``rhonu`` and
@@ -187,7 +194,7 @@ class ModelSpec:
         if thermal_history is not None:
             components.insert(0, thermal_history)
         components.extend(extra)
-        return Equations(components)
+        return Equations(components, time=time, clock=clock, last=last)
 
     def parameters(self, extra=()) -> dict[str, ParameterDeclaration]:
         """Return the parameters the model's components declare, by name.
@@ -242,8 +249,7 @@ class ModelSpec:
     def check(self, cosmology) -> None:
         """Raise ``ValueError`` if ``cosmology`` sets parameters this model ignores.
 
-        ``cosmology`` is a parameter dictionary or a cosmology object
-        (:func:`~discoeb.models._cosmology.as_cosmology`). A key that another
+        ``cosmology`` is a parameter dictionary or a cosmology. A key that another
         component declares but none of this model's must keep its declared
         default: a model without the dark-energy fluid needs ``w_DE_0 = -1``
         and ``w_DE_a = 0``, one without massive neutrinos ``Nmnu = 0``. Then

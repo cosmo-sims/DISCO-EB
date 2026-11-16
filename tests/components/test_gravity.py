@@ -15,6 +15,8 @@ from helpers import (
     _split,
     build_rhs,
     cosmologies_of,
+    model_parameters,
+    on_the_host,
     state_index,
 )
 from jax.typing import ArrayLike
@@ -137,12 +139,7 @@ GRHOM = GRHOM_PER_H0SQ * ROUND_COSMOLOGY["H0"] ** 2
 
 
 def _densities(model, cosmology):
-    from discoeb.models._cosmology import _columns
-    from discoeb.solver._background import density_parameters
-
-    native = cosmologies_of(model, cosmology).to_dict()
-    columns = _columns([native], held=False, keys=model.parameter_keys())
-    return {k: v[0] for k, v in density_parameters(columns, model=model).items()}
+    return model_parameters(model, cosmology)
 
 
 def test_a_model_needs_the_whole_interface():
@@ -156,16 +153,9 @@ def test_a_model_needs_the_whole_interface():
 def test_curvature_is_geometry_and_not_a_fluid():
     """It reaches the expansion rate through ``Kcurv`` and none of the sums."""
 
-    import jax.numpy as jnp
-
-    from discoeb.solver._background import background_model
-
     assert issubclass(Curvature, Gravity)
     curved = {**ROUND_COSMOLOGY, "Omegak": 0.05}
-    d = _densities(LCDM, curved)
-    adotoa, grho = background_model(LCDM).evaluate(
-        "adotoa", "grho", math=jnp, a=1.0, **d
-    )
+    adotoa, grho = on_the_host(LCDM, curved, "adotoa", "grho", a=1.0)
     # the fluids fall short of the critical density by the curvature's share
     assert float(grho / GRHOM) == pytest.approx(0.95, rel=1e-12)
     assert float(3.0 * adotoa**2 / GRHOM) == pytest.approx(1.0, rel=1e-12)
@@ -178,8 +168,6 @@ def test_the_acceleration_equation_is_the_derivative_of_the_friedmann_equation(a
     import jax
     import jax.numpy as jnp
 
-    from discoeb.solver._background import background_model
-
     cosmology = {
         **ROUND_COSMOLOGY,
         "Omegak": -0.03,
@@ -188,15 +176,13 @@ def test_the_acceleration_equation_is_the_derivative_of_the_friedmann_equation(a
         "Nmnu": 1.0,
         "mnu": 0.3,
     }
-    d = _densities(W0WACDM_MNU, cosmology)
-    background = background_model(W0WACDM_MNU)
 
     def adotoa(lna):
-        return background.evaluate("adotoa", math=jnp, a=jnp.exp(lna), **d)
+        return on_the_host(W0WACDM_MNU, cosmology, "adotoa", a=jnp.exp(lna))
 
     lna = jnp.log(a)
     rate, slope = jax.jvp(adotoa, (lna,), (jnp.ones(()),))
-    prime = background.evaluate("adotoa_prime", math=jnp, a=a, **d)
+    prime = on_the_host(W0WACDM_MNU, cosmology, "adotoa_prime", a=a)
     # d/dtau = (a'/a) d/dln a
     assert float(prime) == pytest.approx(float(rate * slope), rel=1e-9)
 
@@ -213,16 +199,12 @@ class ScaledGravity(Background):
 def test_another_friedmann_equation_replaces_the_background():
     """The species are untouched, and the budget closes with the new rate."""
 
-    import jax.numpy as jnp
-
-    from discoeb.solver._background import background_model
-
     scaled = LCDM.swap(Background, ScaledGravity, name="scaled gravity")
     assert scaled.state_names() == LCDM.state_names()
     assert "mu" in scaled.parameter_keys() and "mu" not in LCDM.parameter_keys()
     plain = _densities(LCDM, ROUND_COSMOLOGY)
     d = _densities(scaled, {**ROUND_COSMOLOGY, "mu": 1.1})
-    adotoa = background_model(scaled).evaluate("adotoa", math=jnp, a=1.0, **d)
+    adotoa = on_the_host(scaled, {**ROUND_COSMOLOGY, "mu": 1.1}, "adotoa", a=1.0)
     # the model still expands at H0 today, with less dark energy to do it
     assert float(3.0 * adotoa**2 / GRHOM) == pytest.approx(1.0, rel=1e-12)
     assert float(d["grhov"]) < float(plain["grhov"])
@@ -358,14 +340,12 @@ def test_the_growing_mode_counts_the_new_species_as_matter():
         cosmologies_of(LCDM, COSMOLOGY),
         k,
         joint_model(LCDM),
-        -15.0,
         cosmology_model=LCDM,
     )
     split = make_initial_states(
         cosmologies_of(LCDM_X, _split(COSMOLOGY)),
         k,
         joint_model(LCDM_X),
-        -15.0,
         cosmology_model=LCDM_X,
     )
     n = len(LCDM.state_names())

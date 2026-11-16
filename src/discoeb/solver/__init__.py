@@ -1,7 +1,7 @@
-"""The solve: the background, the joint kernel, its sensitivities and ``solve_eb``."""
+"""The solve: the joint kernel, its sensitivities and ``solve_eb``."""
 
-from ._background import TAU_START, background_history, density_coefficients
 from ._kernel import (
+    A_START,
     DIRECTED_NAMES,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
@@ -10,7 +10,6 @@ from ._kernel import (
     joint_model,
 )
 from ._solver import (
-    conformal_ages,
     differentiable_parameters,
     directed_inputs,
     solve_eb,
@@ -19,14 +18,11 @@ from ._solver import (
 
 __all__ = [
     "DIRECTED_NAMES",
+    "A_START",
     "PERTURB_ATOL",
     "PERTURB_FIRST_STEP",
     "PERTURB_MAX_STEPS",
     "PERTURB_RTOL",
-    "TAU_START",
-    "background_history",
-    "conformal_ages",
-    "density_coefficients",
     "differentiable_parameters",
     "directed_inputs",
     "joint_model",

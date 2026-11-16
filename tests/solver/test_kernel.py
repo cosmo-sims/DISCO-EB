@@ -14,12 +14,14 @@ from helpers import (
     diagonal,
     entries,
     nvar,
+    on_the_host,
     structure,
 )
 
 from discoeb.components._component import (
     Interaction,
 )
+from discoeb.components.recombination import ReionizationDepth
 from discoeb.components.species import (
     Fluid,
 )
@@ -55,9 +57,7 @@ def test_two_copies_share_a_model():
 
 
 def test_make_initial_states_uses_the_model():
-    from discoeb.models._cosmology import _as_cosmology
-
-    cosmology = _as_cosmology(
+    cosmology = LCDM.from_dict(
         dict(
             omega_b=0.022,
             omega_c=0.117,
@@ -80,13 +80,17 @@ def test_make_initial_states_uses_the_model():
 
     model = joint_model(LCDM)
     y0 = make_initial_states(
-        cosmology, np.array([1e-2, 1e-1]), model, -15.0, cosmology_model=LCDM.spec
+        cosmology,
+        np.array([1e-2, 1e-1]),
+        model,
+        a=np.exp(-15.0),
+        cosmology_model=LCDM.spec,
     )
-    assert y0.shape == (2, 56) and np.isfinite(y0).all()
+    assert y0.shape == (2, 55) and np.isfinite(y0).all()
     np.testing.assert_allclose(y0[:, 0], [-1e-2, -1e-1], rtol=1e-3)  # etak ~ -k
-    np.testing.assert_allclose(
-        y0[:, 50:], [[-15.0, 1.0, 2.0, 2.7255 * np.exp(15.0), 0.0, 0.0]] * 2
-    )  # the thermal state
+    # the thermal state: the conformal time of the radiation era, then RECFAST's
+    assert np.all((0.1 < y0[:, 50]) & (y0[:, 50] < 0.2))
+    np.testing.assert_allclose(y0[:, 51:], [[1.0, 2.0, 2.7255 * np.exp(15.0), 0.0]] * 2)
 
 
 # --- The Jacobian sparsity pattern, and what modax's analysis makes of it.
@@ -228,7 +232,7 @@ def test_the_recombination_block_publishes_the_thermal_quantities():
 
     nvar = len(LCDM.state_names())
     model, hierarchy = joint_kernel(LCDM)
-    assert model.nvar == nvar + 6
+    assert model.nvar == nvar + 5
     perturbations, recombination = hierarchy.blocks[-1], hierarchy.blocks[0]
     assert hierarchy.layout == (
         perturbations,
@@ -237,9 +241,14 @@ def test_the_recombination_block_publishes_the_thermal_quantities():
     # nothing declares the split: the trace finds the states that read no
     # wave number and the fewest quantities the hierarchy needs of them
     background, others = model.stages()
-    assert background == ("lna", "thermo", "kappa", "kappa_reio")
-    assert model.published() == ("a", "opacity", "cs2")
-    assert recombination.n == 6 and recombination.n_outputs == 3
+    assert background == ("tau", "thermo", "kappa")
+    # the scale factor is the time itself, and the conformal time a state
+    assert model.published() == ("tau", "opacity", "cs2")
+    assert recombination.n == 5 and recombination.n_outputs == 3
+    # the reionization depth is a background state a model adds
+    with_depth = joint_model(LCDM.add(ReionizationDepth, name="LCDM+reio"))
+    assert with_depth.stages()[0] == ("kappa_reio", "tau", "thermo", "kappa")
+    assert with_depth.published() == model.published()
     assert perturbations.n == nvar and perturbations.reads == (recombination,)
     assert model.state_indices(background) == list(thermal_indices(model))
     # the hierarchy alone, as the model's sparsity traces it: 173 entries
@@ -262,7 +271,10 @@ def test_the_recombination_block_steps_on_its_own():
 
     k_values = np.array([1.0e-3, 1.0e-2, 1.0e-1, 1.0])
     (_, stats), _, _ = _solve_batch(
-        LCDM, tuple(_perturbed_cosmologies(1)), k_values, return_stats=True
+        LCDM,
+        tuple(cosmologies_of(LCDM, _perturbed_cosmologies(1))),
+        k_values,
+        return_stats=True,
     )
     accepted, rejected, loop = (
         np.asarray(stats[k]) for k in ("accepted_steps", "rejected_steps", "loop_steps")
@@ -293,10 +305,10 @@ class Ageing(Interaction):
 def test_a_state_that_reads_no_wave_number_joins_the_background():
     model = joint_model(LCDM_T)
     background, perturbations = model.stages()
-    assert background == ("t", "lna", "thermo", "kappa", "kappa_reio")
+    assert background == ("t", "tau", "thermo", "kappa")
     assert "t" not in perturbations and "clxc" in perturbations
     # nobody reads it, so the perturbations are handed what LCDM's are
-    assert model.published() == ("a", "opacity", "cs2")
+    assert model.published() == ("tau", "opacity", "cs2")
     # without the recombination block the scale factor is an input
     assert LCDM_T.build().stages()[0] == ("t",)
     assert LCDM.build().stages()[0] == ()
@@ -304,7 +316,7 @@ def test_a_state_that_reads_no_wave_number_joins_the_background():
 
 def test_a_background_state_the_perturbations_read_is_published():
     model = joint_model(LCDM_T.add(Ageing, name="LCDM+t+ageing"))
-    assert model.published() == ("t", "a", "opacity", "cs2")
+    assert model.published() == ("t", "tau", "opacity", "cs2")
 
 
 @pytest.mark.slow
@@ -312,19 +324,24 @@ def test_a_background_state_the_perturbations_read_is_published():
 def test_the_kernel_carries_the_state_to_today():
     """The age of the universe from the background block, and LCDM's solve beside it."""
 
-    from discoeb import background_history, solve_eb
+    from discoeb import solve_eb
 
     k = np.geomspace(1.0e-3, 0.3, 6)
-    tau = np.array([10.0, 300.0, 2.0e4])  # the last lies past tau0
+    a = np.array([1.0e-4, 1.0e-2, 1.0])
     with_time = solve_eb(
-        cosmologies_of(LCDM_T, COSMOLOGY), k, tau, keep=("t", "a", "clxc")
+        cosmologies_of(LCDM_T, COSMOLOGY), k, a, keep=("t", "tau", "clxc")
     )
-    plain = solve_eb(cosmologies_of(LCDM, COSMOLOGY), k, tau, keep=("a", "clxc"))
-    a, tau_bg = background_history(cosmologies_of(LCDM, COSMOLOGY))
-    age = np.sum(0.5 * (a[1:] + a[:-1]) * np.diff(tau_bg))
-    t = np.asarray(with_time[0, 0])  # keep order: t, a, clxc
+    plain = solve_eb(cosmologies_of(LCDM, COSMOLOGY), k, a, keep=("tau", "clxc"))
+    # t = int a dtau = int a / adotoa dln a, by the trapezoid rule on the host
+    grid = np.geomspace(1.0e-9, 1.0, 20000)
+    rate = np.asarray(on_the_host(LCDM, COSMOLOGY, "adotoa", a=grid))
+    age = np.trapezoid(grid / rate, np.log(grid))
+    conformal_age = np.trapezoid(1.0 / rate, np.log(grid))
+    t = np.asarray(with_time[0, 0])  # keep order: t, tau, clxc
     np.testing.assert_allclose(t[:, -1], age, rtol=1e-4)
     assert 4000.0 < age < 4500.0  # 13.8 Gyr in Mpc
+    # and the conformal time, a state now, ends at the conformal age
+    np.testing.assert_allclose(with_time[0, 1, :, -1], conformal_age, rtol=1e-4)
     np.testing.assert_allclose(
         np.asarray(with_time[:, 2]), np.asarray(plain[:, 1]), rtol=1e-3
     )
@@ -336,8 +353,8 @@ def test_the_kernel_carries_the_state_to_today():
 def test_the_field_is_background_and_its_perturbation_is_not():
     model = joint_model(QCDM)
     background, perturbations = model.stages()
-    assert background == ("phi", "phidot", "lna", "thermo", "kappa", "kappa_reio")
+    assert background == ("phi", "phidot", "tau", "thermo", "kappa")
     assert {"dphi", "ddphi"} <= set(perturbations)
     # the perturbations read the field's velocity itself, and the potential
     # stands for the field: its slope and curvature follow from it
-    assert model.published() == ("phidot", "V", "a", "opacity", "cs2")
+    assert model.published() == ("phidot", "tau", "V", "opacity", "cs2")

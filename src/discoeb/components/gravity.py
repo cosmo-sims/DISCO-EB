@@ -69,6 +69,10 @@ class Background(Gravity):
         """The conformal Hubble rate ``a'/a = sqrt(grho / 3 - K)``."""
         return math.sqrt(grho * (1.0 / 3.0) - Kcurv)
 
+    def adot(self, a, adotoa):
+        """``a' = a adotoa``, the rate of the scale factor in conformal time: the solve's clock."""
+        return a * adotoa
+
     def adotoa_prime(self, grho, gpres):
         """``(a'/a)' = -(grho + 3 gpres) / 6``, the acceleration equation. Curvature drops out."""
         return -(grho + 3.0 * gpres) * (1.0 / 6.0)
