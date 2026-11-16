@@ -1,15 +1,19 @@
-"""The component framework: dependency injection by name, states, settings, errors.
-
-All host-side: the providers are left as plain Python and the device names
-``cuda`` and ``float64`` are NumPy stand-ins. The GPU tests compile the same
-components with numba.
-"""
+"""The component framework (``_component``): providers, states, parameters, named copies, the traced sparsity."""
 
 import math
 
 import numpy as np
 import pytest
-from conftest import HOST
+from helpers import (
+    COSMOLOGY,
+    HOST,
+    LCDM_X,
+    LCDM_XY,
+    ConstantThermalHistory,
+    X,
+    Y,
+    cosmologies_of,
+)
 
 from discoeb.components._component import (
     Component,
@@ -23,6 +27,11 @@ from discoeb.components._component import (
     float64,
     load_setting,
 )
+from discoeb.components.species import Fluid
+from discoeb.models import LCDM
+
+# --- The component framework: dependency injection by name, states, settings, errors.
+
 
 FLOOR = 1e-30  # a module constant a provider reads
 
@@ -88,8 +97,14 @@ class ThomsonScattering(Interaction):
 
 
 PARAMS = {"grhoc": 0, "grhob": 1, "grhog": 2, "cs2b": 3, "k": 4, "opacity": 5, "a": 6}
+
+
 Y0 = (0.3, 0.2, 0.1, 0.4, 0.05)
+
+
 TAU = 2.0
+
+
 P = (1.0, 0.5, 2.0, 0.01, 0.3, 7.0, 0.1)
 
 
@@ -721,3 +736,97 @@ def test_providers_are_plain_positional_functions():
 
     with pytest.raises(TypeError, match="plain positional parameters"):
         Equations([Defaulted()]).build({"k": 0}, **HOST)
+
+
+# --- One component listed several times, each copy under a name of its own.
+
+
+def test_a_named_copy_prefixes_what_the_component_declares():
+    assert Fluid.named("x") is X and X is not Y
+    assert issubclass(X, Fluid) and X.__name__ == "Fluid_x"
+    assert [n for n, _ in X.declared_states()] == ["x_delta", "x_theta"]
+    assert [n for n, _ in X.declared_parameters()] == [
+        "x_Omega",
+        "x_w",
+        "x_cs2",
+        "x_grho0",
+    ]
+    # the derived density reads the copy's own Omega and the model's grhom
+    assert dict(X.declared_parameters())["x_grho0"].reads == ("grhom", "x_Omega")
+    with pytest.raises(TypeError, match="already carries a name"):
+        X.named("z")
+    with pytest.raises(ValueError, match="not a name"):
+        Fluid.named("not a name")
+
+
+def test_each_copy_checks_its_own_keys():
+    cosmologies_of(LCDM_XY, {**COSMOLOGY, "x_Omega": 0.01, "y_w": 1.0 / 3.0})
+    with pytest.raises(ValueError, match="w != -1"):
+        cosmologies_of(LCDM_XY, {**COSMOLOGY, "y_w": -1.0})
+    with pytest.raises(ValueError, match="use a model with Fluid_x"):
+        cosmologies_of(LCDM, {**COSMOLOGY, "x_Omega": 0.01})
+
+
+def test_names_resolve_in_initial_conditions_and_sums():
+    class Tank(Component):
+        level = State(initial=lambda start: 2.0 * start)
+
+        def start(self):
+            return 1.5
+
+        def outflow(self, level):
+            return 0.1 * level
+
+        def total(self, level):
+            return level
+
+        def d_level(self, outflow):
+            return -outflow
+
+    model = Equations([Tank.named("a")(), Tank.named("b")()], sums=("total",))
+    assert model.state == ["a_level", "b_level"]
+    np.testing.assert_allclose(model.initial_state(np.array([1.0])), [[3.0, 3.0]])
+    rhs = model.build({}, **HOST)
+    assert rhs((1.0, 2.0), 0.0, ()) == (-0.1, -0.2)
+    assert model.evaluate("total", a_level=1.0, b_level=2.0) == 3.0
+    assert model.evaluate("d_b_level", a_level=1.0, b_level=2.0) == -0.2
+
+
+# --- A species with a parameter of its own, added without touching the package.
+
+
+def test_the_right_hand_side_reads_the_generated_provider():
+    """``grhox = grhox_nominal + eps * dir_grhox``, and clxx evolves as clxc does."""
+
+    from discoeb.solver._kernel import parameter_layout
+
+    columns = parameter_layout(LCDM_X).columns
+    model = LCDM_X.build(ConstantThermalHistory())
+    rhs = model.build(columns, **HOST)
+    assert (
+        "grhox = SecondDarkMatter__grhox(SecondDarkMatter_self, grhox_nominal, eps, dir_grhox)"
+        in [line.strip() for line in model.source.splitlines()]
+    )
+    p = np.zeros(len(columns))
+    for name, value in dict(
+        grhog=1.5e-7, grhornomass=1.0e-7, grhoc=0.8e-4, grhob=1.9e-5, grhov=2.0e-7
+    ).items():
+        p[columns[f"{name}_nominal"]] = value
+    p[columns["grhox_nominal"]] = 0.3e-4
+    p[columns["k"]] = 0.05
+    y = np.random.default_rng(0).standard_normal(model.nvar)
+    y[model.index["clxx"]] = y[model.index["clxc"]]
+    dy = np.asarray(rhs(tuple(y), 100.0, tuple(p)))
+    assert np.isfinite(dy).all()
+    assert dy[model.index["clxx"]] == dy[model.index["clxc"]]
+    # Moving grhox along its direction moves dgrho as moving grhoc does.
+    for name in ("grhox", "grhoc"):
+        q = p.copy()
+        q[columns["eps"]], q[columns[f"dir_{name}"]] = 1.0, 1.0e-5
+        moved = np.asarray(rhs(tuple(y), 100.0, tuple(q)))
+        if name == "grhox":
+            along_x = moved - dy
+        else:
+            np.testing.assert_allclose(moved - dy, along_x, rtol=1e-6, atol=1e-18)
+    pattern = {(int(r), int(c)) for r, c in model.sparsity()}
+    assert (model.index["etak"], model.index["clxx"]) in pattern

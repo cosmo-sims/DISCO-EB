@@ -1,15 +1,12 @@
-"""The Einstein-Boltzmann interface :mod:`discoeb`, which DISCO-CMB builds on.
-
-DISCO-CMB (the ``discocmb`` package) imports from :mod:`discoeb` itself
-alone and checks so itself; here the
-interface must export what it lists, and no module of this package may
-import DISCO-CMB.
-"""
+"""The interface :mod:`discoeb`: what it exports, and that nothing here imports DISCO-CMB."""
 
 import ast
 from pathlib import Path
 
 import discoeb
+
+# --- The Einstein-Boltzmann interface :mod:`discoeb`, which DISCO-CMB builds on.
+
 
 PACKAGE = Path(discoeb.__file__).parent
 

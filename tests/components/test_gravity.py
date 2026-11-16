@@ -1,10 +1,19 @@
-"""The gravity interface: what the species read, and a theory replacing the one that provides it."""
+"""Gravity (``gravity``): the Friedmann and Einstein equations, the sums and the growing mode."""
 
 import math
 
 import numpy as np
 import pytest
-from conftest import HOST, ConstantThermalHistory
+from helpers import (
+    COSMOLOGY,
+    HOST,
+    LCDM_X,
+    MODELS,
+    ConstantThermalHistory,
+    _split,
+    build_rhs,
+    state_index,
+)
 from jax.typing import ArrayLike
 
 from discoeb.components._component import (
@@ -21,8 +30,89 @@ from discoeb.components.species import (
     RadiationStreaming,
 )
 from discoeb.models import LCDM, W0WACDM_MNU
+from discoeb.solver._kernel import N_PARAM, PARAM_COLUMNS, make_initial_states
 
-COSMOLOGY = {
+# --- The Einstein-Boltzmann component model, on the host.
+
+
+def test_the_einstein_sources_sum_over_the_enabled_species():
+    model, _ = build_rhs(MODELS["flat-lcdm"])
+    lines = [ell.strip() for ell in model.source.splitlines()]
+    assert (
+        "grho = ColdDarkMatter__grho_c(ColdDarkMatter_self, grhoc_t) + Baryons__grho_b(Baryons_self, grhob_t)"
+        " + Photons__grho_g(Photons_self, grhog_t) + MasslessNeutrinos__grho_r(MasslessNeutrinos_self, grhor_t) + CosmologicalConstant__grho_de(CosmologicalConstant_self, grhov_t)"
+    ) in lines
+    assert (
+        "dgq = Baryons__dgq_b(Baryons_self, grhob_t, vb) + Photons__dgq_g(Photons_self, grhog_t, qg) + MasslessNeutrinos__dgq_r(MasslessNeutrinos_self, grhor_t, n, rsa, rsa_q)"
+        in lines
+    )
+    assert "rhonu" not in model.source  # the massive-neutrino table is not read
+
+    model, _ = build_rhs(MODELS["ragged-blocks"])
+    assert (
+        "DarkEnergy__grho_de(DarkEnergy_self, grhov_t) + MassiveNeutrinos__grho_nu(MassiveNeutrinos_self, nu_norm, rhonu)"
+        in model.source
+    )
+    assert (
+        "DarkEnergy__dgq_de(DarkEnergy_self, grhov_t, w_Q, thetaq, k) + MassiveNeutrinos__dgq_nu(MassiveNeutrinos_self, nu_norm, psi)"
+        in model.source
+    )
+    assert "psi = cuda.local.array((2, 10), float64)" in model.source
+    assert (
+        "MassiveNeutrinos__d_psi(MassiveNeutrinos_self, k, z, sigma, a, amnu, psi, inv_tau, c_MassiveNeutrinos__d_psi)"
+        in model.source
+    )
+    assert "d_psi[i, j] += c_MassiveNeutrinos__d_psi[i, j]" in model.source
+
+
+def test_the_pressure_sums_over_the_species_and_gives_the_comoving_curvature():
+    """``gpres`` is left out of the right-hand side and read by ``R`` alone."""
+
+    for name in ("flat-lcdm", "ragged-blocks"):
+        model, _ = build_rhs(MODELS[name])
+        assert "gpres" not in model.source
+    model = MODELS["ragged-blocks"].build(ConstantThermalHistory())
+    fn = model.build_function(
+        ("R", "gpres", "grho", "adotoa"),
+        inputs=("y", "tau"),
+        params=PARAM_COLUMNS,
+        **HOST,
+    )
+    lines = [line.strip() for line in fn._generated_source.splitlines()]
+    assert (
+        "gpres = Photons__gpres_g(Photons_self, grhog_t) + MasslessNeutrinos__gpres_r(MasslessNeutrinos_self, grhor_t)"
+        " + DarkEnergy__gpres_de(DarkEnergy_self, grhov_t, w_Q) + MassiveNeutrinos__gpres_nu(MassiveNeutrinos_self, nu_norm, pnu)"
+    ) in lines
+
+    # Flat LCDM with the fluids at rest: R is the curvature eta alone, and
+    # the velocity term is the total momentum over rho + p.
+    cosmology_model = MODELS["flat-lcdm"]
+    model = cosmology_model.build(ConstantThermalHistory(a=1.0))
+    fn = model.build_function(
+        ("R", "gpres", "grho", "adotoa"),
+        inputs=("y", "tau"),
+        params=PARAM_COLUMNS,
+        **HOST,
+    )
+    p = np.zeros(N_PARAM)
+    grhog, grhor, grhoc, grhob, grhov = 1.5e-7, 1.0e-7, 1.1e-4, 1.9e-5, 2.0e-7
+    p[:5] = [grhog, grhor, grhoc, grhob, grhov]
+    p[PARAM_COLUMNS["k"]] = 0.05
+    p[PARAM_COLUMNS["w_DE_0_nominal"]] = -1.0
+    y = np.zeros(model.nvar)
+    y[state_index(cosmology_model)["etak"]] = -0.05
+    y[state_index(cosmology_model)["vb"]] = 0.3
+    R, gpres, grho, adotoa = fn(y, 100.0, p)
+    assert gpres == pytest.approx((grhog + grhor) / 3.0 - grhov)
+    assert grho == pytest.approx(grhog + grhor + grhoc + grhob + grhov)
+    dgq = grhob * 0.3
+    assert R == pytest.approx(1.0 - adotoa * dgq / (0.05 * (grho + gpres)))
+
+
+# --- The gravity interface: what the species read, and a theory replacing the one that provides it.
+
+
+ROUND_COSMOLOGY = {
     "Omegam": 0.3,
     "Omegab": 0.05,
     "A_s": 2.1e-9,
@@ -59,7 +149,7 @@ def test_curvature_is_geometry_and_not_a_fluid():
     from discoeb.solver._background import background_model
 
     assert issubclass(Curvature, Gravity)
-    curved = {**COSMOLOGY, "Omegak": 0.05}
+    curved = {**ROUND_COSMOLOGY, "Omegak": 0.05}
     d = _densities(LCDM, curved)
     adotoa, grho = background_model(LCDM).evaluate(
         "adotoa", "grho", math=jnp, a=1.0, **d
@@ -79,7 +169,7 @@ def test_the_acceleration_equation_is_the_derivative_of_the_friedmann_equation(a
     from discoeb.solver._background import background_model
 
     cosmology = {
-        **COSMOLOGY,
+        **ROUND_COSMOLOGY,
         "Omegak": -0.03,
         "w_DE_0": -0.9,
         "w_DE_a": 0.2,
@@ -118,8 +208,8 @@ def test_another_friedmann_equation_replaces_the_background():
     scaled = LCDM.swap(Background, ScaledGravity, name="scaled gravity")
     assert scaled.state_names() == LCDM.state_names()
     assert "mu" in scaled.parameter_keys() and "mu" not in LCDM.parameter_keys()
-    plain = _densities(LCDM, COSMOLOGY)
-    d = _densities(scaled, {**COSMOLOGY, "mu": 1.1})
+    plain = _densities(LCDM, ROUND_COSMOLOGY)
+    d = _densities(scaled, {**ROUND_COSMOLOGY, "mu": 1.1})
     adotoa = background_model(scaled).evaluate("adotoa", math=jnp, a=1.0, **d)
     # the model still expands at H0 today, with less dark energy to do it
     assert float(3.0 * adotoa**2 / d["grhom"]) == pytest.approx(1.0, rel=1e-12)
@@ -245,3 +335,24 @@ def test_the_streaming_approximation_is_a_component_a_model_may_drop():
         "dgrho_streaming = Photons__dgrho_streaming_g(Photons_self, rsa, rsa_delta, grhog_t)"
         " + MasslessNeutrinos__dgrho_streaming_r(MasslessNeutrinos_self, rsa, rsa_delta, grhor_t)"
     ) in streaming._generated_source
+
+
+# --- A species with a parameter of its own, added without touching the package.
+
+
+def test_the_growing_mode_counts_the_new_species_as_matter():
+    """Splitting the dark matter leaves the initial state alone: ``om`` sums ``grho_matter``."""
+
+    from discoeb.solver._kernel import joint_model
+
+    k = np.array([1.0e-2, 1.0e-1])
+    plain = make_initial_states(
+        COSMOLOGY, k, joint_model(LCDM), -15.0, cosmology_model=LCDM
+    )
+    split = make_initial_states(
+        _split(COSMOLOGY), k, joint_model(LCDM_X), -15.0, cosmology_model=LCDM_X
+    )
+    n = len(LCDM.state_names())
+    np.testing.assert_allclose(split[:, :n], plain[:, :n], rtol=1e-12)
+    # the neutrino quadrupole carries the O(om tau) term that reads the sum
+    assert (plain[:, joint_model(LCDM).index["n_2"]] != 0.0).all()

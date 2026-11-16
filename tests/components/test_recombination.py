@@ -1,41 +1,43 @@
-"""The recombination history of the perturbation kernel against CLASS, and the time of its solve.
-
-RECFAST runs as the recombination block of the joint kernel
-(:mod:`discoeb.components.recombination`); :func:`kernel_thermal_history` records its
-free-electron fraction, matter temperature, baryon sound speed, opacity and
-optical depth through :func:`discoeb.solve_eb` at one wave mode per
-cosmology. The check runs the same cosmologies as
-``test_matter_power_spectrum_matches_class``: one, and a batch of 128 nearby
-flat LCDM models, and compares ``x_e``, ``T_m`` and ``c_b^2`` with CLASS run
-with its own recfast implementation and no reionization.
-
-The gates are set from the measured agreement, with margin. Over every 8th
-cosmology of the batch, the electron fraction differs from CLASS by at most
-0.36 percent (hydrogen leaves Saha equilibrium on redshift as in CLASS 3), the
-temperature by 0.04 percent and ``c_b^2`` by 0.4 percent, except in the
-redshift window where RECFAST switches off its tight Compton-coupling
-approximation for ``T_m`` (``timeTh < H_frac * timeH``): there ``dT_m/dz``
-jumps momentarily, which CLASS's full treatment does not reproduce, and
-``c_b^2`` differs by up to 9.7 percent around ``z ~ 850``.
-
-The benchmark times one warmed :func:`kernel_thermal_history` of the batch.
-"""
+"""Recombination and reionization (``recombination``), read from the joint kernel, against CLASS."""
 
 import numpy as np
 import pytest
-from conftest import cosmologies_of
-from test_perturbations import BATCH_SIZE_CASES, _class_base, _perturbed_cosmologies
+from helpers import (
+    BATCH_SIZE_CASES,
+    REFERENCE_COSMOLOGY,
+    _class_base,
+    _perturbed_cosmologies,
+    cosmologies_of,
+)
+
+# --- The recombination history of the perturbation kernel against CLASS, and the time of its solve.
+
 
 THERMAL_KEEP = ("a", "xe", "Tmat", "cs2", "opacity", "kappa")
+
+
 THERMAL_K = np.array([1.0e-3])
 """One wave mode per cosmology: the recombination block does not read the hierarchy."""
+
+
 N_TAU = 2000
 
+
 Z_MIN, Z_MAX = 10.0, 5000.0
+
+
 XE_GATE = 0.01
+
+
 TM_GATE = 0.002
+
+
 CS2_GATE = 0.01
+
+
 SWITCH_WINDOW = (800.0, 900.0)
+
+
 CS2_SWITCH_GATE = 0.2
 
 
@@ -85,6 +87,7 @@ def _class_thermodynamics(param):
     )
 
 
+@pytest.mark.gpu
 @pytest.mark.parametrize("n_cosmologies", BATCH_SIZE_CASES)
 def test_recfast_matches_class(n_cosmologies, benchmark):
     """Check the kernel's recombination history against CLASS and time one warmed batch solve."""
@@ -123,3 +126,67 @@ def test_recfast_matches_class(n_cosmologies, benchmark):
         assert err < CS2_SWITCH_GATE, (
             f"cosmology {i}: c_b^2 off by {err:.3g} at z={at:.0f} in the tight-coupling switch window"
         )
+
+
+# --- Reionization in the thermal history.
+
+
+TAU_REIO = 0.0544
+
+
+LATE = 0.3
+"""Conformal times past this fraction of ``tau0`` (``z < ~30``) hold the reionization step;
+the recombination tail adds ~1e-4 to their optical depth."""
+
+
+def _class_z_reio(tau_reio):
+    """CLASS's reionization redshift for CAMB's step at ``tau_reio``."""
+
+    Class = pytest.importorskip("classy").Class
+    c = Class()
+    c.set(
+        {
+            **_class_base(REFERENCE_COSMOLOGY),
+            "recombination": "recfast",
+            "reio_parametrization": "reio_camb",
+            "tau_reio": tau_reio,
+        }
+    )
+    try:
+        c.compute()
+        return c.get_current_derived_parameters(["z_reio"])["z_reio"]
+    finally:
+        c.struct_cleanup()
+        c.empty()
+
+
+def _late_history(tau_reio):
+    """``(a, visibility, late optical depth)`` after :data:`LATE` ``tau0``, from the kernel."""
+
+    tau, tau0, history = kernel_thermal_history(
+        [{**REFERENCE_COSMOLOGY, "tau_reio": tau_reio}]
+    )
+    late = tau > LATE * tau0[0]
+    kappa = history["kappa"][0]
+    visibility = history["opacity"][0] * np.exp(-(kappa[-1] - kappa))
+    return history["a"][0][late], visibility[late], float(kappa[-1] - kappa[late][0])
+
+
+@pytest.mark.gpu
+def test_reionization_optical_depth():
+    """The late optical depth is tau_reio, and the bump sits where CLASS puts z_reio."""
+
+    a, g, tau_late = _late_history(TAU_REIO)
+    assert abs(tau_late - TAU_REIO) < 1.0e-3, tau_late
+    z_bump = 1.0 / a[np.argmax(g)] - 1.0
+    # the visibility peaks a little below z_reio (the step is half way there); 1.5 in z
+    z_reio_class = _class_z_reio(TAU_REIO)
+    assert abs(z_bump - z_reio_class) < 1.5, (z_bump, z_reio_class)
+
+
+@pytest.mark.gpu
+def test_no_reionization_by_default():
+    """tau_reio = 0 (the default) adds no optical depth after recombination."""
+
+    _, _, tau_late = _late_history(0.0)
+    assert tau_late < 5.0e-4

@@ -108,9 +108,14 @@ override-dependencies = ["numba>=0.61", "llvmlite>=0.44"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# tests/helpers.py and tests/sweep.py, imported by name from every folder
+pythonpath = ["tests"]
 # `pytest -m slow` (a later -m wins) or `-m ""` runs the slow tests too
 addopts = ["-m", "not slow"]
-markers = ["slow: over a minute, mostly kernel compiles; deselected by default"]
+markers = [
+  "slow: over a minute, mostly kernel compiles; deselected by default",
+  "gpu: launches a kernel; skipped without a CUDA device",
+]
 
 [tool.semantic_release]
 # python-semantic-release (the `publish` workflow) reads the Conventional

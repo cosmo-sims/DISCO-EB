@@ -1,0 +1,429 @@
+"""The model base classes (``_model``): model classes, specs, cosmologies as instances, the sparsity pattern."""
+
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+from helpers import (
+    COSMOLOGY,
+    HOST,
+    LCDM_X,
+    MODELS,
+    ConstantThermalHistory,
+    _split,
+    build_rhs,
+    cosmologies_of,
+    dense_core_pattern,
+    diagonal,
+    entries,
+    nvar,
+    state_index,
+    structure,
+)
+
+from discoeb.components.species import DarkEnergy, MassiveNeutrinos
+from discoeb.models import LCDM
+from discoeb.solver._kernel import N_PARAM, PARAM_COLUMNS
+
+# --- The Einstein-Boltzmann component model, on the host.
+
+
+def expected_state_names(model) -> list[str]:
+    """Metric, CDM, baryons, photons, massless neutrinos, then the dark-energy fluid and the massive-neutrino bins."""
+
+    names = ["etak", "clxc", "clxb", "vb"]
+    names += [f"theta_{ell}" for ell in range(model.setting("LMAX_G") + 1)]
+    names += [f"e_{i}" for i in range(model.setting("LMAX_POL") - 1)]  # E_2 ...
+    names += [f"n_{ell}" for ell in range(model.setting("LMAX_NR") + 1)]
+    if model.has(DarkEnergy):
+        names += ["clxq", "thetaq"]
+    if model.has(MassiveNeutrinos):
+        for q in range(model.setting("NQMAX")):
+            names += [f"psi_{q}_{ell}" for ell in range(model.setting("LMAX_NU") + 1)]
+    return names
+
+
+@pytest.mark.parametrize("name", list(MODELS))
+def test_the_state_order_follows_the_components(name):
+    """Each bin's free-streaming tail ``psi_q_3 .. psi_q_LMAX_NU`` stays contiguous."""
+    cosmology_model = MODELS[name]
+    model, _ = build_rhs(cosmology_model)
+    assert list(cosmology_model.state_names()) == expected_state_names(cosmology_model)
+    assert list(model.state) == expected_state_names(cosmology_model)
+
+
+@pytest.mark.parametrize("name", list(MODELS))
+def test_the_rhs_builds_and_is_finite(name):
+    cosmology_model = MODELS[name]
+    model, rhs = build_rhs(cosmology_model)
+    rng = np.random.default_rng(0)
+    p = np.zeros(N_PARAM)
+    p[:5] = [1.5e-7, 1.0e-7, 1.1e-4, 1.9e-5, 2.0e-7]
+    p[PARAM_COLUMNS["k"]] = 0.05
+    p[PARAM_COLUMNS["w_DE_0_nominal"]], p[PARAM_COLUMNS["cs2_DE_nominal"]] = -0.9, 1.0
+    (
+        p[PARAM_COLUMNS["grhor_nu_nominal"]],
+        p[PARAM_COLUMNS["n_mnu"]],
+        p[PARAM_COLUMNS["amnu_nominal"]],
+    ) = 1e-7, 1.0, 300.0
+    y = rng.standard_normal(model.nvar)
+    dy = np.asarray(rhs(tuple(y), 100.0, tuple(p)))
+    assert dy.shape == (model.nvar,) and np.isfinite(dy).all()
+
+
+def test_models_derive_from_each_other():
+    from discoeb.components.species import CosmologicalConstant
+    from discoeb.models import LCDM, LCDM_MNU, W0WACDM, Model
+
+    assert W0WACDM.spec.components.index(DarkEnergy) == LCDM.spec.components.index(
+        CosmologicalConstant
+    )
+    # a model among the bases stands for its components
+    assert LCDM_MNU.spec.components == (*LCDM.spec.components, MassiveNeutrinos)
+    assert issubclass(LCDM_MNU, LCDM) and LCDM_MNU.spec.name == "LCDM+mnu"
+    assert LCDM.with_settings(LMAX_G=20).setting("LMAX_G") == 20
+    assert LCDM.with_settings(LMAX_G=20) is LCDM.with_settings(LMAX_G=20)
+    assert LCDM.with_settings(LMAX_G=20) != LCDM and LCDM.with_settings() is LCDM
+    with pytest.raises(ValueError, match="NQMAX"):
+        LCDM.with_settings(NQMAX=4)  # LCDM has no massive neutrinos
+    # the run-time derivations are the class statements' equivalents
+    assert LCDM.add(MassiveNeutrinos, name="LCDM+mnu").spec == LCDM_MNU.spec
+    swapped = LCDM.swap(CosmologicalConstant, DarkEnergy, name="w0waCDM")
+    assert swapped.spec == W0WACDM.spec and issubclass(swapped, Model)
+
+    class Coarse(LCDM, LMAX_G=10):
+        """A class keyword sets a setting."""
+
+    assert (
+        Coarse.setting("LMAX_G") == 10
+        and Coarse.spec.components == LCDM.spec.components
+    )
+
+
+BASE_COSMOLOGY = dict(
+    Omegam=0.31,
+    Omegab=0.049,
+    A_s=2.1e-9,
+    n_s=0.966,
+    H0=67.0,
+    Tcmb=2.7255,
+    YHe=0.245,
+    Neff=3.046,
+)
+
+
+def test_a_model_rejects_a_cosmology_it_cannot_represent():
+    from discoeb.models import LCDM, LCDM_MNU, W0WACDM
+
+    LCDM(**BASE_COSMOLOGY)
+    LCDM_MNU(**BASE_COSMOLOGY, Nmnu=1.0, mnu=0.06)
+    W0WACDM(**BASE_COSMOLOGY, w_DE_0=-0.9)
+    with pytest.raises(TypeError, match="no parameter 'w_DE_0'.*DarkEnergy"):
+        LCDM(**BASE_COSMOLOGY, w_DE_0=-0.9)  # ty: ignore[unknown-argument]
+    with pytest.raises(ValueError, match="w != -1"):
+        W0WACDM(**BASE_COSMOLOGY)
+    with pytest.raises(TypeError, match="no parameter 'Nmnu'.*MassiveNeutrinos"):
+        LCDM(**BASE_COSMOLOGY, Nmnu=1.0)  # ty: ignore[unknown-argument]
+    with pytest.raises(TypeError, match=r"needs the parameters \['H0'\]"):
+        LCDM(**{k: v for k, v in BASE_COSMOLOGY.items() if k != "H0"})
+    with pytest.raises(TypeError, match="by keyword"):
+        LCDM(BASE_COSMOLOGY)  # ty: ignore[too-many-positional-arguments]
+    # from_dict takes a dictionary written for another model, as long as the
+    # keys this model lacks keep their defaults
+    assert LCDM.from_dict({**BASE_COSMOLOGY, "w_DE_0": -1.0, "unknown": 3.0}).H0 == 67.0
+    with pytest.raises(ValueError, match="DarkEnergy"):
+        LCDM.from_dict({**BASE_COSMOLOGY, "w_DE_0": -0.9})
+    # traced, a key the model lacks can't be checked yet: the cosmology holds
+    # it for the solve, which raises if it is differentiated
+    import jax
+
+    from discoeb.models._model import _batch_of
+
+    held = jax.jit(lambda w: LCDM.from_dict({**BASE_COSMOLOGY, "w_DE_0": w}))(-1.0)
+    assert "w_DE_0" not in held.to_dict() and "w_DE_0" in held._held
+    assert _batch_of(held).cosmologies[0]["w_DE_0"] == -1.0
+
+
+def test_a_cosmology_is_an_immutable_pytree_of_its_parameters():
+    import inspect
+
+    import jax
+    import jax.numpy as jnp
+
+    from discoeb.models import LCDM
+
+    planck = LCDM(**BASE_COSMOLOGY)
+    assert isinstance(planck, LCDM) and planck.H0 == 67.0 and planck.k_p == 0.05
+    assert planck.to_dict() == {**LCDM.parameter_keys(), **BASE_COSMOLOGY} | {
+        "k_p": 0.05,
+        "Omegak": 0.0,
+        "tau_reio": 0.0,
+    }
+    later = planck.replace(H0=70.0)
+    assert later.H0 == 70.0 and planck.H0 == 67.0
+    with pytest.raises(AttributeError, match="immutable"):
+        planck.H0 = 70.0
+    # JAX values are kept as given, so they stay differentiable
+    traced = planck.replace(Omegam=jnp.asarray(0.31))
+    assert isinstance(traced.Omegam, jax.Array)
+    leaves, tree = jax.tree_util.tree_flatten(planck)
+    assert leaves == list(planck.to_dict().values())
+    doubled = jax.tree_util.tree_unflatten(tree, [2.0 * x for x in leaves])
+    assert isinstance(doubled, LCDM) and doubled.H0 == 134.0
+    # the constructor's signature and docstring list the parameters
+    signature = inspect.signature(LCDM)
+    assert list(signature.parameters) == list(LCDM.parameter_keys())
+    assert signature.parameters["k_p"].default == 0.05
+    assert signature.parameters["H0"].default is inspect.Parameter.empty
+    assert "Parameters" in (LCDM.__doc__ or "") and "\nH0 : " in (LCDM.__doc__ or "")
+
+
+def test_a_solve_takes_cosmologies_of_one_model():
+    from discoeb.models import LCDM, W0WACDM
+    from discoeb.models._model import _batch_of
+
+    planck = LCDM(**BASE_COSMOLOGY)
+    batch = _batch_of([planck, planck.replace(H0=70.0)])
+    assert batch.model == LCDM.spec and batch.model_class is LCDM and len(batch) == 2
+    assert batch.cosmologies[1]["H0"] == 70.0
+    assert len(_batch_of(planck)) == 1
+    with pytest.raises(TypeError, match="share a model"):
+        _batch_of([planck, W0WACDM(**BASE_COSMOLOGY, w_DE_0=-0.9)])
+    with pytest.raises(TypeError, match="non-empty"):
+        _batch_of([])
+    with pytest.raises(TypeError, match=r"LCDM\(H0="):
+        _batch_of([BASE_COSMOLOGY])
+
+
+# --- A type checker reads a model's parameters off its components' declarations.
+
+
+USER_CODE = '''
+from discoeb import LCDM, W0WACDM
+from discoeb.components.species import MassiveNeutrinos
+
+good = LCDM(
+    Omegam=0.31, Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
+    Tcmb=2.7255, YHe=0.245, Neff=3.046,
+)
+dark = W0WACDM(
+    Omegam=0.31, Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
+    Tcmb=2.7255, YHe=0.245, Neff=3.046, w_DE_0=-0.9,
+)
+moved = good.replace(H0=70.0)
+
+
+class Mine(LCDM, MassiveNeutrinos):
+    """A model of the user's: LCDM with massive neutrinos."""
+
+
+mine = Mine(
+    Omegam=0.31, Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
+    Tcmb=2.7255, YHe=0.245, Neff=3.046, mnu=0.06,
+)
+
+LCDM(  # missing
+    Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
+    Tcmb=2.7255, YHe=0.245, Neff=3.046,
+)
+LCDM(  # foreign
+    Omegam=0.31, Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
+    Tcmb=2.7255, YHe=0.245, Neff=3.046, mnu=0.06,
+)
+LCDM(  # derived
+    Omegam=0.31, Omegab=0.049, A_s=2.1e-9, n_s=0.966, H0=67.0,
+    Tcmb=2.7255, YHe=0.245, Neff=3.046, grhom=1.0,
+)
+LCDM(0.31)  # positional
+'''
+
+
+def _ty() -> str | None:
+    beside = Path(sys.executable).parent / "ty"
+    return str(beside) if beside.exists() else shutil.which("ty")
+
+
+@pytest.mark.skipif(_ty() is None, reason="needs ty (the dev group)")
+def test_a_type_checker_sees_the_models_parameters(tmp_path):
+    code = tmp_path / "user.py"
+    code.write_text(USER_CODE)
+    result = subprocess.run(
+        [
+            str(_ty()),
+            "check",
+            "--python",
+            sys.executable,
+            "--output-format",
+            "concise",
+            str(code),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    errors = [line for line in result.stdout.splitlines() if "error[" in line]
+    lines = USER_CODE.splitlines()
+
+    def line_of(marker: str) -> int:
+        return next(i for i, text in enumerate(lines, 1) if marker in text)
+
+    found = {(int(e.split(":")[1]), e.split("error[")[1].split("]")[0]) for e in errors}
+    assert found >= {
+        (line_of("# missing"), "missing-argument"),
+        (line_of("# positional"), "too-many-positional-arguments"),
+    }, result.stdout
+    rows = {row for row, _ in found}
+    for marker in ("# foreign", "# derived"):
+        start = line_of(marker)
+        assert any(start <= row <= start + 3 for row in rows), (marker, result.stdout)
+    # and nothing else: the valid calls and the user's model class pass
+    assert all(row >= line_of("# missing") for row in rows), result.stdout
+
+
+# --- The Jacobian sparsity pattern, and what modax's analysis makes of it.
+
+
+ORDER_ONE = dict(a=0.5, opacity=3.0, cs2=0.3)
+"""Thermal channels of order one: the finite differences below must resolve
+every coupling, and at a realistic ``cs2 ~ 1e-8`` or ``a ~ 1e-3`` the baryon
+pressure and the dark-energy density fall below the rounding of the rest of
+the row."""
+
+
+def finite_difference_jacobian_pattern(
+    model, seed=0, tau=100.0
+) -> set[tuple[int, int]]:
+    """The nonzeros of the host-built right-hand side's Jacobian at a random state and ``tau``."""
+    built = model.build(ConstantThermalHistory(**ORDER_ONE))
+    rhs = built.build(PARAM_COLUMNS, **HOST)
+    rng = np.random.default_rng(seed)
+    p = rng.uniform(
+        0.5, 1.5, N_PARAM
+    )  # order one, curvature and sensitivity direction included
+    p[PARAM_COLUMNS["w_DE_0_nominal"]] = -0.9
+    y = rng.standard_normal(nvar(model))
+
+    def f(state):
+        return np.asarray(rhs(tuple(state), tau, tuple(p)))
+
+    jacobian = np.zeros((nvar(model), nvar(model)))
+    for j in range(nvar(model)):
+        e = np.zeros(nvar(model))
+        e[j] = 1e-6
+        jacobian[:, j] = (f(y + e) - f(y - e)) / 2e-6
+    # A structural zero is exactly zero: the variable never enters the expression.
+    return entries(zip(*np.nonzero(np.abs(jacobian) > 1e-9 * np.abs(jacobian).max())))
+
+
+@pytest.mark.parametrize("name", list(MODELS))
+def test_the_pattern_is_the_jacobians(name):
+    """Traced through the providers, the pattern is exactly the nonzeros of the Jacobian.
+
+    Of both regimes of the radiation streaming approximation: at ``tau = 1``
+    every mode is outside ``k tau = 45`` and the hierarchies stream, at
+    ``tau = 100`` (``a = 0.5``, past the latch) they are replaced and frozen.
+    The pattern is their union, which a colouring needs, and a few entries
+    more: the baryon velocity and the photon dipole read ``z`` through the
+    slip's ``rsa * (rsa_q - qg)`` while the slip itself is scaled by ``1 -
+    rsa``, a coefficient zero in both regimes that a tracer cannot see
+    through, so those two rows carry the extra, safe superset.
+    """
+    model = MODELS[name]
+    pattern = model.sparsity()
+
+    assert pattern.ndim == 2 and pattern.shape[1] == 2 and pattern.dtype == np.int64
+    assert pattern.min() >= 0 and pattern.max() < nvar(model)
+    streaming = finite_difference_jacobian_pattern(model, tau=1.0)
+    approximated = finite_difference_jacobian_pattern(model, tau=100.0)
+    assert streaming | approximated <= entries(pattern)
+    extra = entries(pattern) - (streaming | approximated)
+    assert {r for r, _ in extra} <= {state_index(model)[n] for n in ("vb", "theta_1")}
+    assert approximated < entries(pattern), (
+        "the approximation freezes the hierarchies' rows"
+    )
+    assert not diagonal(model) <= entries(pattern), (
+        "an undamped multipole has no diagonal"
+    )
+
+
+@pytest.mark.parametrize("name", list(MODELS))
+def test_the_pattern_has_the_physics_structure(name):
+    """A core of metric, fluids and the lowest multipoles, bordered by tridiagonal free-streaming tails.
+
+    This is the structure the states used to declare and the sparse solver
+    exploits; the trace finds it in the equations, and finds the core far from
+    dense: a free-streaming multipole reads its two neighbours (and itself,
+    when Thomson scattering damps it), and the metric reads the densities and
+    momenta but not the shears.
+    """
+    model = MODELS[name]
+    found = entries(model.sparsity())
+    core, tails = structure(model)
+
+    assert found <= dense_core_pattern(model)
+    for tail in tails:
+        for i, idx in enumerate(tail):
+            neighbours = {tail[i - 1] if i else tail[0] - 1, idx}
+            if i + 1 < len(tail):
+                neighbours.add(tail[i + 1])
+            assert {c for r, c in found if r == idx} <= neighbours, f"{name}: row {idx}"
+            assert (idx, tail[i - 1] if i else tail[0] - 1) in found, (
+                f"{name}: row {idx}"
+            )
+    # Every variable couples to something and something couples to it: a
+    # state index the pattern never mentions is one the sparse solver would
+    # silently drop.
+    assert {r for r, _ in found} == {c for _, c in found} == set(range(nvar(model)))
+    # Nothing in the core is dense: the sums reach the metric, not every row.
+    assert len({(r, c) for r, c in found if r in core and c in core}) < len(core) ** 2
+
+
+def test_the_flat_lcdm_pattern_is_the_expected_size():
+    """50 variables, 173 entries.
+
+    The metric reads ``z`` (``etak`` and the four densities) and ``dgq`` (the
+    three momenta): 8. CDM reads ``z``: 5; the baryon density ``z`` and
+    ``vb``: 6; ``vb`` itself, ``clxb`` and the dipole through the slip: 3. The
+    photon monopole ``z`` and the dipole: 6; the dipole its neighbours and the
+    slip: 4; the quadrupole its neighbours, ``sigma`` (``z`` and ``dgq``),
+    itself and ``E_2``: 11; the 12 damped free-streaming multipoles 3 each and
+    the last 2. ``E_2`` reads ``E_3``, itself and the quadrupole: 3; the E-mode
+    tail 3 each and 2 at the end. The neutrino monopole 6, the dipole 2, the
+    quadrupole its neighbours and ``sigma``: 9; the undamped tail 2 each.
+    The radiation streaming approximation adds 8: under it the photon
+    momentum in the slip is ``-4 z / 3``, so the baryon velocity and the
+    photon dipole also read ``z``'s ``etak``, ``clxc`` and the monopole or
+    density they did not already: 4 each.
+    """
+    model = MODELS["flat-lcdm"]
+    assert nvar(model) == 50
+    assert (
+        len(model.sparsity())
+        == (
+            8
+            + 5
+            + 6
+            + 3
+            + (6 + 4 + 11 + 12 * 3 + 2)
+            + (3 + 12 * 3 + 2)
+            + (6 + 2 + 9 + 12 * 2 + 2)
+            + 8
+        )
+        == 173
+    )
+
+
+# --- A species with a parameter of its own, added without touching the package.
+
+
+def test_the_components_check_the_parameter():
+    cosmologies_of(LCDM_X, _split(COSMOLOGY))
+    cosmologies_of(LCDM, COSMOLOGY)
+    cosmologies_of(LCDM, _split(COSMOLOGY, 0.0))  # at its default, the key is harmless
+    with pytest.raises(ValueError, match="must not be negative"):
+        cosmologies_of(LCDM_X, _split(COSMOLOGY, -0.01))
+    with pytest.raises(ValueError, match="use a model with SecondDarkMatter"):
+        cosmologies_of(LCDM, _split(COSMOLOGY))

@@ -1,9 +1,15 @@
-"""Sweeps of parameter space: stability, accuracy against CLASS and self-convergence."""
+"""Sweeps of parameter space, shared by the model tests: stability, accuracy against CLASS, self-convergence.
+
+Not a test file. ``models/test_lcdm.py`` and ``models/test_w0wacdm.py`` call
+the ``check_*`` functions for their own models; :func:`swept` solves each
+model's sweep once a session.
+"""
+
+import functools
 
 import numpy as np
 import pytest
-from conftest import cosmologies_of
-from test_perturbations import REFERENCE_COSMOLOGY, _class_base, _matter_power
+from helpers import REFERENCE_COSMOLOGY, _class_base, _matter_power, cosmologies_of
 
 SWEEP_SEED = 20261113
 N_SWEEP = 32
@@ -143,17 +149,16 @@ def _swept_cosmologies(name):
     return [c for c in sweep(name) if not _crosses_phantom_divide(c)]
 
 
-@pytest.fixture(scope="module", params=list(MODEL_BOUNDS))
-def swept(request):
+@functools.lru_cache(maxsize=None)
+def swept(name):
     """One model's sweep, solved in one batch: ``(name, cosmologies, P(k), steps)``."""
 
-    name = request.param
     cosmologies = _swept_cosmologies(name)
     pk, steps = _matter_power_and_steps(_model(name), cosmologies)
     return name, cosmologies, pk, steps
 
 
-def test_sweep_is_stable(swept):
+def check_sweep_is_stable(name):
     """Every cosmology of the sweep gives a finite, positive ``P(k)`` well within ``max_steps``.
 
     Measured 2026-11-13 (64 modes): the most loop steps a trajectory took was
@@ -163,7 +168,7 @@ def test_sweep_is_stable(swept):
 
     from discoeb.solver._kernel import PERTURB_MAX_STEPS
 
-    name, cosmologies, pk, steps = swept
+    name, cosmologies, pk, steps = swept(name)
     assert pk.shape == (len(cosmologies), len(SWEEP_K))
     bad = ~(np.isfinite(pk) & (pk > 0.0)).all(axis=1)
     assert not bad.any(), (
@@ -191,10 +196,10 @@ cosmology's maximum, then the sweep's maximum):
 """
 
 
-def test_sweep_matches_class(swept):
+def check_sweep_matches_class(name):
     """The sweep's ``P(k)`` agrees with CLASS (default precision) to the measured gate."""
 
-    name, cosmologies, pk, _ = swept
+    name, cosmologies, pk, _ = swept(name)
     pk_class = np.stack([_class_pk(param, SWEEP_K) for param in cosmologies])
     rel = np.abs(pk / pk_class - 1.0)
     i, j = np.unravel_index(np.argmax(rel), rel.shape)
@@ -218,16 +223,7 @@ CROSSING_COSMOLOGY = {
 (at ``a = 0.95``): P(k) 5.5 percent off CLASS (with PPF)."""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "W0WACDM's fluid divides by 1 + w: a w(a) crossing -1 runs out of steps "
-        "(20000) and returns a finite, positive P(k) 5.5 to 99 percent off CLASS, "
-        f"with no error raised. E.g. {CROSSING_COSMOLOGY}"
-    ),
-)
-def test_dark_energy_crossing_minus_one():
+def check_dark_energy_crossing_minus_one():
     """CPL histories that cross ``w = -1``, which the model accepts without warning.
 
     The sweep's seven crossing cosmologies hit ``max_steps`` on every one and
@@ -303,9 +299,7 @@ three tests 117 s, mostly compiling the fp64-LU kernels: ``pytest -m slow``.
 """
 
 
-@pytest.mark.slow
-@pytest.mark.parametrize("name", list(CONVERGENCE_COSMOLOGIES))
-def test_self_convergence(name):
+def check_self_convergence(name):
     """A default-tolerance ``P(k)`` agrees with a 1000 times tighter, fp64-LU solve."""
 
     cosmology = CONVERGENCE_COSMOLOGIES[name]

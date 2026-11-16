@@ -1,6 +1,6 @@
 # Benchmarks
 
-All benchmarks are run using `pytest`. You can find the code run in [tests/test_background.py](tests/test_background.py) and [tests/test_perturbations.py](tests/test_perturbations.py).
+All benchmarks are run using `pytest`. The current benchmarks are in [tests/components/test_recombination.py](tests/components/test_recombination.py) and [tests/observables/test_power_spectrum.py](tests/observables/test_power_spectrum.py); the tables below are of earlier versions' tests.
 
 ## NVIDIA GeForce RTX 3090
 
