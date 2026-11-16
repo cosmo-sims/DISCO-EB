@@ -27,9 +27,10 @@ uv sync --extra cuda13  # or --extra cuda12
 uv run pytest tests -rs
 uv run pytest "tests/observables/test_power_spectrum.py::test_matter_power_spectrum_matches_class[N128]" -v
 
-# The entry point: P(k) of 128 flat LCDM cosmologies about Planck 2018, built,
-# solved and timed in one jitted function
-uv run python examples/flat_lcdm_power_spectrum.py
+# The entry point, a notebook: P(k) of 128 flat LCDM cosmologies about Planck
+# 2018, built, solved and timed in one jitted function. This reruns it and
+# stores its outputs, which the docs show
+uv run jupyter execute --inplace examples/flat_lcdm_power_spectrum.ipynb
 
 # Run with coverage, as CI does
 uv run pytest tests --cov --cov-report=term-missing
@@ -528,8 +529,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
     adds the end-time term (`clxc' = -k z`, `clxb' = -k (z + vb)` times
     `tau0 - stop_gradient(tau0)`), so `tau0` must come from
     `conformal_ages(batch)`: a `tau0` under `stop_gradient` drops the term
-    silently. `examples/flat_lcdm_power_spectrum.py` is the
-    entry point
+    silently. `examples/flat_lcdm_power_spectrum.ipynb` is the entry point
 
 11. **Jacobian sparsity** (`ModelSpec.sparsity`; its test is
     `tests/models/test_model.py`, modax's side of it
@@ -664,14 +664,31 @@ The typical computation flow is:
   its reionization TE gate at `l = 30` (0.0195 to 0.0200 against 0.02) sit
   as close. Rerun with a nudged H0 before bisecting one of them
 
-## Example Notebooks
+## Examples
 
-See `notebooks/` directory:
-- `nb_minimal_example.ipynb` - Start here: compute matter power spectrum and derivatives
+`examples/<name>.ipynb` is one minimal case of one use each, a notebook of
+code cells between explanation, committed with its outputs. The docs show
+them through MyST-NB with `nb_execution_mode = "off"`: nothing runs at build
+time (they need a GPU), so the pages are the notebooks as last run.
+`docs/examples` is a symlink to `examples/`, and `examples/index.md` is the
+card grid and toctree. After changing a notebook, rerun it with `uv run
+jupyter execute --inplace examples/<name>.ipynb` (nbclient, dev group) and
+commit the outputs. ruff lints and formats the notebooks too. They replaced
+the old notebooks on 2026-11-16 (the CMB one moved to DISCO-CMB):
+- `flat_lcdm_power_spectrum` - Start here: P(k) of a batch, timed
+- `matter_power_derivative` - `dP/dOmega_m` by `jacfwd` against a finite
+  difference
+- `power_spectrum_jacobian` - the Jacobian of `P(k, a)` in ten parameters
+- `compare_with_class` - CDM and baryon spectra against CLASS
+- `correlation_function_multipoles` - Kaiser `xi_0`, `xi_2`, `xi_4` and
+  their derivatives
+- `redshift_space_power_response` - `P(k, mu)` with Kaiser and
+  Alcock-Paczynski, response maps
+- `fisher_forecast` - a Euclid-like galaxy clustering forecast
+- `setup_n_body_ics` - initial conditions for an N-body run
 
-The notebooks still call the removed diffrax `evolve_perturbations*` functions;
-they need porting to `solve_eb` and `matter_power_spectrum`. The CMB notebook moved
-to DISCO-CMB.
+`solve_eb` differentiates at fixed conformal time. For a derivative at fixed
+redshift the examples keep `a` at a few save times and interpolate in it.
 
 ## Contributing
 

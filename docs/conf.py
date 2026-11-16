@@ -1,6 +1,7 @@
 """Sphinx configuration for the DISCO-EB documentation.
 
-Pages are MyST Markdown; the API reference is autodoc. autodoc imports the
+Pages are MyST Markdown, the examples are notebooks rendered by MyST-NB as
+they were last run, and the API reference is autodoc. autodoc imports the
 package, so the docs environment installs discoeb with its CPU dependencies:
 every module imports without a GPU, since nothing touches the driver until a
 kernel launches.
@@ -11,7 +12,7 @@ author = "Oliver Hahn, Florian List, Natalia Porqueres, Lawrence Berry"
 copyright = "the DISCO-EB authors"
 
 extensions = [
-    "myst_parser",
+    "myst_nb",  # MyST Markdown, and the notebooks of examples/
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
@@ -35,6 +36,12 @@ myst_enable_extensions = [
 ]
 # `[text](page.md#a-heading)` links resolve to headings up to this depth.
 myst_heading_anchors = 3
+
+# -- Notebooks ----------------------------------------------------------------
+
+# docs/examples is a symlink to examples/. The notebooks need a GPU, so the
+# build shows the outputs stored in them and runs nothing.
+nb_execution_mode = "off"
 
 # -- autodoc ------------------------------------------------------------------
 

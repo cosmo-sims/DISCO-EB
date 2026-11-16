@@ -61,7 +61,7 @@ cuda13 = ["jax[cuda13]>=0.9.1; python_version >= '3.11'"]
 # `uv sync --no-default-groups --group docs`. No GPU is needed.
 docs = [
     "sphinx>=8.1",
-    "myst-parser>=4.0",
+    "myst-nb>=1.2",
     "sphinx-book-theme>=1.1",
     "sphinx-design>=0.6",
     "sphinx-autobuild>=2024.10",
@@ -71,6 +71,7 @@ dev = [
     # without it, so a missing classy reads as a pass in `-q` output.
     "classy>=3.3.4.0",
     "ipykernel>=6.31.0",
+    "nbclient>=0.10",
     "matplotlib>=3.9.4",
     "pre-commit>=4.4.0",
     "pytest>=9.0.2",
@@ -150,19 +151,9 @@ exclude_commit_patterns = ['^chore\(release\):']
 [tool.semantic_release.changelog.default_templates]
 changelog_file = "CHANGELOG.md"
 
-[tool.ruff]
-# The notebooks still call the removed diffrax `evolve_perturbations*` API and
-# await porting to solve_eb; they are not linted until then.
-extend-exclude = ["notebooks"]
-
 [tool.ruff.lint]
 # On top of the default `select`, enable import sorting.
 extend-select = ["I"]
-
-[tool.ruff.lint.per-file-ignores]
-# The examples set environment variables and enable x64 before importing JAX
-# and DISCO-EB, which must happen first.
-"examples/*" = ["E402"]
 
 [tool.coverage.run]
 source = ["discoeb"]

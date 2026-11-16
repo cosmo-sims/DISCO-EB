@@ -33,6 +33,13 @@ Pass a list of dictionaries to solve a batch of cosmologies in the same launch. 
 What `keep` accepts, and how to take derivatives.
 :::
 
+:::{grid-item-card} Examples
+:link: examples/index
+:link-type: doc
+
+Short scripts, from a first power spectrum to a Fisher forecast.
+:::
+
 :::{grid-item-card} API reference
 :link: api
 :link-type: doc
@@ -47,6 +54,7 @@ Everything the `discoeb` package exports.
 
 Quickstart <self>
 usage
+examples/index
 development
 acknowledgement
 ```
