@@ -5,7 +5,6 @@ records only the named quantities at the scale factors given. The
 values are differentiable in the model's :func:`differentiable_parameters`.
 """
 
-import functools
 from collections.abc import Sequence
 from typing import Annotated
 
@@ -23,10 +22,13 @@ from ._kernel import (
     PERTURB_MAX_STEPS,
     PERTURB_RTOL,
     _columns,
+    _keep_hook,
+    _launch,
+    _named_error_weights,
     _prepare_solve,
+    density_parameters,
     parameter_layout,
 )
-from ._sensitivities import _directed_inputs, _kept_values
 
 
 def solve_eb(
@@ -107,8 +109,8 @@ def solve_eb(
         How a derivative uses the device's threads. By default a trajectory
         and its sensitivity columns share one thread, which costs the least
         work and suits a batch that fills the device. With ``True`` each
-        differentiated parameter gets a copy of every trajectory in a thread
-        of its own, holding the state and one column. The copies repeat the
+        direction gets a copy of every trajectory in a thread of its own,
+        holding the state and one column. The copies repeat the
         primal but run side by side, so one cosmology finishes about five
         times sooner, and a thread's memory no longer grows with the
         parameters.
@@ -135,12 +137,18 @@ def solve_eb(
     ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad``, with or without ``jit``.
     The derivative runs through the model's directed inputs: the background
     densities, the thermal inputs, the curvature, the massive neutrinos and
-    the dark-energy parameters. The
-    forward-sensitivity launch of :func:`_kept_values` carries it, with a hook
-    that stores each kept quantity's derivative beside it, so it also costs
-    one joint launch and no history, with one sensitivity column per
-    differentiated parameter in each trajectory's thread. It is the derivative at fixed scale factor,
-    so at fixed redshift, and at fixed initial state.
+    the dark-energy parameters. modax's forward sensitivities carry it, with
+    a hook that stores each kept quantity's derivative beside it, so it also
+    costs one joint launch and no history. ``jax.jvp`` integrates one
+    sensitivity column, ``jax.jacfwd`` one per direction, and over a batch,
+    whose every cosmology is a direction, one per directed input that moves.
+    ``jax.grad`` integrates one per directed input that moves, and so does
+    every transform under ``jit``, where JAX stages the derivative before it
+    knows whether it will transpose it. A thread holds
+    at most :data:`~discoeb.solver._kernel.MAX_SENSITIVITY_STATE`
+    components, and more columns run as several launches. It is the
+    derivative at fixed scale factor, so at fixed redshift, and at fixed
+    initial state.
     """
 
     model, dicts = _batch_of(cosmologies)
@@ -169,63 +177,73 @@ def solve_eb(
 
     columns = _columns(dicts, model)
     prepared = _prepare_solve(model, dicts, k_values, extra, columns)
-    # The variables of the derivative. JAX arithmetic maps them to the
-    # directed inputs (_directed_inputs), and the rule of _kept_values
-    # integrates one sensitivity column per variable actually differentiated.
-    # The primordial keys the solve never reads carry no tangent (_columns),
-    # and so no column, when P(k) differentiates them.
-    variables = {"columns": columns}
-    to_inputs = functools.partial(_inputs_of, model, tuple(extra), 0)
+    # The directed inputs the cosmologies imply, one column each, and those
+    # ``inputs`` replaces. A derivative reaches the launch through them, and
+    # modax integrates a sensitivity column along their tangent. The
+    # primordial keys the solve never reads carry no tangent (_columns).
+    x = _directed_inputs(columns, model, extra)
     if inputs is not None:
-        # The given inputs are the solve's variables. The cosmologies set
-        # everything else, and the directed inputs after the common ones
-        # when only those are given.
-        x = jnp.asarray(inputs, dtype=jnp.float64)
+        given = jnp.asarray(inputs, dtype=jnp.float64)
         directed = parameter_layout(model, extra).directed
         if (
-            x.ndim != 2
-            or x.shape[0] != n_cosmo
-            or x.shape[1]
-            not in (
-                N_COMMON_DIRECTED,
-                len(directed),
-            )
+            given.ndim != 2
+            or given.shape[0] != n_cosmo
+            or given.shape[1] not in (N_COMMON_DIRECTED, len(directed))
         ):
             raise ValueError(
                 f"inputs must be (n_cosmologies, {len(directed)}) or "
-                f"(n_cosmologies, {N_COMMON_DIRECTED}), got {x.shape}"
+                f"(n_cosmologies, {N_COMMON_DIRECTED}), got {given.shape}"
             )
-        variables["inputs"] = x
-        to_inputs = functools.partial(_inputs_of, model, tuple(extra), x.shape[1])
-    of_variables = _kept_values(
+        x = [*jnp.unstack(given, axis=1), *x[given.shape[1] :]]
+
+    if isinstance(error_weights, dict):
+        error_weights = _named_error_weights(
+            error_weights, prepared.model, np.repeat(prepared.k_sorted, n_cosmo)
+        )
+    n_k = len(prepared.k_sorted)
+    # The directed parameters lead the row (parameter_layout). Each is a
+    # params leaf of its own, so one that does not move reaches modax as a
+    # symbolic zero and gets no column in reverse mode. The rest of the row
+    # and the initial state are held fixed, as are the save times.
+    rows = jax.lax.stop_gradient(prepared.params)
+    params = (*(jnp.tile(column, n_k)[:, None] for column in x), rows[:, len(x) :])
+    _, out = _launch(
         prepared,
-        a_grid,
-        names,
-        extra,
-        to_inputs=to_inputs,
-        drop_first=drop_first,
+        params,
+        jax.lax.stop_gradient(prepared.y0),
+        jax.lax.stop_gradient(a_grid),
         error_weights=error_weights,
+        save_hook=_keep_hook(prepared.cosmology_model, tuple(extra), names),
+        save_history=False,
+        sens_error_control=False,
+        split_derivatives=split_derivatives,
         rtol=rtol,
         atol=atol,
         first_step=first_step,
         max_steps=max_steps,
         thermo_weight=thermo_weight,
-        split_derivatives=split_derivatives,
     )
-    return of_variables(variables)
+    # Rows are k-major (row = k_idx * n_cosmo + cosmology_idx) and each hook
+    # row save-major, so this reshape is a view. The transpose to
+    # cosmology-major copies only the kept values.
+    values = out.reshape(n_k, n_cosmo, a_grid.shape[0], len(names))
+    values = jnp.transpose(values[:, :, int(drop_first) :, :], (1, 3, 0, 2))
+    if np.any(prepared.order != np.arange(n_k)):
+        values = values[:, :, jnp.asarray(np.argsort(prepared.order)), :]
+    return values
 
 
-def _inputs_of(model, extra, given, variables) -> jax.Array:
-    """The directed inputs of the variables of :func:`solve_eb`.
+def _directed_inputs(columns, model, extra=()) -> list[jax.Array]:
+    """Return the directed inputs of ``model`` from a batch's columns, one ``(n_cosmologies,)`` array each.
 
-    The cosmologies' columns imply them, and ``variables["inputs"]`` replaces
-    the first ``given`` of them.
+    They are the layout's directed parameters, in its order
+    (:func:`~discoeb.solver._kernel.parameter_layout`). Kept apart, not
+    stacked, so that each carries its own tangent, or none.
     """
 
-    implied = _directed_inputs(variables["columns"], model, extra)
-    if not given:
-        return implied
-    return jnp.concatenate([variables["inputs"], implied[:, given:]], axis=1)
+    values = density_parameters(columns, model=model)
+    names = parameter_layout(model, extra).directed
+    return [jnp.asarray(values[name], dtype=jnp.float64) for name in names]
 
 
 def differentiable_parameters(model: type[Model]) -> tuple[str, ...]:
@@ -267,7 +285,7 @@ def directed_inputs(cosmologies) -> jax.Array:
 
     model, dicts = _batch_of(cosmologies)
     columns = _columns(dicts, model, held=False)
-    return _directed_inputs(columns, model)
+    return jnp.stack(_directed_inputs(columns, model), axis=1)
 
 
 def state_names(model: type[Model]) -> tuple[str, ...]:

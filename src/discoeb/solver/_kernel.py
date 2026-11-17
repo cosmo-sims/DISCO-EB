@@ -19,7 +19,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..components._component import Equations, _compile, derive_parameters
-from ..components.recombination import THERMO_ERROR_WEIGHT, Recombination
+from ..components.recombination import (
+    REIO_ERROR_WEIGHT,
+    THERMO_ERROR_WEIGHT,
+    Recombination,
+)
 from ..models._model import Model, _batch_of, _model_of
 
 A_START = 2.0e-7
@@ -62,8 +66,8 @@ class ParameterLayout:
     order, then in component order, and the other columns in component and
     declaration order, so the layout is a function of the resolved model and
     the kernels cached on it stay valid. A derivative moves the directed
-    columns alone: modax integrates the one sensitivity column along their
-    tangent (:func:`~discoeb.solver._sensitivities._kept_values`).
+    columns alone: modax integrates a sensitivity column along their
+    tangent (:func:`~discoeb.solver.solve_eb`).
     """
 
     columns: dict
@@ -113,6 +117,14 @@ TRAJECTORIES_PER_BLOCK = 32
 
 CUDA_MAX_REGISTERS = int(os.environ.get("DISCO_CUDA_MAX_REGISTERS", "168"))
 """Per-thread register cap for that kernel: fewer registers, more resident warps."""
+
+MAX_SENSITIVITY_STATE = int(os.environ.get("DISCO_MAX_SENSITIVITY_STATE", "330"))
+"""The most components one thread integrates in a sensitivity launch: the
+state and its sensitivity columns. The driver reserves every resident
+thread's local memory, so this bounds the columns per launch, and modax
+splits a derivative along more directions into several launches of one
+width. 330 is five columns of the 55-state LCDM system, which fills 9 GB of
+a 12 GB card. Seven exhaust it."""
 
 
 def joint_model(model: type[Model], extra=()) -> Equations:
@@ -294,8 +306,9 @@ def _prepare_solve(
     numbers. The kernel compiles once per model, and :func:`_pack` once per
     model, wave-mode grid and batch size.
 
-    The derivative holds the parameter rows and the initial state fixed: :func:`~discoeb.solver._sensitivities._kept_values` sets the directed
-    columns from its own inputs.
+    The derivative holds the parameter rows and the initial state fixed:
+    :func:`~discoeb.solver.solve_eb` sets the directed columns from its own
+    inputs.
     """
 
     resolved = _model_of(model).resolved()
@@ -487,6 +500,7 @@ def _launch(
     reio_weight=None,
     lu_precision="fp32",
     max_registers=CUDA_MAX_REGISTERS,
+    split_derivatives=False,
     **extra,
 ):
     """Run one modax Rodas5P launch of the prepared hierarchy over the packed trajectories.
@@ -495,12 +509,33 @@ def _launch(
     PI controller's gains. The recombination block, which the hierarchy reads,
     always factorises in double. Every trajectory runs over the same span
     of the scale factor, ``t_span``.
+
+    Differentiated, modax launches the joint system with the settings of
+    ``derivatives``: the fp64 LU, no register cap (local memory, not
+    registers, bounds the joint system's occupancy, and a capped budget
+    halves the resident threads the driver reserves it for),
+    ``kappa_reio`` weighted by :data:`REIO_ERROR_WEIGHT` (at the block's
+    weight the steps across the reionization step resolve ``tau_reio`` but
+    not its ``z_re`` derivative) and at most :data:`MAX_SENSITIVITY_STATE`
+    components a thread. ``split_derivatives`` gives each direction a
+    thread of its own instead.
     """
 
-    from modax import PIDGains, Rodas5P
+    from modax import Derivatives, PIDGains, Rodas5P
     from modax import solve as modax_solve
 
-    method = Rodas5P(lu_precision=lu_precision, gains=PIDGains(pcoeff=0.3, icoeff=0.4))
+    gains = PIDGains(pcoeff=0.3, icoeff=0.4)
+    method = Rodas5P(lu_precision=lu_precision, gains=gains)
+    n_traj = np.shape(y0)[0]
+    derivatives = Derivatives(
+        method=Rodas5P(lu_precision="fp64", gains=gains),
+        error_weights=error_weights_for(
+            prepared, n_traj, error_weights, thermo_weight, REIO_ERROR_WEIGHT
+        ),
+        max_registers=None,
+        max_directions=max(1, MAX_SENSITIVITY_STATE // prepared.model.nvar - 1),
+        replicas=split_derivatives,
+    )
     return modax_solve(
         prepared.ode_fn,
         y0,
@@ -514,8 +549,9 @@ def _launch(
         trajectories_per_block=TRAJECTORIES_PER_BLOCK,
         max_registers=max_registers,
         error_weights=error_weights_for(
-            prepared, np.shape(params)[0], error_weights, thermo_weight, reio_weight
+            prepared, n_traj, error_weights, thermo_weight, reio_weight
         ),
+        derivatives=derivatives,
         cache=True,
         **extra,
     )

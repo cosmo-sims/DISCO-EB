@@ -138,7 +138,7 @@ The codebase is organized in four folders under `src/discoeb/` (2026-11-16),
 which import each other in one direction, `components` <- `models` <-
 `solver`, with `observables` importing none: `components/` (the framework,
 species, gravity, interactions, recombination), `models/` (the model classes
-and cosmologies), `solver/` (background, kernel, sensitivities, `solve_eb`)
+and cosmologies), `solver/` (kernel, `solve_eb`)
 and `observables/` (the matter power spectrum). Each folder's `__init__.py`
 re-exports its public names, and a module with a leading underscore is
 private: import its public names from the folder (`from discoeb.components
@@ -573,45 +573,49 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      quantities such as `R` compiled by `Equations.build_function`, cached per
      model and set of names (`_keep_hook`)
 
-8. **solver/_sensitivities.py** - `_kept_values`: the hooked launch as a
-   `jax.custom_jvp` in a pytree of variables that `to_inputs` maps to the
-   layout's directed inputs (`solve_eb` passes the cosmology columns). Its rule (`symbolic_zeros=True`) is
-   `jax.vmap` of `jax.jvp` of the launch over one unit direction per
-   *differentiated* variable, contracted with the variables' tangent
-   (linear, so `grad` works off the same launch). modax's directional mode
-   integrates one sensitivity column along each direction's row tangent
-   (`d inputs / d variable`, plain JAX through `to_inputs`) and its vmap
-   rule packs the directions as columns of the trajectory's own thread
-   (one trajectory, one thread: no replicas), so the cost is
-   the number of parameters differentiated (5 for the densities' five),
-   not of directed inputs, and an undifferentiated input costs nothing.
-   The joint kernel is compiled per number of directions, and a thread's
-   local memory, which the driver reserves for every resident thread,
-   grows with them: seven columns of the 55-state system exhaust a 12 GB
-   card. `MAX_SENSITIVITY_STATE` (330 components, `DISCO_MAX_SENSITIVITY_STATE`)
-   caps a thread's joint state, and a derivative in more variables runs as
-   several launches of one size, the last padded with zero directions.
-   Measured (RTX 4070 SUPER, five parameters): one cosmology 2.4 s where
-   replicas took 0.39 s, 128 cosmologies 3.6 s where they took 4.5 s.
-   `solve_eb(..., split_derivatives=True)` (default `False`) brings the
-   replicas back: the rule copies each trajectory once per differentiated
-   variable (row `(k_idx * n_cosmo + ci) * R + r`) and takes one `jax.jvp`
-   of the launch with copy `r`'s row tangent `d inputs / d variable_r`, so
-   each thread holds the state and one column, with no cap or chunking.
-   One cosmology, five parameters: 0.38 s against 2.4 s. The two modes
+8. **solver/_sensitivities.py** is gone (2026-11-17). Until then
+   `_kept_values` wrapped the hooked launch in a `jax.custom_jvp` of its
+   own. modax now does all of it, so `solve_eb` calls `_launch` directly
+   with the directed inputs as params leaves, one `(N, 1)` leaf per input
+   and the rest of the row as one more (JAX tracks symbolic zeros per
+   leaf, so an input that does not move gets no column in reverse mode),
+   and holds the rows, the initial state and the save times fixed with
+   `stop_gradient`. `_launch` passes modax a `Derivatives` (modax branch
+   `feat/derivative-options`) that applies only to differentiated
+   launches: fp64 LU, no register cap, `kappa_reio` weighted by
+   `REIO_ERROR_WEIGHT`, at most `MAX_SENSITIVITY_STATE // nvar - 1`
+   columns a thread (`MAX_SENSITIVITY_STATE` = 330,
+   `DISCO_MAX_SENSITIVITY_STATE`, in `_kernel.py`) and, with
+   `solve_eb(..., split_derivatives=True)`, `replicas=True`. What each
+   transform costs, in modax's terms:
+   - `jax.jvp`: one column along the tangent
+   - `jax.jacfwd`: one column per direction while the directions are
+     fewer than the directed inputs that move, else one column per such
+     input contracted with every direction. Over a batch every
+     cosmology's parameter is a direction, so the inputs win: the
+     densities' five (`omega_b`, `omega_c`, `omega_de`, `T_cmb`, `N_eff`)
+     move six inputs, since `T_cmb` moves `omega_g`, `omega_ur` and
+     `T_cmb`. The custom rule paid five
+   - `jax.grad`: one column per directed input that moves, through the
+     transposable column form, or unit directions when they exceed the cap
+   - under `jit` every transform pays as `jax.grad` does: JAX stages the
+     rule before it knows whether it will transpose it, so modax takes
+     the directional launch for eager forward mode only
+   - more columns than the cap run as several launches of one width, the
+     last padded with zero directions, so one kernel serves them
+   A thread's local memory, which the driver reserves for every resident
+   thread, grows with its columns: seven columns of the 55-state system
+   exhaust a 12 GB card. Measured before the move (RTX 4070 SUPER, five
+   parameters): one cosmology 2.4 s with columns, 0.38 s with replicas;
+   128 cosmologies 3.6 s with columns, 4.5 s with replicas. The two modes
    agree to 1e-7 at rtol 1e-6 and to 1e-3 at the default 1e-4
-   (`test_split_derivatives_match_one_thread`).
-   The launch runs with `sens_error_control=False` and keeps each
-   quantity's derivative beside it. Until 2026-11-17 the rule built
-   replicas of every trajectory and the `eps` and `dir` columns by hand. fp64
-   LU; the joint path's primal agrees with the plain fp32-LU one to ~1e-6 of
-   scale. At *fixed scale factor*, and at fixed initial state. (A `tau_reio` input with the implicit
-   function theorem on a host bisection for `z_re` missed central
-   differences of `P(k)` by 1.8 percent on 2026-11-13; `z_re` is now the
-   input and differentiates directly.) The rows, initial state and save times are
-   explicit arguments of the `custom_jvp`, never closed over, and the rule
-   closes over no JAX array: JAX traces it lazily, after the enclosing
-   `jit` trace, so a captured tracer breaks `jit(grad(jit(f)))`
+   (`test_split_derivatives_match_one_thread`). The launch runs with
+   `sens_error_control=False`; the joint primal agrees with the plain
+   fp32-LU one to ~1e-6 of scale. At *fixed scale factor*, and at fixed
+   initial state. (A `tau_reio` input with the implicit function theorem
+   on a host bisection for `z_re` missed central differences of `P(k)` by
+   1.8 percent on 2026-11-13; `z_re` is now the input and differentiates
+   directly.)
 
 9. **solver/_solver.py** - `solve_eb(cosmologies, k, a, *, keep=...)` solves
    one cosmology or a list of one model's and records only the named quantities at the given scale factors, so the
@@ -627,7 +631,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    the keys declared `Parameter(differentiable=True)` (`omega_b`, `omega_c`,
    `omega_de`, `T_cmb`, `N_eff`, `omega_k`, and `m_nu`, `w_DE_0`, `w_DE_a`,
    `z_re` where the model has the component): plain JAX from them to the directed inputs
-   (`_directed_inputs`), then the `custom_jvp` of `_kept_values`. `jax.jvp`, `jacfwd`, `grad` all cost one joint launch,
+   (`_directed_inputs`), then modax's sensitivities. `jax.jvp`, `jacfwd`, `grad` all cost one joint launch,
    with or without `jit` (`test_matter_power_spectrum_under_jit`). `test_solve_eb_derivatives` gates the densities-level rule
    against central differences, `test_more_parameters_*` each added
    parameter's `solve_eb` values and `P(k)`. The solve is not smooth in the

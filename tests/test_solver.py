@@ -383,7 +383,7 @@ def test_a_held_key_raises_when_differentiated():
 
 
 # ============================================================================
-# sensitivities: Forward sensitivities (``_sensitivities``): derivatives of ``solve_eb`` values against central differences
+# sensitivities: modax's forward sensitivities: derivatives of ``solve_eb`` values against central differences
 # ============================================================================
 
 # --- GPU perturbation solves against CLASS: the matter power spectrum and its derivatives.
@@ -395,10 +395,10 @@ def test_solve_eb_derivatives():
     """The kept quantities are differentiable in the cosmological parameters.
 
     The derivative chains the densities' dependence on ``Omega_m``, ``Omega_b``,
-    ``H_0``, ``T_cmb`` and ``N_eff`` into the densities-level rule, whose tangent
-    hook stores each quantity's derivative along the sensitivity column of its
-    replica: ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad`` of the kept values
-    all come from one joint launch. The densities-level rule is checked
+    ``H_0``, ``T_cmb`` and ``N_eff`` into the directed inputs, along which modax
+    integrates sensitivity columns and stores each quantity's derivative:
+    ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad`` of the kept values all come
+    from the joint launch. The densities-level derivative is checked
     against central differences of its own primal at fixed thermal history;
     the differences are the noisy side: the solve runs at rtol = atol = 1e-4,
     a step-acceptance flip between the two shifted solves moves a value by
@@ -415,14 +415,8 @@ def test_solve_eb_derivatives():
 
     from discoeb.models import LCDM
     from discoeb.models._model import _batch_of
-    from discoeb.solver._kernel import (
-        A_START,
-        _columns,
-        _prepare_solve,
-        parameter_layout,
-    )
-    from discoeb.solver._sensitivities import _directed_inputs, _kept_values
-    from discoeb.solver._solver import solve_eb
+    from discoeb.solver._kernel import _columns, parameter_layout
+    from discoeb.solver._solver import _directed_inputs, solve_eb
 
     DIFFERENTIABLE_PARAMETERS = DENSITY_PARAMETERS
     cosmology = _perturbed_cosmologies(1)[0]
@@ -435,7 +429,7 @@ def test_solve_eb_derivatives():
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
         model, dicts = _batch_of(LCDM.from_dict(physical(LCDM, param)))
         columns = _columns(dicts, model)
-        return _directed_inputs(columns, LCDM)
+        return jnp.stack(_directed_inputs(columns, LCDM), axis=1)
 
     densities = inputs_of(theta)
     a = np.geomspace(1.0e-5, 1.0, 12)
@@ -445,10 +439,11 @@ def test_solve_eb_derivatives():
     # converted from Omega_m and H_0 as JAX values, as inputs_of converts them
     traced = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
     plain = solve_eb(cosmologies_of(LCDM, traced), SOLVE_EB_K, a, keep=names)
-    prepared = _prepare_solve(
-        LCDM, _batch_of(cosmologies_of(LCDM, cosmology))[1], SOLVE_EB_K
-    )
-    kept = _kept_values(prepared, np.concatenate(([A_START], a)), names, ())
+    floats = cosmologies_of(LCDM, cosmology)
+
+    def kept(densities, **settings):
+        return solve_eb(floats, SOLVE_EB_K, a, keep=names, inputs=densities, **settings)
+
     base = np.asarray(kept(densities))
     # The same launch, from densities formed in JAX rather than as floats.
     np.testing.assert_allclose(np.asarray(plain), base, rtol=1e-12)
@@ -462,15 +457,8 @@ def test_solve_eb_derivatives():
     # The central differences are converged (rtol = atol = 1e-6): at the default
     # tolerance the solve's own error, different on the two sides of a step,
     # is the larger part of a difference.
-    kept_converged = _kept_values(
-        prepared,
-        np.concatenate(([A_START], a)),
-        names,
-        (),
-        rtol=1.0e-6,
-        atol=1.0e-6,
-        max_steps=200_000,
-    )
+    def kept_converged(densities):
+        return kept(densities, rtol=1.0e-6, atol=1.0e-6, max_steps=200_000)
 
     jac = np.asarray(jax.jacfwd(kept)(densities))[..., 0, :]
     DIRECTED_NAMES = parameter_layout(LCDM).directed

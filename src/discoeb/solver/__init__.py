@@ -1,4 +1,4 @@
-"""The solver. It holds the joint kernel, its sensitivities and ``solve_eb``."""
+"""The solver. It holds the joint kernel and ``solve_eb``."""
 
 from ._kernel import (
     A_START,
