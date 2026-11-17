@@ -47,9 +47,9 @@ const_kB = 1.380649e-23  # Boltzmann's constant [J/K], PDG 2023
 const_sigma = 6.6524587321e-29  # Thomson scattering cross section [m^2], PDG 2023
 const_arad = 4 * 5.670374419e-8 / const_c  # Radiation constant [Ws/m^3/K^4], PDG 2023
 
-bigH = 3.2407792902755102e-18  # 100 km/s/Mpc in 1/s
 const_dens_fac = (
-    11.223810928601939  # 3 bigH^2 / (8 pi G m_H), G = 6.67430e-11 m^3/kg/s^2
+    # 3 bigH^2 / (8 pi G m_H), bigH = 100 km/s/Mpc in 1/s, G = 6.67430e-11 m^3/kg/s^2
+    11.223810928601939
 )
 
 const_c_Mpc_s = 9.71561189e-15  # Mpc/s

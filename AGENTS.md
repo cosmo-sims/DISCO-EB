@@ -387,11 +387,10 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `qcdm_parameters` in `tests/helpers.py`)
    - No model is a default (`DEFAULT_MODEL`, `W0WACDM_MNU`, removed
      2026-11-16): `directed_inputs` takes cosmologies, the model coming
-     from their class, and `make_params`, `make_initial_states`,
-     `build_keep_hook` and `_columns` take the model or its layout or keys
-     as a required argument
+     from their class, and `build_keep_hook` and `_columns` take the model
+     or its layout as a required argument
    - `_batch_of(cosmologies)` turns one cosmology or a sequence of one
-     model's into the internal `CosmologyBatch(spec, dicts, model_class)`
+     model's into the internal `CosmologyBatch(spec, dicts)`
      the solver reads; mixed models raise `TypeError`. The dicts' values are
      as given, so JAX values stay differentiable. There is no
      `PerturbationLayout` any more (removed 2026-11-12): indices come from
@@ -425,10 +424,11 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    `ModelSpec.differentiable_parameters()`: `Nmnu`, `YHe`, `cs2_DE`) passes
    through `_not_differentiable`, a `custom_jvp` whose rule raises, so a
    derivative is never a silent zero. `_is_concrete` lives in
-   `models/_model.py`. A cosmology no longer holds traced keys of other
-   models (`_held`): `from_dict` drops a key the model lacks, concrete
-   ones checked against their default first, since the model reads none
-   of it
+   `models/_model.py`. A cosmology still holds the traced keys of other
+   models `from_dict` was given (`_held`, in the batch's dictionaries
+   beside its own): `_columns` gives each a column the kernel never reads,
+   so that differentiating one raises (dropping them was tried on
+   2026-11-17 and returned a silent zero for `mnu` on LCDM)
 
 6. **components/recombination.py** - Recombination history, inside the joint kernel
    - The conformal time `tau`, RECFAST's `(x_H, x_He, T_m)` and the optical
@@ -594,8 +594,11 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    and may be mostly that noise (`Tcmb` and `Omegab` not re-measured).
    `dP/dYHe` and `dP/dcs2_DE` stay 0.8 and 1 percent off at every step
    tried, so those two are held. `dP/dz_re` needs a step of 1 in `z_re`:
-   it moves sum P by 1.4e-5 of itself per unit, so a step of 0.05 is noise. Also `solve_perturbation_history_batch`,
-   `directed_inputs`, `state_names(model)`
+   it moves sum P by 1.4e-5 of itself per unit, so a step of 0.05 is noise. Also
+   `directed_inputs`, `state_names(model)`. The history of every state is
+   `_kernel._solve_batch` (tests only; `solve_perturbation_history_batch`,
+   `make_params` and `make_initial_states` were removed 2026-11-17: the
+   tests read rows and initial states off `_pack`, `helpers.packed`)
 
 10. **observables/power_spectrum.py** - `matter_power_spectrum(k, *, clxc, clxb,
     omega_c, omega_b, A_s, n_s, k_p)`, JAX only, is one cosmology's

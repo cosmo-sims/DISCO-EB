@@ -41,7 +41,7 @@ def _directed_inputs(columns, model, extra=()) -> jax.Array:
 
 def _kept_values(
     prepared,
-    tau_grid,
+    a_grid,
     names,
     extra=(),
     *,
@@ -57,7 +57,7 @@ def _kept_values(
     """Return the hooked launches of :func:`solve_eb` as a function of the directed inputs.
 
     ``prepared`` is the batch :func:`~discoeb.solver._kernel._prepare_solve` packed at
-    its wave modes, and ``tau_grid`` the save times, which may be traced.
+    its wave modes, and ``a_grid`` the save times, which may be traced.
     The result, ``of_variables(v)``, takes a pytree ``v`` whose leaves are
     ``(n_cosmologies,)`` or ``(n_cosmologies, m)``, maps it to the
     ``(n_cosmologies, n_directed)`` inputs ``x = to_inputs(v)`` of the
@@ -104,7 +104,7 @@ def _kept_values(
         error_weights = _named_error_weights(
             error_weights, prepared.model, np.repeat(k_sorted, n_cosmo)
         )
-    n_k, n_grid, n_keep = len(k_sorted), len(tau_grid), len(names)
+    n_k, n_grid, n_keep = len(k_sorted), len(a_grid), len(names)
     first = 1 if drop_first else 0
     columns = np.asarray(
         prepared.layout.directed_columns
@@ -199,7 +199,7 @@ def _kept_values(
 
     params = jax.lax.stop_gradient(prepared.params)
     y0 = jax.lax.stop_gradient(prepared.y0)
-    t_span = jax.lax.stop_gradient(jnp.asarray(tau_grid, dtype=jnp.float64))
+    t_span = jax.lax.stop_gradient(jnp.asarray(a_grid, dtype=jnp.float64))
 
     def of_variables(v):
         return kept(v, params, y0, t_span)

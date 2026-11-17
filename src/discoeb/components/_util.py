@@ -83,16 +83,16 @@ def neutrino_momentum_bins(nqmax: int):
     ``nqmax`` of 3, 4 or 5 they are CAMB's high-accuracy formulas, for higher
     counts a generalised Gauss-Laguerre rule. ``dlnf0/dlnq = -q/(1 +
     exp(-q))`` is the log-derivative of the Fermi-Dirac background
-    distribution that sources the ``psi`` hierarchy. Cached per ``nqmax`` and
-    precision, because the rule's eigendecomposition, op by op, cost a second
+    distribution that sources the ``psi`` hierarchy. Cached per ``nqmax``,
+    because the rule's eigendecomposition, op by op, cost a second
     of compiles per call.
     """
 
-    return _momentum_bins(int(nqmax), bool(jax.config.read("jax_enable_x64")))
+    return _momentum_bins(int(nqmax))
 
 
 @functools.lru_cache(maxsize=None)
-def _momentum_bins(nqmax: int, x64: bool):
+def _momentum_bins(nqmax: int):
     with jax.ensure_compile_time_eval():
         q, w = _neutrino_momentum_bins(nqmax)
     q = np.asarray(q, dtype=np.float64)

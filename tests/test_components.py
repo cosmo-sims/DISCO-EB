@@ -25,6 +25,7 @@ from helpers import (
     cosmologies_of,
     model_parameters,
     on_the_host,
+    packed,
     state_index,
 )
 from jax.typing import ArrayLike
@@ -57,7 +58,6 @@ from discoeb.components.species import (
     RadiationStreaming,
 )
 from discoeb.models import LCDM, W0WACDM_MNU
-from discoeb.solver._kernel import make_initial_states
 
 # ============================================================================
 # component: The component framework (``_component``): providers, states, parameters, named copies, the traced sparsity
@@ -1176,18 +1176,8 @@ def test_the_growing_mode_counts_the_new_species_as_matter():
     from discoeb.solver._kernel import joint_model
 
     k = np.array([1.0e-2, 1.0e-1])
-    plain = make_initial_states(
-        cosmologies_of(LCDM, COSMOLOGY),
-        k,
-        joint_model(LCDM),
-        cosmology_model=LCDM,
-    )
-    split = make_initial_states(
-        cosmologies_of(LCDM_X, _split(COSMOLOGY)),
-        k,
-        joint_model(LCDM_X),
-        cosmology_model=LCDM_X,
-    )
+    _, plain = packed(LCDM, cosmologies_of(LCDM, COSMOLOGY), k)
+    _, split = packed(LCDM_X, cosmologies_of(LCDM_X, _split(COSMOLOGY)), k)
     n = len(LCDM.state_names())
     np.testing.assert_allclose(split[:, :n], plain[:, :n], rtol=1e-12)
     # the neutrino quadrupole carries the O(om tau) term that reads the sum

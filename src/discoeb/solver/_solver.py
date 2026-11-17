@@ -24,48 +24,9 @@ from ._kernel import (
     PERTURB_RTOL,
     _columns,
     _prepare_solve,
-    _solve_batch,
     parameter_layout,
 )
 from ._sensitivities import _directed_inputs, _kept_values
-
-
-def solve_perturbation_history_batch(
-    k_values,
-    cosmologies,
-    *,
-    a_save=None,
-    rtol: float = PERTURB_RTOL,
-    atol: float = PERTURB_ATOL,
-    first_step: float = PERTURB_FIRST_STEP,
-    max_steps: int = PERTURB_MAX_STEPS,
-):
-    """Solve a batch of cosmologies on a shared ``a_save`` grid in one launch.
-
-    ``cosmologies`` is a cosmology, ``LCDM(omega_b=..., ...)``, or a sequence of
-    cosmologies of one model. One modax launch integrates all ``n_cosmologies * n_k`` trajectories, each
-    with its recombination block stepping ahead of its hierarchy
-    (:func:`joint_kernel`), in the scale factor from :data:`A_START` to 1, today.
-    Returns ``(history, k_sorted, prepared)``,
-    with ``history`` a device array ``(n_k, n_cosmologies, len(a_save),
-    nvar)`` in ascending ``k``.
-    """
-
-    batch = _batch_of(cosmologies)
-    sol, prepared, k_sorted = _solve_batch(
-        batch.model,
-        batch,
-        k_values,
-        a_save,
-        rtol=rtol,
-        atol=atol,
-        first_step=first_step,
-        max_steps=max_steps,
-    )
-    hist = jnp.asarray(sol).reshape(
-        len(k_sorted), len(prepared.cosmologies), -1, prepared.model.nvar
-    )
-    return hist, k_sorted, prepared
 
 
 def solve_eb(
@@ -85,10 +46,9 @@ def solve_eb(
 ) -> Annotated[jax.Array, ("cosmology", "name", "k", "a")]:
     """Solve the Einstein-Boltzmann system of ``cosmologies`` and keep ``keep`` at the scale factors ``a``.
 
-    Like :func:`solve_perturbation_history_batch`, this runs one modax Rodas5P
-    launch over every (wave mode, cosmology) pair. Unlike it, the launch records
-    only the quantities named in ``keep`` at the requested times, through
-    modax's save hook. The kernel evaluates them from the dense-output state at
+    One modax Rodas5P launch integrates every (wave mode, cosmology) pair
+    and records only the quantities named in ``keep`` at the requested
+    scale factors, through modax's save hook. The kernel evaluates them from the dense-output state at
     each save and stores ``len(keep)`` numbers, so the device holds ``n_k *
     n_cosmologies * len(a) * len(keep)`` values and never the history. Keeping
     only the comoving curvature perturbation at 1000 times for 128 modes and 128
@@ -136,7 +96,7 @@ def solve_eb(
         their own right: the solution becomes a function of them. Given
         seven, the rest come from the cosmologies.
     rtol, atol, first_step, max_steps, error_weights, thermo_weight
-        Solver settings, as in :func:`solve_perturbation_history_batch`.
+        Solver settings.
         ``error_weights`` is either ``{state name: weight}`` or modax's array
         ``(n_k * n_cosmologies, nvar)`` in launch order (wave modes ascending,
         cosmologies within). In the dictionary, each weight is a number or a
@@ -168,8 +128,8 @@ def solve_eb(
     the dark-energy parameters. The
     forward-sensitivity launch of :func:`_kept_values` carries it, with a hook
     that stores each kept quantity's derivative beside it, so it also costs
-    one joint launch and no history, with one replica of every trajectory per
-    differentiated parameter. It is the derivative at fixed scale factor,
+    one joint launch and no history, with one sensitivity column per
+    differentiated parameter in each trajectory's thread. It is the derivative at fixed scale factor,
     so at fixed redshift, and at fixed initial state.
     """
 
@@ -196,7 +156,7 @@ def solve_eb(
         drop_first = bool(checked[0] > A_START)
     else:
         drop_first = True  # traced values must lie after A_START
-    tau_grid = jnp.concatenate((jnp.asarray([A_START]), a)) if drop_first else a
+    a_grid = jnp.concatenate((jnp.asarray([A_START]), a)) if drop_first else a
 
     columns = _columns(batch.cosmologies, model)
     prepared = _prepare_solve(model, batch, k_values, extra, columns)
@@ -209,8 +169,8 @@ def solve_eb(
     to_inputs = functools.partial(_inputs_of, model, tuple(extra), 0)
     if inputs is not None:
         # The given inputs are the solve's variables. The cosmologies set
-        # everything else, the background endpoints included, and the
-        # directed inputs after the first nine when only those are given.
+        # everything else, and the directed inputs after the common ones
+        # when only those are given.
         x = jnp.asarray(inputs, dtype=jnp.float64)
         directed = parameter_layout(model, extra).directed
         if (
@@ -230,7 +190,7 @@ def solve_eb(
         to_inputs = functools.partial(_inputs_of, model, tuple(extra), x.shape[1])
     of_variables = _kept_values(
         prepared,
-        tau_grid,
+        a_grid,
         names,
         extra,
         to_inputs=to_inputs,
@@ -271,9 +231,8 @@ def differentiable_parameters(model: type[Model] | ModelSpec) -> tuple[str, ...]
     ``z_re`` with :class:`~discoeb.components.recombination.ReionizationDepth`.
     They reach the solve through the directed inputs, and the forward
     sensitivities carry them through the hierarchy and the recombination
-    history. The derivative holds fixed the conformal age ``tau0`` at which
-    a trajectory stops (:func:`matter_power_spectrum` adds its term), ``ln
-    a`` at the start and the initial state.
+    history. The derivative is at fixed scale factor and holds the initial
+    state fixed.
 
     Differentiating another key raises: ``Nmnu``, a count, and ``YHe`` and
     ``cs2_DE``, whose derivatives of ``P(k)`` miss central differences by

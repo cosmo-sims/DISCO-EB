@@ -91,6 +91,20 @@ def physical(model, params) -> dict:
     return model.spec.physical_parameters(params)
 
 
+def packed(model, cosmology, k):
+    """``(params, y0)`` of one cosmology at the wave modes ``k``, as the kernel is launched with them."""
+
+    from discoeb.models._model import _batch_of
+    from discoeb.solver._kernel import _columns, _pack
+
+    batch = _batch_of(cosmology)
+    columns = _columns(batch.cosmologies, batch.model, held=False)
+    params, y0 = _pack(
+        batch.model.resolved(), (), tuple(np.asarray(k).tolist()), columns
+    )
+    return np.asarray(params), np.asarray(y0)
+
+
 def model_parameters(model, cosmology) -> dict:
     """Every parameter of the model, derived ones included, for a cosmology or a dictionary of one."""
 

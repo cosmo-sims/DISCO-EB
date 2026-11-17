@@ -27,6 +27,7 @@ from helpers import (
     model_parameters,
     nvar,
     on_the_host,
+    packed,
     physical,
     qcdm_parameters,
     structure,
@@ -41,9 +42,9 @@ from discoeb.components.species import (
 )
 from discoeb.models import LCDM
 from discoeb.solver._kernel import (
+    A_START,
     joint_kernel,
     joint_model,
-    make_initial_states,
     thermal_indices,
 )
 
@@ -74,41 +75,15 @@ def test_two_copies_share_a_model():
 # --- The Einstein-Boltzmann component model, on the host.
 
 
-def test_make_initial_states_uses_the_model():
-    cosmology = LCDM.from_dict(
-        dict(
-            omega_b=0.022,
-            omega_c=0.117,
-            omega_de=0.31,
-            w_DE_0=-1.0,
-            w_DE_a=0.0,
-            cs2_DE=1.0,
-            omega_k=0.0,
-            A_s=2.1e-9,
-            n_s=0.966,
-            Tcmb=2.7255,
-            YHe=0.245,
-            Neff=3.046,
-            Nmnu=0.0,
-            mnu=0.0,
-            k_p=0.05,
-        )
-    )
-    from discoeb.solver._kernel import joint_model
-
-    model = joint_model(LCDM)
-    y0 = make_initial_states(
-        cosmology,
-        np.array([1e-2, 1e-1]),
-        model,
-        a=np.exp(-15.0),
-        cosmology_model=LCDM.spec,
-    )
+def test_the_initial_state_is_the_models():
+    _, y0 = packed(LCDM, cosmologies_of(LCDM, COSMOLOGY), [1e-2, 1e-1])
     assert y0.shape == (2, 55) and np.isfinite(y0).all()
     np.testing.assert_allclose(y0[:, 0], [-1e-2, -1e-1], rtol=1e-3)  # etak ~ -k
     # the thermal state: the conformal time of the radiation era, then RECFAST's
-    assert np.all((0.1 < y0[:, 50]) & (y0[:, 50] < 0.2))
-    np.testing.assert_allclose(y0[:, 51:], [[1.0, 2.0, 2.7255 * np.exp(15.0), 0.0]] * 2)
+    assert np.all((0.05 < y0[:, 50]) & (y0[:, 50] < 0.2))
+    np.testing.assert_allclose(
+        y0[:, 51:], [[1.0, 2.0, COSMOLOGY["Tcmb"] / A_START, 0.0]] * 2
+    )
 
 
 # --- The Jacobian sparsity pattern, and what modax's analysis makes of it.
@@ -869,8 +844,8 @@ def test_solve_eb_keeps_what_the_history_holds():
 
     from discoeb.components.recombination import THERMO_ERROR_WEIGHT
     from discoeb.models import LCDM
-    from discoeb.solver._kernel import A_START, make_params, parameter_layout
-    from discoeb.solver._solver import solve_eb, solve_perturbation_history_batch
+    from discoeb.solver._kernel import A_START, _solve_batch, parameter_layout
+    from discoeb.solver._solver import solve_eb
 
     cosmologies = _perturbed_cosmologies(2)
     names = ("R", "clxc", "clxb", "theta_2", "n_15", "sigma", "adotoa")
@@ -880,12 +855,14 @@ def test_solve_eb_keeps_what_the_history_holds():
     n_k, n_a = len(SOLVE_EB_K), len(SOLVE_EB_A)
     assert values.shape == (2, len(names), n_k, n_a)
 
-    hist, k_sorted, prepared = solve_perturbation_history_batch(
-        SOLVE_EB_K,
+    hist, prepared, k_sorted = _solve_batch(
+        LCDM,
         cosmologies_of(LCDM, cosmologies),
-        a_save=np.concatenate(([A_START], SOLVE_EB_A)),
+        SOLVE_EB_K,
+        np.concatenate(([A_START], SOLVE_EB_A)),
     )
-    hist = np.asarray(hist)[:, :, 1:, :]  # (n_k, n_c, n_a, nvar), ascending k
+    # (n_k, n_c, n_a, nvar), ascending k
+    hist = np.asarray(hist).reshape(n_k, 2, -1, prepared.model.nvar)[:, :, 1:, :]
     order = np.argsort(SOLVE_EB_K)
     kept = np.asarray(values)[:, :, order, :]  # ascending k too
     model = (
@@ -899,7 +876,7 @@ def test_solve_eb_keeps_what_the_history_holds():
             np.testing.assert_allclose(kept[ci, j], expected, rtol=1e-9, atol=1e-14)
 
         # The conformal time is one of the states the history holds.
-        row = make_params(cosmology, k_sorted, model=LCDM.spec)
+        row, _ = packed(LCDM, cosmology, k_sorted)
         columns = parameter_layout(LCDM).columns
         base = {name: row[:, col][:, None] for name, col in columns.items()}
         base.update(model.state_values(hist[:, ci]))

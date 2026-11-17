@@ -260,7 +260,7 @@ def _joint_kernel(cosmology_model: ModelSpec, extra):
 
 
 class _PreparedSolve(NamedTuple):
-    """A batch ready to launch: the compiled joint model, the endpoints, the rows and the initial state.
+    """A batch ready to launch: the joint model, its hierarchy, the rows and the initial state.
 
     The arrays are JAX arrays, traced under ``jit``. Rows go as ``row = k_idx
     * n_cosmo + cosmology_idx``, so consecutive rows share a wave mode, over
@@ -332,7 +332,7 @@ def _pack(model: ModelSpec, extra, k_sorted, columns):
     a model's own background states start from their initial conditions.
     """
 
-    joint, _ = joint_kernel(model, extra)
+    joint = joint_model(model, extra)
     layout = parameter_layout(model, extra)
     values = density_parameters(columns, model=model)
     n_cosmo = next(iter(columns.values())).shape[0]
@@ -376,19 +376,24 @@ def _columns(cosmologies, model: type[Model] | ModelSpec, held: bool = True) -> 
     differentiate (:meth:`ModelSpec.differentiable_parameters
     <discoeb.models.ModelSpec.differentiable_parameters>`) raises if
     differentiated, where its derivative would come back as a silent zero.
+    So does a traced key of another model that a cosmology holds
+    (:meth:`Model.from_dict <discoeb.models.Model.from_dict>`), which the
+    kernel never reads.
     """
 
     spec = _spec_of(model)
     declared = spec.parameters()
     differentiable = spec.differentiable_parameters()
+    keys = spec.parameter_keys()
+    foreign = sorted({key for c in cosmologies for key in c} - set(keys))
     columns = {}
-    for key in spec.parameter_keys():
-        values = [c[key] for c in cosmologies]
+    for key in (*keys, *foreign):
+        values = [c.get(key, 0.0) if key in foreign else c[key] for c in cosmologies]
         if any(isinstance(v, jax.Array) for v in values):
             column = jnp.stack([jnp.asarray(v, dtype=jnp.float64) for v in values])
         else:  # one device array, not one per cosmology
             column = jnp.asarray(np.asarray(values, dtype=np.float64))
-        if held and not declared[key].solved:
+        if held and key in keys and not declared[key].solved:
             column = jax.lax.stop_gradient(column)
         elif held and key not in differentiable:
             column = _not_differentiable(column, key)
@@ -413,55 +418,6 @@ def _rows(layout: ParameterLayout, values, n_cosmo: int):
             for i in range(layout.n)
         ],
         axis=1,
-    )
-
-
-def make_params(
-    cosmology,
-    k_values: np.ndarray,
-    *,
-    model: ModelSpec,
-) -> np.ndarray:
-    """Return packed parameters for the device right-hand side, one row per wave mode.
-
-    The row is ``model``'s (:func:`parameter_layout`).
-    """
-
-    columns = _columns(_batch_of(cosmology).cosmologies, model, held=False)
-    row = _rows(parameter_layout(model), density_parameters(columns, model=model), 1)
-    params = np.tile(np.asarray(row), (len(k_values), 1))
-    params[:, parameter_layout(model).columns["k"]] = k_values
-    return params
-
-
-def make_initial_states(
-    cosmology,
-    k_values: np.ndarray,
-    model,
-    a=A_START,
-    *,
-    cosmology_model: ModelSpec,
-) -> np.ndarray:
-    """Return adiabatic initial states plus the fully ionized thermal state, ``(n_k, nvar)``.
-
-    ``cosmology`` is one cosmology or a sequence of ``len(k_values)``, one per
-    trajectory. ``model`` is the joint component model and
-    ``cosmology_model`` the model whose parameters the initial conditions
-    read. ``a`` is where they start. The initial conditions broadcast over
-    the trajectories.
-    """
-
-    columns = _columns(_batch_of(cosmology).cosmologies, cosmology_model, held=False)
-    inputs = density_parameters(columns, model=cosmology_model)
-
-    def per(values):
-        values = np.asarray(values)
-        return values[0] if values.shape == (1,) else values
-
-    return model.initial_state(
-        k_values,
-        a=np.asarray(a, dtype=np.float64),
-        **{name: per(value) for name, value in inputs.items()},
     )
 
 
@@ -581,7 +537,7 @@ def _solve_batch(
 
     Prepares the batch (:func:`_prepare_solve`) and launches it
     (:func:`_launch`, which takes ``options``). ``a_save`` defaults to the
-    two endpoints, :data:`A_START` and 0. Returns ``(solution, prepared, k_sorted)``. ``solution`` is
+    two endpoints, :data:`A_START` and 1. Returns ``(solution, prepared, k_sorted)``. ``solution`` is
     whatever modax returns, with rows in ``k_idx * n_cosmo + cosmology_idx``
     order over the ascending ``k_sorted``.
     """
