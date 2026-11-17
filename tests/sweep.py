@@ -1,4 +1,5 @@
-"""Sweeps of parameter space, shared by the model tests: stability, accuracy against CLASS, self-convergence.
+"""
+Helpers that define sweeps of the parameter space.
 
 Not a test file. ``models/test_lcdm.py`` and ``models/test_w0wacdm.py`` call
 the ``check_*`` functions for their own models; :func:`swept` solves each

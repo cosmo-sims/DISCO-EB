@@ -1,4 +1,6 @@
-"""What the test files share: host stand-ins, models, components added from outside, reference cosmologies.
+"""
+Helpers including host stand-ins, models, components added from outside
+and reference cosmologies.
 
 Not a test file. ``conftest.py`` sets the environment before this imports
 :mod:`discoeb`; the test folders import from here by name (``pythonpath`` in

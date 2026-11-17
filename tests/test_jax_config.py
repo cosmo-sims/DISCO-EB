@@ -1,4 +1,4 @@
-"""JAX's configuration on import (``_jax_config``): double precision, no GPU preallocation."""
+"""Tests of JAX's configuration on import (``_jax_config``)."""
 
 import os
 

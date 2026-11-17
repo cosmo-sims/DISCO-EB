@@ -1,4 +1,4 @@
-"""The interface :mod:`discoeb`: what it exports, and that nothing here imports DISCO-CMB."""
+"""Tests of the :mod:`discoeb` interface."""
 
 import ast
 from pathlib import Path
