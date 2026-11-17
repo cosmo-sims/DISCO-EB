@@ -1,10 +1,8 @@
-"""The base classes of cosmological models, :class:`Model` and :class:`ModelSpec`.
+"""The base classes of cosmological models.
 
-A model is a class whose bases are its components in state order. An
-instance of it is a cosmology, the model with values for its parameters.
-The components declare the parameters, so the constructor takes exactly
-those and a type checker sees them. The densities are physical,
-``omega = Omega h^2``, and their sum gives the Hubble constant.
+A model is constructed by inheriting from base components in state order. An
+instance of a model is constructed by passing values for its parameters.
+The result is a particular physical cosmology.
 
 >>> class LCDM_MNU(LCDM, MassiveNeutrinos):
 ...     \"\"\"LCDM with massive neutrinos.\"\"\"
@@ -41,9 +39,8 @@ __all__ = ["Model", "ModelSpec"]
 
 @dataclass(frozen=True)
 class ModelSpec:
-    """What the solver reads of a :class:`Model`: its components in state order and their settings.
-
-    Every model class carries one (``LCDM.spec``). It is a value, hashable
+    """
+    A specification of a cosmological model. It is a value, hashable
     and compared by its fields, so the solver caches its compiled kernel on
     it, and :meth:`resolved` makes every setting explicit for that. A
     cosmology's parameters, as a dictionary, are a point in its parameter
@@ -420,7 +417,7 @@ def _state_names(model: ModelSpec) -> tuple[str, ...]:
 
 
 class Model(Recombination):
-    """A cosmological model: a class whose bases are its components. Its instances are cosmologies.
+    """A cosmological model. Its instances are cosmologies.
 
     A model lists its components as bases, in state order, after ``Model``
     or after a model whose components it extends::
@@ -429,7 +426,7 @@ class Model(Recombination):
         class LCDM_MNU(LCDM, MassiveNeutrinos): ...
 
     The parameters the components declare are the keyword arguments of its
-    constructor: required without a default, optional with one. A type
+    constructor. They are required if there is no default. A type
     checker reads them off the declarations (the ``dataclass_transform`` on
     :class:`~discoeb.components._component.Component`), and ``help``, IPython and the
     class docstring list them. Every model has the recombination block,
@@ -440,7 +437,7 @@ class Model(Recombination):
     and ``name=`` the name errors and the kernel cache use. ``LCDM.spec`` is
     the :class:`ModelSpec` the solver reads.
 
-    A cosmology is immutable and a JAX pytree whose leaves are its
+    A cosmology is an immutable JAX pytree whose leaves are its
     parameters, so ``jax.jit`` traces them and ``jax.grad`` returns a
     cosmology of derivatives. Differentiating one outside the model's
     :func:`~discoeb.solver.differentiable_parameters` raises, so take the

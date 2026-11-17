@@ -1,4 +1,4 @@
-"""Observables computed from a solve's kept quantities."""
+"""Observables computed from a solve's returned quantities."""
 
 from .power_spectrum import matter_power_spectrum
 
