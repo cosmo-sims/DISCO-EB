@@ -7,7 +7,7 @@
 .. autofunction:: discoeb.solve_eb
 
 .. autoclass:: discoeb.Model
-   :members: from_density_parameters, H0, from_dict, to_dict, replace, parameter_keys, state_names, setting, swap, add, remove, with_settings
+   :members: from_density_parameters, H_0, from_dict, to_dict, replace, parameter_keys, state_names, setting, swap, add, remove, with_settings
 
 .. autoclass:: discoeb.LCDM
    :no-members:

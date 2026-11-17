@@ -35,16 +35,16 @@ SOLVER_COLUMNS = ("k",)
 """The row's column the solver sets rather than a component: the wave number."""
 
 DIRECTED_NAMES = (
-    "grhog",
-    "grhornomass",
-    "grhoc",
-    "grhob",
-    "grhov",
-    "YHe",
-    "Tcmb",
+    "omega_g",
+    "omega_ur",
+    "omega_c",
+    "omega_b",
+    "omega_de",
+    "Y_He",
+    "T_cmb",
 )
 """The directed inputs every built-in model leads with: the five background
-densities and the recombination rates' ``YHe`` and ``Tcmb``. A model's others (the curvature density, the dark-energy
+densities and the recombination rates' ``Y_He`` and ``T_cmb``. A model's others (the curvature density, the dark-energy
 parameters, the massive neutrinos' density and mass) follow in component
 order (:func:`parameter_layout`)."""
 N_COMMON_DIRECTED = len(DIRECTED_NAMES)
@@ -66,7 +66,7 @@ class ParameterLayout:
     """
 
     columns: dict
-    """Column by the name the providers read it under: ``grhoc``, ``k``."""
+    """Column by the name the providers read it under: ``omega_c``, ``k``."""
     directed: tuple[str, ...]
     """The directed parameters: the inputs a derivative moves."""
     values: tuple[tuple[str, int], ...]
@@ -124,7 +124,7 @@ def joint_model(model: type[Model] | ModelSpec, extra=()) -> Equations:
     are the last columns of every history, at ``model.index["tau"]`` and so
     on. ``extra`` lists component classes to append after them (the
     line-of-sight sources). The joint model integrates in the scale factor:
-    its time is ``a`` and its clock ``adot = a'``, the rate of ``a`` in the
+    its time is ``a`` and its clock ``a_prime = a'``, the rate of ``a`` in the
     conformal time the components write their rates in. Every cosmology
     then runs from :data:`A_START` to 1, and since ``a`` grows as ``tau``
     in the radiation era, the early solutions are the low-order polynomials
@@ -141,7 +141,7 @@ def _joint_model(spec: ModelSpec, extra) -> Equations:
         return spec.build(
             extra=[Recombination(), *(cls() for cls in extra)],
             time="a",
-            clock="adot",
+            clock="a_prime",
             last=last,
         )
 
@@ -163,10 +163,10 @@ def density_parameters(param, model: ModelSpec, xp=jnp) -> dict:
     """The parameters of ``model`` for a parameter dictionary, keyed as the components name them.
 
     The keys pass through, and every derived parameter comes from its
-    declaration (:class:`~discoeb.components._component.Parameter`): ``grhog``,
-    ``grhornomass``, ``grhoc``, ``grhob``, ``grhov`` and ``grhok`` the
+    declaration (:class:`~discoeb.components._component.Parameter`): ``omega_g``,
+    ``omega_ur``, ``omega_c``, ``omega_b``, ``omega_de`` and ``omega_k`` the
     photons, massless neutrinos, cold dark matter, baryons, dark energy and
-    curvature, ``grhor_nu``, ``n_mnu`` and ``amnu`` the massive neutrinos.
+    curvature, ``omega_nu_flavour``, ``n_mnu`` and ``amnu`` the massive neutrinos.
     Pass ``xp=jnp`` for a traced cosmology and ``xp=np`` for one given as floats.
     """
 
@@ -565,10 +565,10 @@ def build_keep_hook(model, names, layout: ParameterLayout):
     """Return a modax save hook ``(y, a, p) -> tuple`` of the quantities ``names``.
 
     A name is a state element or a quantity the joint model provides. State
-    elements (``clxc``, ``theta_2``, ``psi_0_1``: the
+    elements (``delta_c``, ``F_2``, ``psi_0_1``: the
     :meth:`~discoeb.models.ModelSpec.state_names`, or ``tau``, ``thermo_0`` ...
     ``kappa`` of the recombination block) come straight from the state. Provided
-    quantities (``R``, ``sigma``, ``phi`` with the line-of-sight sources
+    quantities (``R``, ``alpha``, ``phi`` with the line-of-sight sources
     appended, ``opacity`` or ``cs2`` from the thermal states) come from
     :meth:`~discoeb.components._component.Equations.build_function`, with the state, the time and
     the parameter row of ``layout`` as inputs. ``hook._generated_source``

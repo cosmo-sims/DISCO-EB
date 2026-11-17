@@ -35,6 +35,8 @@ from helpers import (
 
 from discoeb.components._component import (
     Interaction,
+    contributes,
+    derivative,
 )
 from discoeb.components.recombination import ReionizationDepth
 from discoeb.components.species import (
@@ -65,10 +67,10 @@ def test_two_copies_share_a_model():
     assert names[-4:] == ("x_delta", "x_theta", "y_delta", "y_theta")
     layout = parameter_layout(LCDM_XY)
     # the reionization redshift, declared by the recombination block, comes last
-    assert layout.directed[-3:] == ("x_grho0", "y_grho0", "z_re")
-    assert {"x_w", "y_cs2", "x_grho0", "y_grho0"} <= set(layout.columns)
-    # unnamed, the fluid's theta is the photons'
-    with pytest.raises(ValueError, match="theta"):
+    assert layout.directed[-3:] == ("x_omega", "y_omega", "z_re")
+    assert {"x_w", "y_cs2", "x_omega", "y_omega"} <= set(layout.columns)
+    # unnamed, the fluid's cs2 would be the baryons'
+    with pytest.raises(ValueError, match="needs a name"):
         LCDM.add(Fluid, name="clash").build()
 
 
@@ -78,11 +80,11 @@ def test_two_copies_share_a_model():
 def test_the_initial_state_is_the_models():
     _, y0 = packed(LCDM, cosmologies_of(LCDM, COSMOLOGY), [1e-2, 1e-1])
     assert y0.shape == (2, 55) and np.isfinite(y0).all()
-    np.testing.assert_allclose(y0[:, 0], [-1e-2, -1e-1], rtol=1e-3)  # etak ~ -k
+    np.testing.assert_allclose(y0[:, 0], -1.0, rtol=1e-3)  # eta ~ -1
     # the thermal state: the conformal time of the radiation era, then RECFAST's
     assert np.all((0.05 < y0[:, 50]) & (y0[:, 50] < 0.2))
     np.testing.assert_allclose(
-        y0[:, 51:], [[1.0, 2.0, COSMOLOGY["Tcmb"] / A_START, 0.0]] * 2
+        y0[:, 51:], [[1.0, 2.0, COSMOLOGY["T_cmb"] / A_START, 0.0]] * 2
     )
 
 
@@ -208,14 +210,14 @@ def test_the_parameter_reaches_the_dictionary_the_row_and_the_inputs():
     # in component order after the shared seven
     own = parameter_layout(LCDM).directed
     assert layout.directed[:7] == own[:7]
-    assert sorted(layout.directed) == sorted((*own, "grhox"))
-    i = layout.directed.index("grhox")
-    assert layout.directed_columns[i] == layout.columns["grhox"]
+    assert sorted(layout.directed) == sorted((*own, "omega_x"))
+    i = layout.directed.index("omega_x")
+    assert layout.directed_columns[i] == layout.columns["omega_x"]
     # the directed parameters lead the row, and nothing else stands for them
     assert layout.directed_columns == tuple(range(len(layout.directed)))
-    assert not {"eps", "grhox_nominal", "dir_grhox"} & set(layout.columns)
+    assert not {"eps", "omega_x_nominal", "dir_omega_x"} & set(layout.columns)
     # The built-in models' rows have no trace of it.
-    assert "grhox" not in parameter_layout(LCDM).columns
+    assert "omega_x" not in parameter_layout(LCDM).columns
 
 
 # --- The joint system as a modax hierarchy: the recombination block publishing what the hierarchy reads.
@@ -246,7 +248,7 @@ def test_the_recombination_block_publishes_the_thermal_quantities():
     assert perturbations.n == nvar and perturbations.reads == (recombination,)
     assert model.state_indices(background) == list(thermal_indices(model))
     # the hierarchy alone, as the model's sparsity traces it: 173 entries
-    # (165 and the slip's reading of z under the radiation streaming approximation), 11 colours
+    # (165 and the slip's reading of h' under the radiation streaming approximation), 11 colours
     main = (
         perturbations.sparsity
     )  # normalised by the block: the sorted columns of each row
@@ -292,7 +294,8 @@ def test_the_recombination_block_steps_on_its_own():
 class Ageing(Interaction):
     """A perturbation equation that reads the background state itself."""
 
-    def d_clxc(self, t):
+    @derivative("delta_c")
+    def d_delta_c(self, t):
         return 0.0 * t
 
 
@@ -300,7 +303,7 @@ def test_a_state_that_reads_no_wave_number_joins_the_background():
     model = joint_model(LCDM_T)
     background, perturbations = model.stages()
     assert background == ("t", "tau", "thermo", "kappa")
-    assert "t" not in perturbations and "clxc" in perturbations
+    assert "t" not in perturbations and "delta_c" in perturbations
     # nobody reads it, so the perturbations are handed what LCDM's are
     assert model.published() == ("tau", "opacity", "cs2")
     # without the recombination block the scale factor is an input
@@ -323,15 +326,15 @@ def test_the_kernel_carries_the_state_to_today():
     k = np.geomspace(1.0e-3, 0.3, 6)
     a = np.array([1.0e-4, 1.0e-2, 1.0])
     with_time = solve_eb(
-        cosmologies_of(LCDM_T, COSMOLOGY), k, a, keep=("t", "tau", "clxc")
+        cosmologies_of(LCDM_T, COSMOLOGY), k, a, keep=("t", "tau", "delta_c")
     )
-    plain = solve_eb(cosmologies_of(LCDM, COSMOLOGY), k, a, keep=("tau", "clxc"))
-    # t = int a dtau = int a / adotoa dln a, by the trapezoid rule on the host
+    plain = solve_eb(cosmologies_of(LCDM, COSMOLOGY), k, a, keep=("tau", "delta_c"))
+    # t = int a dtau = int a / aH dln a, by the trapezoid rule on the host
     grid = np.geomspace(1.0e-9, 1.0, 20000)
-    rate = np.asarray(on_the_host(LCDM, COSMOLOGY, "adotoa", a=grid))
+    rate = np.asarray(on_the_host(LCDM, COSMOLOGY, "aH", a=grid))
     age = np.trapezoid(grid / rate, np.log(grid))
     conformal_age = np.trapezoid(1.0 / rate, np.log(grid))
-    t = np.asarray(with_time[0, 0])  # keep order: t, tau, clxc
+    t = np.asarray(with_time[0, 0])  # keep order: t, tau, delta_c
     np.testing.assert_allclose(t[:, -1], age, rtol=1e-4)
     assert 4000.0 < age < 4500.0  # 13.8 Gyr in Mpc
     # and the conformal time, a state now, ends at the conformal age
@@ -358,7 +361,7 @@ def test_the_field_is_background_and_its_perturbation_is_not():
 
 
 def test_a_held_key_raises_when_differentiated():
-    """``YHe`` is read by the solve but not differentiated: no silent zero."""
+    """``Y_He`` is read by the solve but not differentiated: no silent zero."""
     import jax
 
     from discoeb.models._model import _batch_of
@@ -375,8 +378,8 @@ def test_a_held_key_raises_when_differentiated():
 
     assert float(column("omega_c")) == 1.0
     assert float(column("A_s")) == 0.0  # never read by the solve: no tangent
-    with pytest.raises(ValueError, match="YHe"):
-        column("YHe")
+    with pytest.raises(ValueError, match="Y_He"):
+        column("Y_He")
 
 
 # ============================================================================
@@ -391,8 +394,8 @@ def test_a_held_key_raises_when_differentiated():
 def test_solve_eb_derivatives():
     """The kept quantities are differentiable in the cosmological parameters.
 
-    The derivative chains the densities' dependence on ``Omegam``, ``Omegab``,
-    ``H0``, ``Tcmb`` and ``Neff`` into the densities-level rule, whose tangent
+    The derivative chains the densities' dependence on ``Omega_m``, ``Omega_b``,
+    ``H_0``, ``T_cmb`` and ``N_eff`` into the densities-level rule, whose tangent
     hook stores each quantity's derivative along the sensitivity column of its
     replica: ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad`` of the kept values
     all come from one joint launch. The densities-level rule is checked
@@ -436,10 +439,10 @@ def test_solve_eb_derivatives():
 
     densities = inputs_of(theta)
     a = np.geomspace(1.0e-5, 1.0, 12)
-    names = ("R", "clxc", "theta_2")
-    noise = {"R": 5.0e-6, "clxc": 5.0e-6, "theta_2": 1.0e-4}
+    names = ("R", "delta_c", "F_2")
+    noise = {"R": 5.0e-6, "delta_c": 5.0e-6, "F_2": 1.0e-4}
 
-    # converted from Omegam and H0 as JAX values, as inputs_of converts them
+    # converted from Omega_m and H_0 as JAX values, as inputs_of converts them
     traced = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
     plain = solve_eb(cosmologies_of(LCDM, traced), SOLVE_EB_K, a, keep=names)
     prepared = _prepare_solve(LCDM, (cosmologies_of(LCDM, cosmology),), SOLVE_EB_K)
@@ -472,7 +475,7 @@ def test_solve_eb_derivatives():
     assert jac.shape == base.shape + (len(DIRECTED_NAMES),)
     assert np.isfinite(jac).all()
     for j, dn in enumerate(DIRECTED_NAMES):
-        if densities[0, j] == 0.0:  # grhok, amnu and z_re of a flat LCDM
+        if densities[0, j] == 0.0:  # omega_k, amnu and z_re of a flat LCDM
             continue
         step = 1.0e-3 * float(densities[0, j])
         unit = jnp.zeros_like(densities).at[0, j].set(1.0)
@@ -488,7 +491,7 @@ def test_solve_eb_derivatives():
             # at fixed scale factor a density moves the conformal time and
             # the switch with it, which a difference sees and a sensitivity,
             # blind to the discontinuity, cannot (5e-4 of the scale).
-            compared = err[0, q][:, a < 1.0e-3] if name == "theta_2" else err[0, q]
+            compared = err[0, q][:, a < 1.0e-3] if name == "F_2" else err[0, q]
             worst = compared.max()
             assert worst < noise[name], (
                 f"d{name}/d{dn}: {worst:.3g} of the scale over a 1e-3 step"
@@ -496,6 +499,7 @@ def test_solve_eb_derivatives():
 
     weights = 1.0 / scale
 
+    @contributes("total")
     def total(d):
         return jnp.sum(kept(d) * weights)
 
@@ -503,7 +507,7 @@ def test_solve_eb_derivatives():
     # The transposed rule against the untransposed one: jax.grad of a weighted
     # sum is the Jacobian contracted with the weights (the Jacobian's accuracy
     # is the check above; a central difference of the sum is ill-conditioned,
-    # its terms cancelling to 1e-3 of their size for Tcmb).
+    # its terms cancelling to 1e-3 of their size for T_cmb).
     summed = np.einsum("cqkt,cqktj->j", np.broadcast_to(weights, base.shape), jac)
     np.testing.assert_allclose(
         grad, summed, rtol=1.0e-6, err_msg="grad vs contracted jacfwd"
@@ -539,11 +543,11 @@ def test_solve_eb_derivatives():
     )
     assert np.all(grad_theta != 0.0)
 
-    # mnu needs MassiveNeutrinos, cs2_DE DarkEnergy. The sensitivities in
-    # YHe and cs2_DE miss central differences of P(k) by 0.8 and 1 percent
+    # m_nu needs MassiveNeutrinos, cs2_DE DarkEnergy. The sensitivities in
+    # Y_He and cs2_DE miss central differences of P(k) by 0.8 and 1 percent
     # (2026-11-13), so they stay held.
     # z_re needs ReionizationDepth, whose state resolves its derivative.
-    for key, value in (("mnu", 0.0), ("YHe", 0.245), ("z_re", 7.0)):
+    for key, value in (("m_nu", 0.0), ("Y_He", 0.245), ("z_re", 7.0)):
         with pytest.raises(ValueError, match="cannot be differentiated"):
             jax.grad(
                 lambda v, key=key: jnp.sum(
@@ -558,15 +562,15 @@ def test_solve_eb_derivatives():
 
 
 # Measured |sensitivity - central difference| / max |central difference|
-# (2026-11-13, RTX 4070 SUPER), largest over R and clxb: w_DE_0 1.6e-4,
-# w_DE_a 3.4e-4, Omegak 2.7e-4, mnu 9.8e-4 (dR/dmnu). Of sum P(k): w_DE_0
-# 6.9e-5, w_DE_a 1.3e-6, Omegak 1.5e-5, mnu 7.2e-5. The gate is 1e-3, 2e-3
-# for mnu's solve. YHe and cs2_DE missed P(k) by 0.8 and 1 percent at every
+# (2026-11-13, RTX 4070 SUPER), largest over R and delta_b: w_DE_0 1.6e-4,
+# w_DE_a 3.4e-4, Omega_k 2.7e-4, m_nu 9.8e-4 (dR/dmnu). Of sum P(k): w_DE_0
+# 6.9e-5, w_DE_a 1.3e-6, Omega_k 1.5e-5, m_nu 7.2e-5. The gate is 1e-3, 2e-3
+# for m_nu's solve. Y_He and cs2_DE missed P(k) by 0.8 and 1 percent at every
 # step tried and stay held.
-MORE_SOLVE_GATES = {"mnu": 2.0e-3}
+MORE_SOLVE_GATES = {"m_nu": 2.0e-3}
 
 
-MORE_NAMES = ("R", "clxb", "kappa")
+MORE_NAMES = ("R", "delta_b", "kappa")
 
 
 @pytest.mark.slow
@@ -654,18 +658,18 @@ def test_splitting_the_dark_matter_into_a_named_fluid_leaves_the_solve_unchanged
         model,
         {
             **COSMOLOGY,
-            "Omegam": COSMOLOGY["Omegam"] - OMEGA_FLUID,
+            "Omega_m": COSMOLOGY["Omega_m"] - OMEGA_FLUID,
             "x_Omega": OMEGA_FLUID,
         },
     )
-    names = ("clxc", "R", "tau")
+    names = ("delta_c", "R", "tau")
     plain = by_name(solve_eb(lcdm, k, a, keep=names), names)
     keep = (*names, "x_delta")
     split = by_name(solve_eb(with_fluid, k, a, keep=keep), keep)
     # the same expansion: the conformal time, a state, comes out the same
     np.testing.assert_allclose(split["tau"], plain["tau"], rtol=1e-5)
-    np.testing.assert_allclose(split["x_delta"], split["clxc"], rtol=1e-5)
-    for name in ("clxc", "R"):
+    np.testing.assert_allclose(split["x_delta"], split["delta_c"], rtol=1e-5)
+    for name in ("delta_c", "R"):
         ours, theirs = split[name], plain[name]
         assert np.abs(ours - theirs).max() < 1e-3 * np.abs(theirs).max(), name
 
@@ -687,7 +691,7 @@ def test_splitting_the_dark_matter_leaves_the_solve_unchanged():
     The second fluid's contrast equals the CDM's in the same solve, the
     contrast and the curvature perturbation agree with the plain LCDM solve
     to the solver's tolerance, and so does the conformal time. The directed
-    input ``grhox`` moves every kept quantity as ``grhoc`` does.
+    input ``omega_x`` moves every kept quantity as ``omega_c`` does.
     """
 
     import jax
@@ -695,22 +699,22 @@ def test_splitting_the_dark_matter_leaves_the_solve_unchanged():
 
     from discoeb import directed_inputs, solve_eb
 
-    names = ("clxc", "R", "theta_2", "tau")
+    names = ("delta_c", "R", "F_2", "tau")
     lcdm = cosmologies_of(LCDM, COSMOLOGY)
     plain = by_name(solve_eb(lcdm, SOLVE_K, SOLVE_A, keep=names), names)
     batch = cosmologies_of(LCDM_X, _split(COSMOLOGY))
-    keep = (*names, "clxx")
+    keep = (*names, "delta_x")
     split = by_name(solve_eb(batch, SOLVE_K, SOLVE_A, keep=keep), keep)
 
     np.testing.assert_allclose(split["tau"], plain["tau"], rtol=1e-5)
     names = names[:-1]
     # The same equations and initial state; the fp32 LU tells the columns apart.
-    np.testing.assert_allclose(split["clxx"], split["clxc"], rtol=1e-5)
-    # The initial states agree (the growing mode's om sums grho_matter, which
+    np.testing.assert_allclose(split["delta_x"], split["delta_c"], rtol=1e-5)
+    # The initial states agree (the growing mode's om sums rho_matter, which
     # the second fluid contributes to), so what is left is the solver's:
     # the smooth quantities to 1e-3, the oscillating photon quadrupole,
     # stepped differently by a system one state larger, to a few times that.
-    for name, gate in (("clxc", 1e-3), ("R", 1e-3), ("theta_2", 5e-3)):
+    for name, gate in (("delta_c", 1e-3), ("R", 1e-3), ("F_2", 5e-3)):
         a, b = split[name], plain[name]
         assert np.abs(a - b).max() < gate * np.abs(b).max(), name
 
@@ -725,8 +729,8 @@ def test_splitting_the_dark_matter_leaves_the_solve_unchanged():
 
     jac = np.asarray(jax.jacfwd(kept)(jnp.asarray(x)))[..., 0, :]
     assert np.isfinite(jac).all()
-    along_c = jac[..., directed.index("grhoc")]
-    along_x = jac[..., directed.index("grhox")]
+    along_c = jac[..., directed.index("omega_c")]
+    along_x = jac[..., directed.index("omega_x")]
     scale = np.abs(along_c).max(axis=(-2, -1), keepdims=True)
     assert np.abs(along_x - along_c).max() < 1e-3 * scale.max()
 
@@ -738,7 +742,7 @@ def _power(model, cosmology, k):
     from discoeb import matter_power_spectrum, solve_eb
 
     cosmology = cosmologies_of(model, cosmology)
-    keep = ("clxc", "clxb")
+    keep = ("delta_c", "delta_b")
     values = solve_eb(cosmology, k, [1.0], keep=keep, thermo_weight=0.1)
     today = {n: v[0, :, -1] for n, v in by_name(values, keep).items()}
     names = ("omega_c", "omega_b", "A_s", "n_s", "k_p")
@@ -751,22 +755,22 @@ GROWTH_A = np.geomspace(1.0e-5, 1.0, 2000)
 
 
 def _growth(model, cosmology):
-    """``(growth factor, H0)`` in the model's background, whose expansion rate the solve itself gives.
+    """``(growth factor, H_0)`` in the model's background, whose expansion rate the solve itself gives.
 
     The matter growth factor today, ``delta'' + aH delta' = 4 pi G a^2 rho_m
-    delta``, by Heun steps in ``ln a`` from ``a = 1e-5`` with ``adotoa`` kept
+    delta``, by Heun steps in ``ln a`` from ``a = 1e-5`` with ``aH`` kept
     on that grid. Only the ratio between two models that agree early on is
-    meaningful. ``H0`` in km/s/Mpc is the rate today.
+    meaningful. ``H_0`` in km/s/Mpc is the rate today.
     """
 
     from discoeb import solve_eb
-    from discoeb.components.gravity import GRHOM_PER_H0SQ
+    from discoeb.components.gravity import H100, H100_SQ
 
     cosmology = cosmologies_of(model, cosmology)
     a = GROWTH_A
-    rate = np.asarray(solve_eb(cosmology, [1.0e-2], a, keep=("adotoa",)))[0, 0, 0]
+    rate = np.asarray(solve_eb(cosmology, [1.0e-2], a, keep=("aH",)))[0, 0, 0]
     d = model_parameters(model, cosmology)
-    source = 0.5 * float(d["grhoc"] + d["grhob"]) / a
+    source = 1.5 * H100_SQ * float(d["omega_c"] + d["omega_b"]) / a
     lna = np.log(a)
     delta, slope = 1.0, 0.0
     for i in range(len(a) - 1):
@@ -779,7 +783,7 @@ def _growth(model, cosmology):
         )
         delta += 0.5 * h * (f0[0] + f1[0])
         slope += 0.5 * h * (f0[1] + f1[1])
-    return delta, float(rate[-1]) * np.sqrt(3.0 / GRHOM_PER_H0SQ)
+    return delta, float(rate[-1]) * 100.0 / H100
 
 
 @pytest.mark.slow
@@ -804,7 +808,7 @@ def test_the_solve_matches_lcdm_and_the_growth_in_the_fields_background():
     field = _power(QCDM, rolling, k)
     growth_lcdm, h0_lcdm = _growth(LCDM, QCDM_COSMOLOGY)
     growth_field, h0_field = _growth(QCDM, rolling)
-    assert h0_lcdm == pytest.approx(QCDM_COSMOLOGY["H0"], rel=1e-4)
+    assert h0_lcdm == pytest.approx(QCDM_COSMOLOGY["H_0"], rel=1e-4)
     assert 0.9 * h0_lcdm < h0_field < h0_lcdm
     # the field is background: what the hook reads of it does not know the
     # wave number (it did until 2026-11-17, when the joint state was not laid
@@ -848,7 +852,7 @@ def test_solve_eb_keeps_what_the_history_holds():
     from discoeb.solver._solver import solve_eb
 
     cosmologies = _perturbed_cosmologies(2)
-    names = ("R", "clxc", "clxb", "theta_2", "n_15", "sigma", "adotoa")
+    names = ("R", "delta_c", "delta_b", "F_2", "N_15", "alpha", "aH")
     values = solve_eb(
         cosmologies_of(LCDM, cosmologies), SOLVE_EB_K, SOLVE_EB_A, keep=names
     )
@@ -870,7 +874,7 @@ def test_solve_eb_keeps_what_the_history_holds():
     )  # the joint model: the thermal quantities come from the thermal states
 
     for ci, cosmology in enumerate(cosmologies_of(LCDM, cosmologies)):
-        for name in ("clxc", "clxb", "theta_2", "n_15"):
+        for name in ("delta_c", "delta_b", "F_2", "N_15"):
             j = names.index(name)
             expected = hist[:, ci, :, model.index[name]]
             np.testing.assert_allclose(kept[ci, j], expected, rtol=1e-9, atol=1e-14)
@@ -881,8 +885,8 @@ def test_solve_eb_keeps_what_the_history_holds():
         base = {name: row[:, col][:, None] for name, col in columns.items()}
         base.update(model.state_values(hist[:, ci]))
         base.update(a=SOLVE_EB_A[None, :], k=k_sorted[:, None])
-        R, sigma, adotoa = model.evaluate("R", "sigma", "adotoa", math=np, **base)
-        for name, expected in (("R", R), ("sigma", sigma), ("adotoa", adotoa)):
+        R, alpha, aH = model.evaluate("R", "alpha", "aH", math=np, **base)
+        for name, expected in (("R", R), ("alpha", alpha), ("aH", aH)):
             j = names.index(name)
             np.testing.assert_allclose(kept[ci, j], expected, rtol=2e-6, atol=1e-12)
 
@@ -891,10 +895,10 @@ def test_solve_eb_keeps_what_the_history_holds():
         SOLVE_EB_K, cosmologies_of(LCDM, cosmologies), thermo_weight=THERMO_ERROR_WEIGHT
     )
     for ci, cosmology in enumerate(prepared.cosmologies):
-        grhoc, grhob = cosmology["omega_c"], cosmology["omega_b"]
-        clxc = np.asarray(values[ci, names.index("clxc"), :, -1])
-        clxb = np.asarray(values[ci, names.index("clxb"), :, -1])
-        delta_m = (grhoc * clxc + grhob * clxb) / (grhoc + grhob)
+        omega_c, omega_b = cosmology["omega_c"], cosmology["omega_b"]
+        delta_c = np.asarray(values[ci, names.index("delta_c"), :, -1])
+        delta_b = np.asarray(values[ci, names.index("delta_b"), :, -1])
+        delta_m = (omega_c * delta_c + omega_b * delta_b) / (omega_c + omega_b)
         k = np.asarray(SOLVE_EB_K)
         pk = (
             2.0

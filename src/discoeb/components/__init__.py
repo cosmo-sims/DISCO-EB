@@ -17,6 +17,7 @@ from ._component import (
     State,
     Sum,
     contributes,
+    derivative,
 )
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "State",
     "Sum",
     "contributes",
+    "derivative",
     "gravity",
     "interactions",
     "recombination",

@@ -16,22 +16,22 @@ N_SWEEP = 32
 SWEEP_K = np.geomspace(1.0e-4, 1.0, 64)
 
 BOUNDS = {
-    "Omegam": (0.2, 0.45),
-    "Omegab": (0.035, 0.065),
-    "H0": (55.0, 85.0),
-    "Neff": (2.5, 4.0),
-    "YHe": (0.2, 0.3),
+    "Omega_m": (0.2, 0.45),
+    "Omega_b": (0.035, 0.065),
+    "H_0": (55.0, 85.0),
+    "N_eff": (2.5, 4.0),
+    "Y_He": (0.2, 0.3),
 }
-"""The Latin hypercube's box, shared by every model; ``Tcmb``, ``A_s`` and ``n_s`` stay fixed."""
+"""The Latin hypercube's box, shared by every model; ``T_cmb``, ``A_s`` and ``n_s`` stay fixed."""
 
 MODEL_BOUNDS = {
     "lcdm": {},
     "w0wacdm": {"w_DE_0": (-1.3, -0.7), "w_DE_a": (-0.5, 0.5)},
-    "lcdm-mnu": {"mnu": (0.02, 0.6)},
+    "lcdm-m_nu": {"m_nu": (0.02, 0.6)},
 }
 """Each model's own parameters. ``w_DE_0 + w_DE_a`` stays below -0.2 in the box."""
 
-SWEEP_KEYS = (*BOUNDS, "w_DE_0", "w_DE_a", "mnu")
+SWEEP_KEYS = (*BOUNDS, "w_DE_0", "w_DE_a", "m_nu")
 
 MATTER_THERMO_WEIGHT = 0.1
 """The thermal error weight of the P(k) solves, as ``_matter_power`` sets it."""
@@ -40,7 +40,7 @@ MATTER_THERMO_WEIGHT = 0.1
 def _model(name):
     from discoeb.models import LCDM, LCDM_MNU, W0WACDM
 
-    return {"lcdm": LCDM, "w0wacdm": W0WACDM, "lcdm-mnu": LCDM_MNU}[name]
+    return {"lcdm": LCDM, "w0wacdm": W0WACDM, "lcdm-m_nu": LCDM_MNU}[name]
 
 
 def sweep(name, n=N_SWEEP, seed=SWEEP_SEED):
@@ -54,8 +54,8 @@ def sweep(name, n=N_SWEEP, seed=SWEEP_SEED):
     cosmologies = []
     for row in points:
         param = {**REFERENCE_COSMOLOGY, **dict(zip(bounds, map(float, row)))}
-        if "mnu" in param and name == "lcdm-mnu":
-            param["Nmnu"] = 1.0
+        if "m_nu" in param and name == "lcdm-m_nu":
+            param["N_mnu"] = 1.0
         cosmologies.append(param)
     return cosmologies
 
@@ -122,12 +122,12 @@ def _class_pk(param, k_values):
                 "use_ppf": "yes" if _crosses_phantom_divide(param) else "no",
             }
         )
-    if param.get("Nmnu", 0.0):
+    if param.get("N_mnu", 0.0):
         settings.update(
             {
                 "N_ncdm": 1,
-                "deg_ncdm": param["Nmnu"],
-                "m_ncdm": param["mnu"],
+                "deg_ncdm": param["N_mnu"],
+                "m_ncdm": param["m_nu"],
                 "T_ncdm": (4.0 / 11.0) ** (1.0 / 3.0),
             }
         )
@@ -180,7 +180,7 @@ def check_sweep_is_stable(name):
     )
 
 
-SWEEP_PK_GATES = {"lcdm": 6.0e-3, "w0wacdm": 7.0e-3, "lcdm-mnu": 9.0e-3}
+SWEEP_PK_GATES = {"lcdm": 6.0e-3, "w0wacdm": 7.0e-3, "lcdm-m_nu": 9.0e-3}
 """Largest ``|P / P_CLASS - 1|`` over the sweep's modes and cosmologies.
 
 Measured 2026-11-13 over ``k`` in 1e-4 to 1 Mpc^-1 (median of each
@@ -190,7 +190,7 @@ cosmology's maximum, then the sweep's maximum):
   1); below ``k = 0.3`` at most 2.5e-3, below 0.01 at most 1.4e-4.
 - ``w0wacdm``, the 25 that do not cross -1: 3.5e-3, 5.9e-3, also at the
   highest ``k``.
-- ``lcdm-mnu``, 32 with one species of 0.02 to 0.6 eV: 3.7e-3, 7.7e-3, the
+- ``lcdm-m_nu``, 32 with one species of 0.02 to 0.6 eV: 3.7e-3, 7.7e-3, the
   largest at ``k ~ 0.1`` for the heaviest masses (0.49 to 0.58 eV), the
   three-node momentum quadrature (``NQMAX = 3``).
 """
@@ -211,11 +211,11 @@ def check_sweep_matches_class(name):
 
 CROSSING_COSMOLOGY = {
     **REFERENCE_COSMOLOGY,
-    "Omegam": 0.2566426945368695,
-    "Omegab": 0.03777689274686536,
-    "H0": 70.39801665473514,
-    "Neff": 3.544575558736806,
-    "YHe": 0.27119999546858503,
+    "Omega_m": 0.2566426945368695,
+    "Omega_b": 0.03777689274686536,
+    "H_0": 70.39801665473514,
+    "N_eff": 3.544575558736806,
+    "Y_He": 0.27119999546858503,
     "w_DE_0": -1.0190233214019964,
     "w_DE_a": 0.3578979092001213,
 }
@@ -243,7 +243,7 @@ def check_dark_energy_crossing_minus_one():
 CONVERGENCE_COSMOLOGIES = {
     "lcdm": REFERENCE_COSMOLOGY,
     "w0wacdm": {**REFERENCE_COSMOLOGY, "w_DE_0": -0.9, "w_DE_a": 0.1},
-    "lcdm-mnu": {**REFERENCE_COSMOLOGY, "Nmnu": 1.0, "mnu": 0.06},
+    "lcdm-m_nu": {**REFERENCE_COSMOLOGY, "N_mnu": 1.0, "m_nu": 0.06},
 }
 """One cosmology per model for the self-convergence test: Planck 2018, with
 a CPL fluid that stays above -1, or one massive species of 0.06 eV."""
@@ -269,10 +269,10 @@ def _converged_matter_power(model, cosmology):
     # SWEEP_K is ascending, so k_sorted is SWEEP_K
     final = np.asarray(hist).reshape(len(k_sorted), -1, prepared.model.nvar)[:, -1]
     index = prepared.model.index
-    grhoc, grhob = c.omega_c, c.omega_b
-    delta_m = (grhoc * final[:, index["clxc"]] + grhob * final[:, index["clxb"]]) / (
-        grhoc + grhob
-    )
+    omega_c, omega_b = c.omega_c, c.omega_b
+    delta_m = (
+        omega_c * final[:, index["delta_c"]] + omega_b * final[:, index["delta_b"]]
+    ) / (omega_c + omega_b)
     k = np.asarray(k_sorted)
     pk = 2.0 * np.pi**2 / k**3 * c.A_s * (k / c.k_p) ** (c.n_s - 1.0) * delta_m**2
     return pk, np.asarray(stats["loop_steps"])

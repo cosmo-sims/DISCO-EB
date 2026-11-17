@@ -121,7 +121,7 @@ saved scale factors, the CMB's sources being a `LineOfSightSources` component pa
 `extra`; error weights by state name; differentiable in
 `differentiable_parameters(model)` or in the model's directed inputs passed as `inputs=`: all of them, as
 `directed_inputs` gives them, or the seven `DIRECTED_NAMES` every built-in
-model leads with (`N_COMMON_DIRECTED`: the five densities, `YHe`, `Tcmb`),
+model leads with (`N_COMMON_DIRECTED`: the five densities, `Y_He`, `T_cmb`),
 which DISCO-CMB's `cl_power_spectrum_jax` passes. There is no default model
 (removed 2026-11-16): every function takes cosmologies of a model or names
 the model, and a bare dictionary raises `TypeError`. **Nothing is integrated before the solve** (2026-11-17; before,
@@ -130,7 +130,7 @@ and the reionization redshift, and DISCO-CMB read `background_history`,
 `density_coefficients` and `conformal_ages`). The solve integrates in the
 scale factor from `A_START` to 1, the conformal time is its state `tau`
 (keep it: its value at `a = 1` is the conformal age), and a cosmology's
-parameters are physical densities whose sum is `H0`. A CMB
+parameters are physical densities whose sum is `H_0`. A CMB
 change that seems to need a private name should add to `__init__.py` instead;
 changing `__init__.py` means running DISCO-CMB's tests too.
 
@@ -147,26 +147,30 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
 1. **components/_component.py** - Right-hand sides from components, by dependency injection
    - A `Component` declares its settings (`LMAX_G = Setting(15)`, loaded from
      `DISCO_LMAX_G` when the class is created, overridable as a constructor
-     argument) and its state as class attributes (`etak = State()`,
+     argument) and its state as class attributes (`eta = State()`,
      `theta = State(lambda self: self.LMAX_G + 1, tail_from=3)`), and provides
      quantities through ordinary methods whose *parameter names after `self`
      are the quantities they depend on* (a method or lambda that reads nothing
      of its component may leave `self` out; `@staticmethod` is accepted).
-     `d_<state>` provides a derivative contribution: a scalar state's is
+     `@derivative("x")` marks a contribution to the rate of the state `x`
+     (2026-11-17; before, a method named `d_x`, and `@contributes("d_x")`
+     from any other component): a scalar state's is
      returned; a vector state's is written into `output`, which the framework
      hands the provider filled with zeros and then sums into the derivative,
      so several components may write one state. A sum is declared by the
-     component that reads it, `grho = Sum()` (2026-11-16; before, a global
+     component that reads it, `rho = Sum()` (2026-11-16; before, a global
      `SUMS` tuple passed to `Equations`), and a model's sums are those its
-     components declare. A method named after a sum contributes to it.
-     Since 2026-11-15 a contribution to a sum,
-     or to another component's state, has a name of its own and says what it
-     adds to: `@contributes("dgrho") def dgrho_b(...)` (`_contributed`; the
-     suffix names the species: `_c`, `_b`, `_g`, `_r`, `_nu`, `_de`,
-     `_lambda`, `_fluid`, `_thomson`). A model class inherits every
+     components declare.
+     Every contribution has a name of its own and says what it
+     adds to: `@contributes("delta_rho") def delta_rho_b(...)`,
+     `@derivative("theta_b") def euler_b(...)` (`_contributed`; a
+     suffix names the species: `_c`, `_b`, `_g`, `_ur`, `_nu`, `_de`).
+     One method may add the same value to several sums:
+     `@contributes("rho", "rho_radiation") def rho_photons(...)`. A method
+     named `d_<state>` or after a sum without its decorator raises
+     `TypeError` (`_undeclared`): a name alone never makes a contribution. A model class inherits every
      component, and shared method names with different signatures are what
-     ty and pyright report as incompatible bases. A plain-named contribution
-     still works at run time. Wherever a function fills an array
+     ty and pyright report as incompatible bases. Wherever a function fills an array
      instead of returning, the array is its parameter `output`
    - A `State` also carries its initial condition (`State(..., initial=fn)`,
      a lambda for a scalar or a `_`-prefixed function defined just above for
@@ -225,8 +229,8 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      outside could never add one), `A_s: ArrayLike =
      Parameter(solved=False)` a key the solve never reads, whose tangent
      `solve_eb` drops instead of raising (the primordial spectrum's;
-     before, a global `UNUSED_BY_THE_SOLVE` tuple), `grhoc: ArrayLike =
-     Derived(lambda omega_c: ..., directed=True)` a kernel
+     before, a global `UNUSED_BY_THE_SOLVE` tuple), `omega_g: ArrayLike =
+     Derived(lambda T_cmb: ..., directed=True)` a kernel
      input derived on the host by name from other parameters. `Parameter`
      and `Derived` are `dataclass_transform` field specifiers returning a
      `ParameterDeclaration`: `Derived`'s `init: Literal[False]` default keeps
@@ -239,8 +243,8 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      No parameter closes a budget any more (2026-11-17, `closes_budget`
      removed): every density is given, physically (`omega = Omega h^2`),
      and `Model.from_density_parameters` does the closure's algebra for
-     whoever wants `H0` as an input. Two components of one model may share
-     a name only through the same declaration (`grhov` on the
+     whoever wants `H_0` as an input. Two components of one model may share
+     a name only through the same declaration (`omega_de` on the
      `_DarkEnergyDensity` base of both dark energies). A component's `check` classmethod names the
      keys it validates (`DarkEnergy.check(cls, w_DE_0, w_DE_a)`).
      `declared_parameters(classes)`, `derive_parameters(...)`
@@ -264,43 +268,62 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      computes `1.0 / a`, `1.0 / tau` or `1.0 / (k * k)` itself. LLVM merges
      the repeated divisions, so the kernel compiles and runs as before
      (35.5 s cold either way, P(k) 186 ms and 270 ms)
-   - `gravity.py`: `Background` (the Friedmann equation: `adotoa = sqrt(grho/3 -
-     Kcurv)` and `adotoa_prime = -(grho + 3 gpres)/6`), `Metric`
-     (etak and the Einstein constraints `z`, `sigma`, and `R`, the comoving
-     curvature perturbation `-etak/k - aH dgq / (k (grho + gpres))`,
-     CAMB's sign, read by `solve_eb`'s hook and not by the right-hand side),
-     `Curvature` (geometry: `Kcurv`, `s2`; in no sum since 2026-11-14),
+   - **The convention is plain, not CAMB's** (2026-11-17). A density is a
+     physical density parameter, `omega_i(a) = rho_i(a) / rho_100`, so a
+     species' value today is its own parameter (`omega_c`) and the kernel
+     reads no `8 pi G rho a^2`. `Background.four_pi_G_a2 = 1.5 H100^2 a^2`
+     turns one into 1/Mpc^2 where an Einstein equation needs it. The
+     variables are Ma & Bertschinger's: `eta` (was `etak = k eta`),
+     `h_prime` (was `z = h'/2k`), `alpha` (was `sigma = k alpha`), `delta_c`,
+     `delta_b`, `theta_b` (was `vb = theta_b / k`), the photon hierarchy `F`
+     (`F_0 = delta_g`, `F_1 = 4 theta_g / 3k`, `F_2 = 2 sigma_g`), `E`, the
+     neutrinos' `N`, and the sums `rho`, `pressure`, `delta_rho`, `momentum`
+     (`Sum (rho + p) theta`) and `stress` (`Sum (rho + p) sigma`). The
+     normalisation is unchanged (`R = 1`, `eta = -1` at the start). Against
+     the CAMB-convention code: the host right-hand sides agree to 1e-8
+     under the change of variables for all four models, `P(k)` at rtol
+     1e-7 to 2.5e-6, the step counts are equal and a 128-cosmology batch
+     takes 261 ms (263 before). A provider must take `1.0 / a` and `1.0 /
+     (k * k)` in exactly those forms: LLVM merges equal divisions only,
+     and with `1.0 / (a * a)` and `/ (k * k * curved)` written out the
+     batch ran 2.5 percent slower
+   - `gravity.py`: `Background` (the Friedmann equation: `aH = sqrt(H100^2
+     a^2 rho - K)` and `aH_prime = -(4 pi G a^2 / 3)(rho + 3 pressure)`), `Metric`
+     (eta and the Einstein constraints `h_prime`, `alpha`, and `R`, the comoving
+     curvature perturbation `-eta - aH momentum / (k^2 (rho + pressure))`,
+     read by `solve_eb`'s hook and not by the right-hand side),
+     `Curvature` (geometry: `K`, `curved = 1 - 3K/k^2`; in no sum since 2026-11-14),
      `AdiabaticMode` (the growing-mode quantities `x`, `Rv`, `om`
      the initial conditions read). The sums live on their readers:
-     `grho`, `gpres` on `Background`, `dgrho`, `dgq`, `dgpi` and
-     `dgrho_streaming` on `Metric` (the last two read only by DISCO-CMB's
-     Weyl potential), `grho_matter`, `grho_radiation`,
-     `grho_free_streaming` on `AdiabaticMode`, from which `Rv` and `om` are
+     `rho`, `pressure` on `Background`, `delta_rho`, `momentum`, `stress` and
+     `delta_rho_streaming` on `Metric` (the last two read only by DISCO-CMB's
+     Weyl potential), `rho_matter`, `rho_radiation`,
+     `rho_free_streaming` on `AdiabaticMode`, from which `Rv` and `om` are
      ratios with `a` cancelling, so a new species enters the initial
      conditions by contributing its density; `MassiveNeutrinos` and `Fluid`
      contribute to none, as before 2026-11-14 when the four densities were
-     named). The density constants
-     (`GRHOM_PER_H0SQ`, `GRHO_PER_OMEGA` = 1e4 times it, ...) live here.
-     Parameters: none on `Background` (`H0` is no parameter: it is
-     `adotoa(a = 1)`, `Model.H0`; `Background.adot = a adotoa` is the
-     solve's clock), `A_s`, `n_s`, `k_p` on `AdiabaticMode`, `omega_k`,
-     `grhok` on `Curvature`; in `species.py` `omega_c`, `grhoc` on CDM,
-     `omega_b`, `YHe`, `grhob` on `Baryons`, `Tcmb`, `grhog` on `Photons`,
-     `Neff`, `grhornomass` on `MasslessNeutrinos`, `omega_de`, `grhov` on
-     both dark energies, `omega`, `grho0` on `Fluid`, the
-     `w_DE_*`, `cs2_DE` on `DarkEnergy`, `Nmnu`, `mnu`, `grhor_nu`, `n_mnu`,
+     named). The constants
+     (`H100`, `OMEGA_G_PER_TCMB4`, ...) live here.
+     Parameters: none on `Background` (`H_0` is no parameter: it is
+     `aH(a = 1)`, `Model.H_0`; `Background.a_prime = a aH` is the
+     solve's clock), `A_s`, `n_s`, `k_p` on `AdiabaticMode`, `omega_k`
+     on `Curvature`; in `species.py` `omega_c` on CDM,
+     `omega_b`, `Y_He` on `Baryons`, `T_cmb`, `omega_g` on `Photons`,
+     `N_eff`, `omega_ur` on `MasslessNeutrinos`, `omega_de` on
+     both dark energies, `omega` on `Fluid`, the
+     `w_DE_*`, `cs2_DE` on `DarkEnergy`, `N_mnu`, `m_nu`, `omega_nu_flavour`, `n_mnu`,
      `amnu` on `MassiveNeutrinos`; `z_re` on `Recombination`
    - The gravity interface (2026-11-14): species contribute to the sums
-     (fluids only) and read `adotoa`, `z`, `sigma`, which
+     (fluids only) and read `aH`, `h_prime`, `alpha`, which
      `component.Gravity` subclasses (`Background`, `Metric`, `Curvature`)
      provide. A model missing one fails at build, like any unprovided
      quantity (no special check since 2026-11-16). Another theory is `LCDM.swap(Background, Other, name=)` or
      `swap(Metric, Other, name=)`; `from_density_parameters` follows since
-     it solves the model's own `adotoa(a=1)` (`tests/test_components.py`). A scalar state's rate is a
+     it solves the model's own `aH(a=1)` (`tests/test_components.py`). A scalar state's rate is a
      quantity `d_<state>` any provider or hook may read (`_collect` adds it
      to the contributions; the driver then computes it once)
    - `species.py`: `ColdDarkMatter`, `Baryons`, `Photons` (settings `LMAX_G`,
-     `LMAX_POL`; states `theta` = Theta_0..LMAX_G and `e` = E_2..LMAX_POL,
+     `LMAX_POL`; states `F` = F_0..LMAX_G and `E` = E_2..LMAX_POL,
      collisionless part), `MasslessNeutrinos` (`LMAX_NR`),
      `CosmologicalConstant` or `DarkEnergy` (CPL fluid), `Fluid` (constant
      `w` and `cs2`, no shear, listed under a name), `MassiveNeutrinos`
@@ -310,7 +333,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    - Rules a model keeps (2026-11-14): `ColdDarkMatter.fixes_gauge` states
      the synchronous gauge's condition and `ModelSpec` raises without
      such a species. `RadiationStreaming` names no species: each streaming
-     one contributes to the sum `dgrho_streaming`, and
+     one contributes to the sum `delta_rho_streaming`, and
      `NoRadiationStreaming` (`rsa = 0`) replaces it for a theory whose
      constraints the streaming solution does not know
    - `interactions.py`: `ThomsonScattering` (drag, polarization source,
@@ -357,35 +380,35 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `parameters(extra=())` (the components' and `Recombination`'s
      declarations), `parameter_keys()` and `check(cosmology)`: a key another
      component declares but none of this model's must keep its default
-     (`w_DE_0 != -1` needs `DarkEnergy`, `Nmnu > 0` `MassiveNeutrinos`), then
+     (`w_DE_0 != -1` needs `DarkEnergy`, `N_mnu > 0` `MassiveNeutrinos`), then
      each component's `check` hook runs (`DarkEnergy` rejects `w = -1`),
      traced values skipped. `resolved()` makes every
      setting explicit at the classes' current values: the kernel caches on
      the resolved spec, so rebinding a setting recompiles. Internal code
      takes specs; public functions taking a model accept either (`_spec_of`)
-   - The models: `LCDM` (flat unless `Omegak`), `LCDM_MNU`, `W0WACDM` (its
+   - The models: `LCDM` (flat unless `Omega_k`), `LCDM_MNU`, `W0WACDM` (its
      bases written out with `DarkEnergy` for `CosmologicalConstant`),
      `W0WACDM_MNU`. Massive neutrinos come after `ThomsonScattering`; no sum
      or state order moves, since an interaction contributes to neither
    - Physical densities (2026-11-17). A model's own parameters are
      `omega_b`, `omega_c`, `omega_de`, `omega_k` (and a fluid's `omega`),
-     so the kernel reads no `H0`: recombination takes `grhob` and the
-     model's `Hz` (RECFAST's Hubble-time estimate `2 / (3 H0 (1+z)^1.5)` in
+     so the kernel reads no `H_0`: recombination takes `omega_b` and the
+     model's `Hz` (RECFAST's Hubble-time estimate `2 / (3 H_0 (1+z)^1.5)` in
      the matter-temperature switch became `2 / (3 H)`).
-     `Model.from_density_parameters(Omegam=, Omegab=, H0=, Omegak=0, ...)`
+     `Model.from_density_parameters(Omega_m=, Omega_b=, H_0=, Omega_k=0, ...)`
      converts and finds `omega_de` (`ModelSpec.physical_parameters`, also
      the dictionary-level form `helpers.cosmologies_of` uses: one secant
      step on `hubble_constant()^2`, exact since it is linear in a density;
      any other component's `x_Omega` becomes `x_omega`). Plain JAX
-     arithmetic, so a derivative in `H0` or `Omegam` goes through it.
+     arithmetic, so a derivative in `H_0` or `Omega_m` goes through it.
      With floats it uses `math`, with JAX values `jnp`, and the two round
      `omega_de` differently in the last bit, which moves a step-acceptance
      and `P(k)` by 1e-5: compare a jitted solve against an eager one of the
      same converted parameters (`test_matter_power_spectrum_under_jit`).
-     `Model.H0` (`ModelSpec.hubble_constant`) is `adotoa(a=1)`; a model
-     whose rate reads a state (`Equations.reads_state("adotoa")`: a scalar
+     `Model.H_0` (`ModelSpec.hubble_constant`) is `aH(a=1)`; a model
+     whose rate reads a state (`Equations.reads_state("aH")`: a scalar
      field) raises, has no `from_density_parameters`, and gets its Hubble
-     constant from a solve (`adotoa` kept at `a = 1`). So a scalar field's
+     constant from a solve (`aH` kept at `a = 1`). So a scalar field's
      `V0` is a parameter and nothing shoots (`Quintessence`,
      `qcdm_parameters` in `tests/helpers.py`)
    - No model is a default (`DEFAULT_MODEL`, `W0WACDM_MNU`, removed
@@ -407,13 +430,13 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    - `tau0`, the end of every trajectory: the solve ends at `a = 1`
    - `ln a` at `TAU_START`: the start is `A_START` = 2e-7 for everyone, and
      the conformal time there is `Recombination`'s `_tau_initial`, `(2
-     sqrt(1+e) / (sqrt(1+e) + 1)) / adotoa` with `e` the matter-to-radiation
+     sqrt(1+e) / (sqrt(1+e) + 1)) / aH` with `e` the matter-to-radiation
      ratio, exact for radiation plus matter (1e-6 against the integral,
      massive neutrinos included: `tests/test_components.py`)
    - a model's own background states at the start: their `State(initial=)`
    - the scalar-field shooting: gone with the closure
    - `background_history`, `density_coefficients`, `conformal_ages`,
-     `expansion_rate`: removed; keep `tau`, `adotoa` in a solve, or
+     `expansion_rate`: removed; keep `tau`, `aH` in a solve, or
      evaluate on the host (`helpers.on_the_host`)
    - The momentum bins (`neutrino_momentum_bins`, cached) live in `util.py`
      beside the Gauss-Laguerre rule
@@ -424,14 +447,14 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    `(n_cosmo,)` by key, values traced or not. With `held` a key declared
    `solved=False` gets `stop_gradient`, and a key the solve reads but the
    model does not differentiate (outside
-   `ModelSpec.differentiable_parameters()`: `Nmnu`, `YHe`, `cs2_DE`) passes
+   `ModelSpec.differentiable_parameters()`: `N_mnu`, `Y_He`, `cs2_DE`) passes
    through `_not_differentiable`, a `custom_jvp` whose rule raises, so a
    derivative is never a silent zero. `_is_concrete` lives in
    `models/_model.py`. A cosmology still holds the traced keys of other
    models `from_dict` was given (`_held`, in the batch's dictionaries
    beside its own): `_columns` gives each a column the kernel never reads,
    so that differentiating one raises (dropping them was tried on
-   2026-11-17 and returned a silent zero for `mnu` on LCDM)
+   2026-11-17 and returned a silent zero for `m_nu` on LCDM)
 
 6. **components/recombination.py** - Recombination history, inside the joint kernel
    - The conformal time `tau`, RECFAST's `(x_H, x_He, T_m)` and the optical
@@ -513,12 +536,12 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    - The clock (2026-11-17). `Equations(components, time=, clock=)`: the
      components write their rates in conformal time, and the built driver
      returns each divided by `clock`, the rate of `time` in it. The joint
-     model has `time="a"`, `clock="adot"` (`a' = a adotoa`): every
+     model has `time="a"`, `clock="a_prime"` (`a' = a aH`): every
      cosmology runs from `A_START` to 1 and none needs its `tau0` first.
      The trace of `sparsity`/`stages`/`published` adds the clock's
      dependencies to every rate (none for the built-in models, whose rate
      reads the time and parameters; a scalar field's reads the field).
-     `ln a` (`clock="adotoa"`) was tried first and lost: at the same
+     `ln a` (`clock="aH"`) was tried first and lost: at the same
      tolerance it was 13 times less accurate at every k (9e-3 against 4e-4
      of a converged solve), needing `atol` = 1e-6 and 40 percent more time,
      and its large early steps jumped over the HeIII Saha bump in one
@@ -533,9 +556,9 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      per resolved model) is `(the directed parameters,
      SOLVER_COLUMNS = k,
      the other column parameters)`, the directed
-     ones in `DIRECTED_NAMES` order, then component order. `grhok`, `w_DE_*`, `cs2_DE`,
-     `grhor_nu` and `amnu` are directed (2026-11-13), `z_re` too
-     (2026-11-16, last: `Recombination` comes last); `H0` and `Omegab`
+     ones in `DIRECTED_NAMES` order, then component order. `omega_k`, `w_DE_*`, `cs2_DE`,
+     `omega_nu_flavour` and `amnu` are directed (2026-11-13), `z_re` too
+     (2026-11-16, last: `Recombination` comes last); `H_0` and `Omega_b`
      left with the physical densities (2026-11-17); `amnu` is one
      declaration `MassiveNeutrinos` and `Recombination` share. `_rows` and the
      initial state iterate over the declarations. Host tests that build any
@@ -598,18 +621,18 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    under `jit` with every cosmology key traced (only k and the names
    static). The values are differentiable in `differentiable_parameters(model)`,
    the keys declared `Parameter(differentiable=True)` (`omega_b`, `omega_c`,
-   `omega_de`, `Tcmb`, `Neff`, `omega_k`, and `mnu`, `w_DE_0`, `w_DE_a`,
+   `omega_de`, `T_cmb`, `N_eff`, `omega_k`, and `m_nu`, `w_DE_0`, `w_DE_a`,
    `z_re` where the model has the component): plain JAX from them to the directed inputs
    (`_directed_inputs`), then the `custom_jvp` of `_kept_values`. `jax.jvp`, `jacfwd`, `grad` all cost one joint launch,
    with or without `jit` (`test_matter_power_spectrum_under_jit`). `test_solve_eb_derivatives` gates the densities-level rule
    against central differences, `test_more_parameters_*` each added
    parameter's `solve_eb` values and `P(k)`. The solve is not smooth in the
    parameters below ~1e-6 of a value even at rtol 1e-7, so central
-   differences carry noise falling as 1 / step: for `YHe` the apparent
+   differences carry noise falling as 1 / step: for `Y_He` the apparent
    bias in `solve_eb` values went 0.2, 0.01, 0.002 at steps 2.5e-4, 2.5e-3,
    1e-2 (fp32 or fp64 rate math alike). The 0.5 to 2 percent thermal bias
-   recorded before for `YHe`, `Tcmb`, `Omegab` was measured at small steps
-   and may be mostly that noise (`Tcmb` and `Omegab` not re-measured).
+   recorded before for `Y_He`, `T_cmb`, `Omega_b` was measured at small steps
+   and may be mostly that noise (`T_cmb` and `Omega_b` not re-measured).
    `dP/dYHe` and `dP/dcs2_DE` stay 0.8 and 1 percent off at every step
    tried, so those two are held. `dP/dz_re` needs a step of 1 in `z_re`:
    it moves sum P by 1.4e-5 of itself per unit, so a step of 0.05 is noise. Also
@@ -618,15 +641,15 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    `make_params` and `make_initial_states` were removed 2026-11-17: the
    tests read rows and initial states off `_pack`, `helpers.packed`)
 
-10. **observables/power_spectrum.py** - `matter_power_spectrum(k, *, clxc, clxb,
+10. **observables/power_spectrum.py** - `matter_power_spectrum(k, *, delta_c, delta_b,
     omega_c, omega_b, A_s, n_s, k_p)`, JAX only, is one cosmology's
     (2026-11-16): the two contrasts `(n_k,)` from a `solve_eb(..., [1.0],
-    keep=("clxc", "clxb"), thermo_weight=0.1)`, and the parameters as
+    keep=("delta_c", "delta_b"), thermo_weight=0.1)`, and the parameters as
     scalars. A batch is
     `jax.vmap(matter_power_spectrum, in_axes=(None,))(k, **today, ...)`,
     the keyword arguments mapped over their leading axis. Differentiable
     like `solve_eb`, at fixed scale factor, so there is no end-time term
-    any more (2026-11-17; it took `z`, `vb` and `tau0` for it).
+    any more (2026-11-17; it took `z`, `theta_b` and `tau0` for it).
     `examples/flat_lcdm_power_spectrum.ipynb` is the entry point
 
 11. **Jacobian sparsity** (`ModelSpec.sparsity`; its test is
@@ -649,8 +672,8 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    - What the trace finds: a core (metric + fluids + the lowest photon /
      polarization / neutrino multipoles, plus the dark-energy fluid and the
      lowest massive-neutrino multipoles when enabled) that is far from dense --
-     the metric reads the densities and momenta through `dgrho` and `dgq`, the
-     quadrupoles read `sigma`, a free-streaming multipole reads its two
+     the metric reads the densities and momenta through `delta_rho` and `momentum`, the
+     quadrupoles read `alpha`, a free-streaming multipole reads its two
      neighbours and itself only where Thomson scattering damps it (the neutrino
      tail has no diagonal) -- bordered by tridiagonal free-streaming
      hierarchies, each meeting the core at its lowest multipole only. 165
@@ -673,8 +696,8 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
 The typical computation flow is:
 
 1. **Make cosmologies of a model** (`LCDM(omega_b=..., omega_c=...,
-   omega_de=..., ...)` or `LCDM.from_density_parameters(Omegam=...,
-   Omegab=..., H0=..., ...)`, `W0WACDM(..., w_DE_0=...)`)
+   omega_de=..., ...)` or `LCDM.from_density_parameters(Omega_m=...,
+   Omega_b=..., H_0=..., ...)`, `W0WACDM(..., w_DE_0=...)`)
 
 2. **Nothing before the solve** but algebra: the parameter rows and the
    initial state at `A_START` (`kernel._pack`)
@@ -702,8 +725,8 @@ The typical computation flow is:
 
 **Cosmologies:**
 - A cosmology is an instance of a model class, its parameters keyword
-  arguments (`omega_b`, `omega_c`, `omega_de`, `Tcmb`, `YHe`, `Neff`, `A_s`,
-  `n_s`, ...). Tests hold dictionaries in `Omegam`, `Omegab` and `H0` and go
+  arguments (`omega_b`, `omega_c`, `omega_de`, `T_cmb`, `Y_He`, `N_eff`, `A_s`,
+  `n_s`, ...). Tests hold dictionaries in `Omega_m`, `Omega_b` and `H_0` and go
   through `helpers.cosmologies_of(model, params)`, which converts them
   (`ModelSpec.physical_parameters`) and is `from_dict` over one or a list;
   `helpers.physical(model, params)` gives the converted dictionary
@@ -763,16 +786,23 @@ The typical computation flow is:
   step statistics and the scalar-field shooting. A new GPU test on a kernel
   outside those five is `slow`. Run everything with `uv run pytest tests -m
   "" -rs` (12 minutes warm)
-- Two gates are noise-limited (measured 2026-11-14 by scaling H0 by 1 +
-  O(1e-11), on the code before and after that day's refactor alike), so a
-  change to any kernel's bits can flip them: `test_recfast_matches_class`'s
-  `c_b^2` in the T_m switch window (over its 0.2 gate in 15 to 23 of 40
-  draws; 0.5 percent of cosmologies, a few off by a factor 62, since
-  `matter_temperature_rate` switches hard and `cs2` reads the rate), and
+- `matter_temperature_rate` switches hard between its locked and full
+  forms, and a solver step may straddle the switch. Its dense output then
+  leaves `T_m` up to 8 percent off and `c_b^2` a factor of three from z =
+  860 to 775, in 0.34 percent of trajectories (28 of 8192, in CAMB's
+  convention and the plain one alike, which ones depending on the kernel's
+  last bit). `delta_c` today moves by less than 3e-4. `test_recfast_matches_class`
+  allows `MAX_STRADDLED` = 2 such cosmologies of 128. A logistic blend in
+  `ln(timeTh / (H_frac timeH))` was tried on 2026-11-17 and rejected: it
+  removed the glitch but the block then diverged (`x_e` off tenfold,
+  `delta_c` 2 percent) in 1 trajectory in 20000 at `thermo_weight` = 0.1,
+  in fp32 or fp64 math
+- One gate is noise-limited (measured 2026-11-14 by scaling H_0 by 1 +
+  O(1e-11)), so a change to any kernel's bits can flip it:
   `test_more_parameters_solve_eb[w_DE_a]`'s `dclxb` (3e-4 to 5e-3 against
   1e-3). DISCO-CMB's EE derivative gate (1.2e-3 to 2.2e-3 against 2e-3) and
   its reionization TE gate at `l = 30` (0.0195 to 0.0200 against 0.02) sit
-  as close. Rerun with a nudged H0 before bisecting one of them
+  as close. Rerun with a nudged H_0 before bisecting one of them
 
 ## Examples
 

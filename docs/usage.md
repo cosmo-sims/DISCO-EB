@@ -4,7 +4,7 @@ A model is a class whose bases are its components: the species it evolves (`disc
 
 The components declare the parameters, so a model's constructor takes exactly its own, by keyword. A type checker reads them from the declarations and flags a missing or unknown one, as the constructor does at run time. `help(LCDM)` lists them. A cosmology is immutable: `planck.replace(omega_c=0.125)` gives a new one. Dictionaries go through `LCDM(**params)`, or `LCDM.from_dict(params)` for one written for another model, whose extra keys must keep their defaults.
 
-The densities are physical ones, `omega_b`, `omega_c`, `omega_de` and `omega_k` ($\omega = \Omega h^2$), and the Hubble constant follows from them: `planck.H0`. To start from $\Omega_m$, $\Omega_b$ and $H_0$, use `LCDM.from_density_parameters(Omegam=..., Omegab=..., H0=..., ...)`, which finds the dark-energy density that makes the model expand at `H0` today. It is plain JAX arithmetic, so a derivative in `H0` or `Omegam` goes through it.
+The densities are physical ones, `omega_b`, `omega_c`, `omega_de` and `omega_k` ($\omega = \Omega h^2$), and the Hubble constant follows from them: `planck.H_0`. To start from $\Omega_m$, $\Omega_b$ and $H_0$, use `LCDM.from_density_parameters(Omega_m=..., Omega_b=..., H_0=..., ...)`, which finds the dark-energy density that makes the model expand at `H_0` today. It is plain JAX arithmetic, so a derivative in `H_0` or `Omega_m` goes through it.
 
 A new model is a class statement. A model among the bases stands for its components, and the order of the bases is the state order:
 
@@ -23,7 +23,7 @@ class Coarse(LCDM, LMAX_G=10, LMAX_NR=10):  # shorter hierarchies
 
 # Keeping quantities
 
-`solve_eb` records only what you name in `keep`. A name can be a state element, such as `clxc`, `theta_2` or `psi_0_1`, which `state_names(model)` lists. It can also be any quantity the model provides, such as the comoving curvature perturbation `R`, the shear `sigma`, the expansion rate `adotoa` or the Thomson `opacity`. The recombination block adds the conformal time `tau`, `xe`, `Tmat`, `cs2` and the optical depth `kappa`.
+`solve_eb` records only what you name in `keep`. A name can be a state element, such as `delta_c`, `F_2` or `psi_0_1`, which `state_names(model)` lists. It can also be any quantity the model provides, such as the comoving curvature perturbation `R`, the shear `alpha`, the expansion rate `aH` or the Thomson `opacity`. The recombination block adds the conformal time `tau`, `xe`, `Tmat`, `cs2` and the optical depth `kappa`.
 
 The solve integrates in the scale factor, from `A_START` to 1, so you give the scale factors to record at, and `a = 1` is today for every cosmology. The conformal time is a state: keep `tau`, whose value today is the conformal age. Nothing is integrated before the solve.
 
@@ -33,7 +33,7 @@ Reionization is set by its redshift `z_re` (0, the default, for none). Its optic
 
 ## Derivatives
 
-Give `omega_b`, `omega_c`, `omega_de`, `Tcmb` or `Neff` as JAX values and the kept values become differentiable. `jax.jvp`, `jax.jacfwd` and `jax.grad` each cost one joint launch, which forms the derivatives inside the kernel by forward sensitivities:
+Give `omega_b`, `omega_c`, `omega_de`, `T_cmb` or `N_eff` as JAX values and the kept values become differentiable. `jax.jvp`, `jax.jacfwd` and `jax.grad` each cost one joint launch, which forms the derivatives inside the kernel by forward sensitivities:
 
 ```python
 import jax.numpy as jnp
@@ -59,14 +59,14 @@ def power_spectrum(cosmology):
         cosmology,
         k,
         [1.0],  # today
-        keep=("clxc", "clxb"),
+        keep=("delta_c", "delta_b"),
         thermo_weight=0.1,  # a looser recombination history suffices for P(k)
     )
-    clxc, clxb = jnp.unstack(values[0, :, :, -1])
+    delta_c, delta_b = jnp.unstack(values[0, :, :, -1])
     return matter_power_spectrum(
         k,
-        clxc=clxc,
-        clxb=clxb,
+        delta_c=delta_c,
+        delta_b=delta_b,
         omega_c=cosmology.omega_c,
         omega_b=cosmology.omega_b,
         A_s=cosmology.A_s,
@@ -79,4 +79,4 @@ Under `jit` a model can't check its cosmologies (for instance `w_DE_0 = -1` unde
 
 ## Extending the model
 
-A new species or interaction is a `Component` subclass; list it among a model's bases. It declares its parameters with an annotation, `omega_x: ArrayLike = Parameter(0.0)` for a key and `grhox: ArrayLike = Derived(lambda omega_x: GRHO_PER_OMEGA * omega_x)` for one derived from others, so that they reach the model's constructor. A method provides the quantity it is named after; a contribution to a sum or to another component's derivative has a name of its own and says what it adds to, `@contributes("dgrho") def dgrho_x(self, ...)`, so that the model class inheriting every component has no clashing methods. To keep quantities a model does not provide, `solve_eb(..., extra=...)` appends your own components. A stateless `Component` subclass declares providers whose parameter names are the quantities they read. DISCO-CMB defines its line-of-sight sources this way, so they compile into the same kernel.
+A new species or interaction is a `Component` subclass; list it among a model's bases. It declares its parameters with an annotation, `omega_x: ArrayLike = Parameter(0.0)` for a key and `omega_g: ArrayLike = Derived(lambda T_cmb: OMEGA_G_PER_TCMB4 * T_cmb**4)` for one derived from others, so that they reach the model's constructor. A method provides the quantity it is named after. A contribution has a name of its own and says what it adds to: `@contributes("delta_rho") def delta_rho_x(self, ...)` adds to a sum, and `@derivative("delta_x") def continuity_x(self, ...)` to the rate of a state. The model class inheriting every component then has no clashing methods. To keep quantities a model does not provide, `solve_eb(..., extra=...)` appends your own components. A stateless `Component` subclass declares providers whose parameter names are the quantities they read. DISCO-CMB defines its line-of-sight sources this way, so they compile into the same kernel.

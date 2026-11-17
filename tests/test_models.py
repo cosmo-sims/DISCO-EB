@@ -30,6 +30,7 @@ from sweep import (
     check_sweep_matches_class,
 )
 
+from discoeb.components.gravity import H100_SQ
 from discoeb.components.species import DarkEnergy, MassiveNeutrinos
 from discoeb.models import LCDM
 
@@ -43,12 +44,12 @@ from discoeb.models import LCDM
 def expected_state_names(model) -> list[str]:
     """Metric, CDM, baryons, photons, massless neutrinos, then the dark-energy fluid and the massive-neutrino bins."""
 
-    names = ["etak", "clxc", "clxb", "vb"]
-    names += [f"theta_{ell}" for ell in range(model.setting("LMAX_G") + 1)]
-    names += [f"e_{i}" for i in range(model.setting("LMAX_POL") - 1)]  # E_2 ...
-    names += [f"n_{ell}" for ell in range(model.setting("LMAX_NR") + 1)]
+    names = ["eta", "delta_c", "delta_b", "theta_b"]
+    names += [f"F_{ell}" for ell in range(model.setting("LMAX_G") + 1)]
+    names += [f"E_{i}" for i in range(model.setting("LMAX_POL") - 1)]  # E_2 ...
+    names += [f"N_{ell}" for ell in range(model.setting("LMAX_NR") + 1)]
     if model.has(DarkEnergy):
-        names += ["clxq", "thetaq"]
+        names += ["delta_de", "theta_de"]
     if model.has(MassiveNeutrinos):
         for q in range(model.setting("NQMAX")):
             names += [f"psi_{q}_{ell}" for ell in range(model.setting("LMAX_NU") + 1)]
@@ -70,14 +71,14 @@ def test_the_rhs_builds_and_is_finite(name):
     model, rhs = build_rhs(cosmology_model)
     rng = np.random.default_rng(0)
     p = np.zeros(N_PARAM)
-    p[:5] = [1.5e-7, 1.0e-7, 1.1e-4, 1.9e-5, 2.0e-7]
+    p[:5] = [2.5e-5, 1.7e-5, 0.12, 0.022, 0.31]
     p[PARAM_COLUMNS["k"]] = 0.05
     p[PARAM_COLUMNS["w_DE_0"]], p[PARAM_COLUMNS["cs2_DE"]] = -0.9, 1.0
     (
-        p[PARAM_COLUMNS["grhor_nu"]],
+        p[PARAM_COLUMNS["omega_nu_flavour"]],
         p[PARAM_COLUMNS["n_mnu"]],
         p[PARAM_COLUMNS["amnu"]],
-    ) = 1e-7, 1.0, 300.0
+    ) = 5.6e-6, 1.0, 300.0
     y = rng.standard_normal(model.nvar)
     dy = np.asarray(rhs(tuple(y), 100.0, tuple(p)))
     assert dy.shape == (model.nvar,) and np.isfinite(dy).all()
@@ -91,18 +92,18 @@ def test_each_component_marks_its_differentiable_keys():
     from discoeb.components._component import ParameterDeclaration
     from discoeb.models import LCDM_MNU, W0WACDM, W0WACDM_MNU
 
-    lcdm = {"omega_b", "omega_c", "omega_de", "Tcmb", "Neff", "omega_k"}
+    lcdm = {"omega_b", "omega_c", "omega_de", "T_cmb", "N_eff", "omega_k"}
     assert set(LCDM.spec.differentiable_parameters()) == lcdm
-    assert set(LCDM_MNU.spec.differentiable_parameters()) == lcdm | {"mnu"}
+    assert set(LCDM_MNU.spec.differentiable_parameters()) == lcdm | {"m_nu"}
     dark_energy = lcdm | {"w_DE_0", "w_DE_a"}
     assert set(W0WACDM.spec.differentiable_parameters()) == dark_energy
-    assert set(W0WACDM_MNU.spec.differentiable_parameters()) == dark_energy | {"mnu"}
+    assert set(W0WACDM_MNU.spec.differentiable_parameters()) == dark_energy | {"m_nu"}
     # z_re only where ReionizationDepth resolves its derivative
     assert set(LCDM_REIO.spec.differentiable_parameters()) == lcdm | {"z_re"}
     # a component from outside marks none unless it says so
     assert set(LCDM_X.spec.differentiable_parameters()) == lcdm
     assert "Differentiable through solve_eb." in LCDM.__doc__.split("omega_c :")[1]
-    assert "Differentiable" not in LCDM.__doc__.split("YHe :")[1].split("\n")[1]
+    assert "Differentiable" not in LCDM.__doc__.split("Y_He :")[1].split("\n")[1]
     with pytest.raises(TypeError, match="only a key"):
         ParameterDeclaration(value=lambda omega_c: omega_c, differentiable=True)
 
@@ -142,9 +143,9 @@ BASE_COSMOLOGY = dict(
     omega_de=0.31,
     A_s=2.1e-9,
     n_s=0.966,
-    Tcmb=2.7255,
-    YHe=0.245,
-    Neff=3.046,
+    T_cmb=2.7255,
+    Y_He=0.245,
+    N_eff=3.046,
 )
 
 
@@ -152,14 +153,14 @@ def test_a_model_rejects_a_cosmology_it_cannot_represent():
     from discoeb.models import LCDM, LCDM_MNU, W0WACDM
 
     LCDM(**BASE_COSMOLOGY)
-    LCDM_MNU(**BASE_COSMOLOGY, Nmnu=1.0, mnu=0.06)
+    LCDM_MNU(**BASE_COSMOLOGY, N_mnu=1.0, m_nu=0.06)
     W0WACDM(**BASE_COSMOLOGY, w_DE_0=-0.9)
     with pytest.raises(TypeError, match="no parameter 'w_DE_0'.*DarkEnergy"):
         LCDM(**BASE_COSMOLOGY, w_DE_0=-0.9)  # ty: ignore[unknown-argument]
     with pytest.raises(ValueError, match="w != -1"):
         W0WACDM(**BASE_COSMOLOGY)
-    with pytest.raises(TypeError, match="no parameter 'Nmnu'.*MassiveNeutrinos"):
-        LCDM(**BASE_COSMOLOGY, Nmnu=1.0)  # ty: ignore[unknown-argument]
+    with pytest.raises(TypeError, match="no parameter 'N_mnu'.*MassiveNeutrinos"):
+        LCDM(**BASE_COSMOLOGY, N_mnu=1.0)  # ty: ignore[unknown-argument]
     with pytest.raises(TypeError, match=r"needs the parameters \['omega_c'\]"):
         LCDM(**{k: v for k, v in BASE_COSMOLOGY.items() if k != "omega_c"})
     with pytest.raises(TypeError, match="by keyword"):
@@ -220,39 +221,39 @@ def test_a_cosmology_is_an_immutable_pytree_of_its_parameters():
 
 
 def test_density_parameters_give_the_physical_ones_and_the_hubble_constant_back():
-    """``from_density_parameters`` closes the budget, and ``H0`` is what the densities sum to."""
+    """``from_density_parameters`` closes the budget, and ``H_0`` is what the densities sum to."""
 
     import jax
     import jax.numpy as jnp
 
     from discoeb.models import LCDM, LCDM_MNU, W0WACDM
 
-    fractions = dict(Omegam=0.31, Omegab=0.049, H0=67.0)
+    fractions = dict(Omega_m=0.31, Omega_b=0.049, H_0=67.0)
     rest = {k: v for k, v in BASE_COSMOLOGY.items() if not k.startswith("omega")}
     planck = LCDM.from_density_parameters(**fractions, **rest)
     h2 = 0.67**2
     assert planck.omega_b == pytest.approx(0.049 * h2, rel=1e-15)
     assert planck.omega_c == pytest.approx((0.31 - 0.049) * h2, rel=1e-15)
-    assert planck.H0 == pytest.approx(67.0, rel=1e-13)
+    assert planck.H_0 == pytest.approx(67.0, rel=1e-13)
     # dark energy takes what matter and radiation leave of the critical density
     assert 0.68 * h2 < planck.omega_de < 0.69 * h2
     # curvature, massive neutrinos and a fluid with w != -1 close the same way
     for model, more in (
-        (LCDM, {"Omegak": 0.02}),
-        (LCDM_MNU, {"Nmnu": 1.0, "mnu": 0.3}),
+        (LCDM, {"Omega_k": 0.02}),
+        (LCDM_MNU, {"N_mnu": 1.0, "m_nu": 0.3}),
         (W0WACDM, {"w_DE_0": -0.9, "w_DE_a": 0.1}),
     ):
         other = model.from_density_parameters(**fractions, **rest, **more)
-        assert other.H0 == pytest.approx(67.0, rel=1e-13), model.__name__
+        assert other.H_0 == pytest.approx(67.0, rel=1e-13), model.__name__
     assert LCDM.from_density_parameters(
-        **fractions, **rest, Omegak=0.02
+        **fractions, **rest, Omega_k=0.02
     ).omega_k == pytest.approx(0.02 * h2, rel=1e-15)
-    with pytest.raises(TypeError, match="omega_de or H0"):
+    with pytest.raises(TypeError, match="omega_de or H_0"):
         LCDM.from_density_parameters(**fractions, **rest, omega_de=0.3)
-    # plain JAX arithmetic: a derivative in H0 goes through the closure
+    # plain JAX arithmetic: a derivative in H_0 goes through the closure
     slope = jax.grad(
-        lambda H0: (
-            LCDM.from_density_parameters(**{**fractions, "H0": H0}, **rest).omega_de
+        lambda H_0: (
+            LCDM.from_density_parameters(**{**fractions, "H_0": H_0}, **rest).omega_de
         )
     )(jnp.asarray(67.0))
     assert float(slope) == pytest.approx(2.0 * planck.omega_de / 67.0, rel=1e-2)
@@ -270,30 +271,31 @@ def test_the_budget_closes_with_densities_added_from_outside():
         model_parameters,
     )
 
-    from discoeb.components.gravity import GRHO_PER_OMEGA
     from discoeb.models import LCDM
 
-    h2 = (COSMOLOGY["H0"] / 100.0) ** 2
+    h2 = (COSMOLOGY["H_0"] / 100.0) ** 2
     lcdm = model_parameters(LCDM, COSMOLOGY)
     both = model_parameters(
         LCDM_XY,
         {
             **COSMOLOGY,
-            "Omegam": COSMOLOGY["Omegam"] - 0.05,
+            "Omega_m": COSMOLOGY["Omega_m"] - 0.05,
             "x_Omega": 0.03,
             "y_Omega": 0.02,
         },
     )
-    assert both["x_grho0"] == pytest.approx(GRHO_PER_OMEGA * 0.03 * h2, rel=1e-15)
-    assert both["grhoc"] + both["x_grho0"] + both["y_grho0"] == pytest.approx(
-        lcdm["grhoc"], rel=1e-14
+    assert both["x_omega"] == pytest.approx(0.03 * h2, rel=1e-15)
+    assert both["omega_c"] + both["x_omega"] + both["y_omega"] == pytest.approx(
+        lcdm["omega_c"], rel=1e-14
     )
-    assert both["grhov"] == pytest.approx(lcdm["grhov"], rel=1e-12)
+    assert both["omega_de"] == pytest.approx(lcdm["omega_de"], rel=1e-12)
     split = model_parameters(LCDM_X, _split(COSMOLOGY))
-    assert split["grhox"] == pytest.approx(GRHO_PER_OMEGA * OMEGA_X * h2, rel=1e-15)
-    assert split["grhoc"] + split["grhox"] == pytest.approx(lcdm["grhoc"], rel=1e-14)
-    assert split["grhov"] == pytest.approx(lcdm["grhov"], rel=1e-12)
-    assert "grhox" not in lcdm
+    assert split["omega_x"] == pytest.approx(OMEGA_X * h2, rel=1e-15)
+    assert split["omega_c"] + split["omega_x"] == pytest.approx(
+        lcdm["omega_c"], rel=1e-14
+    )
+    assert split["omega_de"] == pytest.approx(lcdm["omega_de"], rel=1e-12)
+    assert "omega_x" not in lcdm
 
 
 def test_a_scalar_field_has_no_hubble_constant_before_the_solve():
@@ -301,15 +303,14 @@ def test_a_scalar_field_has_no_hubble_constant_before_the_solve():
 
     from helpers import QCDM, QCDM_COSMOLOGY, cosmologies_of, qcdm_parameters
 
-    from discoeb.components.gravity import GRHO_PER_OMEGA
     from discoeb.models import LCDM
 
     flat = QCDM.from_dict(qcdm_parameters())
     lcdm = cosmologies_of(LCDM, QCDM_COSMOLOGY)
-    assert flat.V0 == pytest.approx(GRHO_PER_OMEGA * lcdm.omega_de, rel=1e-15)
-    assert lcdm.H0 == pytest.approx(QCDM_COSMOLOGY["H0"], rel=1e-12)
+    assert flat.V0 == pytest.approx(lcdm.omega_de, rel=1e-15)
+    assert lcdm.H_0 == pytest.approx(QCDM_COSMOLOGY["H_0"], rel=1e-12)
     with pytest.raises(TypeError, match="needs a solve"):
-        flat.H0
+        flat.H_0
     with pytest.raises(TypeError, match="no dark-energy density"):
         QCDM.from_density_parameters(**QCDM_COSMOLOGY)
 
@@ -340,11 +341,11 @@ from discoeb.components.species import MassiveNeutrinos
 
 good = LCDM(
     omega_b=0.022, omega_c=0.117, omega_de=0.31, A_s=2.1e-9, n_s=0.966,
-    Tcmb=2.7255, YHe=0.245, Neff=3.046,
+    T_cmb=2.7255, Y_He=0.245, N_eff=3.046,
 )
 dark = W0WACDM(
     omega_b=0.022, omega_c=0.117, omega_de=0.31, A_s=2.1e-9, n_s=0.966,
-    Tcmb=2.7255, YHe=0.245, Neff=3.046, w_DE_0=-0.9,
+    T_cmb=2.7255, Y_He=0.245, N_eff=3.046, w_DE_0=-0.9,
 )
 moved = good.replace(omega_c=0.13)
 
@@ -355,20 +356,20 @@ class Mine(LCDM, MassiveNeutrinos):
 
 mine = Mine(
     omega_b=0.022, omega_c=0.117, omega_de=0.31, A_s=2.1e-9, n_s=0.966,
-    Tcmb=2.7255, YHe=0.245, Neff=3.046, mnu=0.06,
+    T_cmb=2.7255, Y_He=0.245, N_eff=3.046, m_nu=0.06,
 )
 
 LCDM(  # missing
     omega_b=0.022, omega_de=0.31, A_s=2.1e-9, n_s=0.966,
-    Tcmb=2.7255, YHe=0.245, Neff=3.046,
+    T_cmb=2.7255, Y_He=0.245, N_eff=3.046,
 )
 LCDM(  # foreign
     omega_b=0.022, omega_c=0.117, omega_de=0.31, A_s=2.1e-9, n_s=0.966,
-    Tcmb=2.7255, YHe=0.245, Neff=3.046, mnu=0.06,
+    T_cmb=2.7255, Y_He=0.245, N_eff=3.046, m_nu=0.06,
 )
 LCDM(  # derived
     omega_b=0.022, omega_c=0.117, omega_de=0.31, A_s=2.1e-9, n_s=0.966,
-    Tcmb=2.7255, YHe=0.245, Neff=3.046, grhoc=1.0,
+    T_cmb=2.7255, Y_He=0.245, N_eff=3.046, omega_g=1.0,
 )
 LCDM(0.31)  # positional
 '''
@@ -415,6 +416,11 @@ def finite_difference_jacobian_pattern(
         0.5, 1.5, N_PARAM
     )  # order one, curvature and sensitivity direction included
     p[PARAM_COLUMNS["w_DE_0"]] = -0.9
+    # Densities of order 1 / H100^2, so that gravity's couplings, 4 pi G a^2
+    # rho, are of order one like the rest of the row.
+    for name, column in PARAM_COLUMNS.items():
+        if name.startswith("omega"):
+            p[column] /= H100_SQ
     y = rng.standard_normal(nvar(model))
 
     def f(state):
@@ -437,8 +443,8 @@ def test_the_pattern_is_the_jacobians(name):
     every mode is outside ``k tau = 45`` and the hierarchies stream, at
     ``tau = 100`` (``a = 0.5``, past the latch) they are replaced and frozen.
     The pattern is their union, which a colouring needs, and a few entries
-    more: the baryon velocity and the photon dipole read ``z`` through the
-    slip's ``rsa * (rsa_q - qg)`` while the slip itself is scaled by ``1 -
+    more: the baryon velocity and the photon dipole read ``h'`` through the
+    slip's ``rsa * (rsa_theta - theta_g)`` while the slip itself is scaled by ``1 -
     rsa``, a coefficient zero in both regimes that a tracer cannot see
     through, so those two rows carry the extra, safe superset.
     """
@@ -451,7 +457,7 @@ def test_the_pattern_is_the_jacobians(name):
     approximated = finite_difference_jacobian_pattern(model, tau=100.0)
     assert streaming | approximated <= entries(pattern)
     extra = entries(pattern) - (streaming | approximated)
-    assert {r for r, _ in extra} <= {state_index(model)[n] for n in ("vb", "theta_1")}
+    assert {r for r, _ in extra} <= {state_index(model)[n] for n in ("theta_b", "F_1")}
     assert approximated < entries(pattern), (
         "the approximation freezes the hierarchies' rows"
     )
@@ -495,18 +501,19 @@ def test_the_pattern_has_the_physics_structure(name):
 def test_the_flat_lcdm_pattern_is_the_expected_size():
     """50 variables, 173 entries.
 
-    The metric reads ``z`` (``etak`` and the four densities) and ``dgq`` (the
-    three momenta): 8. CDM reads ``z``: 5; the baryon density ``z`` and
-    ``vb``: 6; ``vb`` itself, ``clxb`` and the dipole through the slip: 3. The
-    photon monopole ``z`` and the dipole: 6; the dipole its neighbours and the
-    slip: 4; the quadrupole its neighbours, ``sigma`` (``z`` and ``dgq``),
+    The metric reads ``h'`` (``eta`` and the four densities) and the
+    momentum sum (three momenta): 8. CDM reads ``h'``: 5; the baryon density
+    ``h'`` and ``theta_b``: 6; ``theta_b`` itself, ``delta_b`` and the dipole
+    through the slip: 3. The photon monopole ``h'`` and the dipole: 6; the
+    dipole its neighbours and the slip: 4; the quadrupole its neighbours,
+    ``alpha`` (``h'`` and the momenta),
     itself and ``E_2``: 11; the 12 damped free-streaming multipoles 3 each and
     the last 2. ``E_2`` reads ``E_3``, itself and the quadrupole: 3; the E-mode
     tail 3 each and 2 at the end. The neutrino monopole 6, the dipole 2, the
-    quadrupole its neighbours and ``sigma``: 9; the undamped tail 2 each.
+    quadrupole its neighbours and ``alpha``: 9; the undamped tail 2 each.
     The radiation streaming approximation adds 8: under it the photon
-    momentum in the slip is ``-4 z / 3``, so the baryon velocity and the
-    photon dipole also read ``z``'s ``etak``, ``clxc`` and the monopole or
+    velocity in the slip is ``-h' / 2``, so the baryon velocity and the
+    photon dipole also read the ``eta``, ``delta_c`` and the monopole or
     density they did not already: 4 each.
     """
     model = MODELS["flat-lcdm"]
@@ -544,7 +551,7 @@ def test_the_components_check_the_parameter():
 # lcdm, w0wacdm: the models over a sweep of parameter space, against CLASS and a converged solve
 # ============================================================================
 
-SWEEPS = ("lcdm", "lcdm-mnu", "w0wacdm")
+SWEEPS = ("lcdm", "lcdm-m_nu", "w0wacdm")
 """The sweeps of the built-in models, by the names ``sweep.py`` gives them."""
 
 

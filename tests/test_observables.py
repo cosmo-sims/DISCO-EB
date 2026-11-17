@@ -31,7 +31,7 @@ def test_matter_power_spectrum_takes_one_cosmology_and_vmaps_over_a_batch():
 
     k = jnp.geomspace(1e-3, 0.1, 5)
     rng = np.random.default_rng(0)
-    per_mode = {n: jnp.asarray(rng.normal(size=(3, 5))) for n in ("clxc", "clxb")}
+    per_mode = {n: jnp.asarray(rng.normal(size=(3, 5))) for n in ("delta_c", "delta_b")}
     scalars = {
         "omega_c": jnp.asarray([0.11, 0.12, 0.13]),
         "omega_b": jnp.full(3, 0.022),
@@ -123,13 +123,13 @@ DERIV_GATE = 5.0e-3
 FD_STEP = 1.0e-2
 
 
-# Tcmb also reaches P(k) through the recombination rates, and the thermal
+# T_cmb also reaches P(k) through the recombination rates, and the thermal
 # inputs' sensitivities are biased against central differences of the joint
-# solve (YHe 2 percent, Tcmb 1.9, Omegab 0.5, with fp32 or fp64 rate math),
+# solve (Y_He 2 percent, T_cmb 1.9, Omega_b 0.5, with fp32 or fp64 rate math),
 # while the densities' agree to 1e-4. Through P(k) that leaves dP/dTcmb 3.7
 # percent off. A known gap of the recombination block's sensitivities, gated
 # loosely here so it cannot grow unnoticed.
-DERIV_GATES = {"Tcmb": 5.0e-2}
+DERIV_GATES = {"T_cmb": 5.0e-2}
 
 
 @pytest.mark.gpu
@@ -186,9 +186,9 @@ def test_split_derivatives_match_one_thread():
 
     Two distinct cosmologies and a Jacobian in each one's parameters, so a
     copy in the wrong row would show. At the default tolerance the two
-    differ by 1e-3 of a column's scale (3e-3 for ``Tcmb``), which is the
+    differ by 1e-3 of a column's scale (3e-3 for ``T_cmb``), which is the
     solve's own error, so the comparison runs at 1e-6, where they agree to
-    1e-7 (6e-6 for ``Tcmb``).
+    1e-7 (6e-6 for ``T_cmb``).
     """
 
     import jax
@@ -246,7 +246,7 @@ def test_matter_power_spectrum_under_jit():
     def power(cosmology):
         traces.append(cosmology)
         batch = cosmologies_of(LCDM, [cosmology])
-        keep = ("clxc", "clxb")
+        keep = ("delta_c", "delta_b")
         values = solve_eb(batch, SOLVE_EB_K, [1.0], keep=keep, thermo_weight=0.1)
         today = dict(zip(keep, jnp.unstack(values[0, :, :, -1])))
         params = {
@@ -265,7 +265,7 @@ def test_matter_power_spectrum_under_jit():
         np.testing.assert_allclose(
             np.asarray(jitted(cosmology)), np.asarray(eager), rtol=1e-12
         )
-    assert sum(isinstance(c.get("H0"), jax.core.Tracer) for c in traces) == 1
+    assert sum(isinstance(c.get("H_0"), jax.core.Tracer) for c in traces) == 1
 
     cosmology = _perturbed_cosmologies(1)[0]
     theta = jnp.asarray([cosmology[n] for n in DIFFERENTIABLE_PARAMETERS])

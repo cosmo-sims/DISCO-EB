@@ -3,18 +3,19 @@ A cosmological model in DISCO-EB is comprised of a list of *components*. A compo
 variables as class attributes and provides *quantities* through ordinary Python functions we call *providers*:
 
     class Baryons(Species):
-        clxb = State(initial=lambda clxg: 0.75 * clxg)
-        vb = State()
+        delta_b = State(initial=lambda delta_g: 0.75 * delta_g)
+        theta_b = State()
 
-        def grhob_t(self, grhob, inv_a):
-            return grhob * inv_a
+        def rho_b(self, omega_b, a):
+            return omega_b / a**3
 
-        @contributes("dgrho")
-        def dgrho_b(self, grhob_t, clxb):
-            return grhob_t * clxb
+        @contributes("delta_rho")
+        def delta_rho_b(self, rho_b, delta_b):
+            return rho_b * delta_b
 
-        def d_vb(self, adotoa, vb, k, cs2, clxb):
-            return -adotoa * vb + k * cs2 * clxb
+        @derivative("theta_b")
+        def euler_b(self, aH, theta_b, k, cs2, delta_b):
+            return -aH * theta_b + k * k * cs2 * delta_b
 
 **Settings.** ``LMAX_G = Setting(15)`` declares a setting with its default.
 The class loads it at creation from the environment variable ``DISCO_<NAME>``
@@ -22,11 +23,11 @@ when set, cast to the default's type. It reads as a plain value on the class
 and its instances, and the constructor takes an override as a keyword
 (``Photons(LMAX_G=11)``). A provider reads it as ``self.LMAX_G``.
 
-**States.** ``theta = State(shape)`` declares a state variable: a scalar
+**States.** ``F = State(shape)`` declares a state variable: a scalar
 (``State()``), a vector (``State(16)``) or a matrix (``State((3, 16))``). The
 shape may be a function of the component instance when it depends on its
 settings. The flat state vector holds the components' states in declaration
-order, a vector ``theta`` as the elements ``theta_0, theta_1, ...`` and a
+order, a vector ``F`` as the elements ``F_0, F_1, ...`` and a
 matrix ``psi`` as ``psi_0_0, psi_0_1, ...``. A state also carries its
 *initial condition*, ``State(..., initial=fn)``. Its parameters resolve
 like a provider's.
@@ -34,11 +35,12 @@ like a provider's.
 **Providers.** Components provide quantities by defining them in methods. Each
 method can take as inputs any other defined quantity. The topological sorting
 algorithm that builds the right-hand side of the Einstein-Boltzmann system will
-call the providers in the order that respects their dependencies. Providers
-of the form ``d_<state>`` define a contribution to that state's derivative.
-A provider may also be decorated with ``@contributes`` to contribute to
-a sum over components, such as ``grho``, ``dgrho`` and ``dgq``. The
-component that reads a sum declares it: ``grho = Sum()``.
+call the providers in the order that respects their dependencies. A method
+decorated with ``@derivative("x")`` contributes to the rate of the state
+``x``, and the rate is the quantity ``d_x``. A method decorated with
+``@contributes`` adds to a sum over components, such as ``rho``,
+``delta_rho`` and ``momentum``. The component that reads a sum declares it:
+``rho = Sum()``. A method's name alone never makes it a contribution.
 
 **Parameters.** ``omega_c: ArrayLike = Parameter()`` declares a cosmological
 parameter.
@@ -372,7 +374,7 @@ def Derived(
     directed: bool = False,
     init: Literal[False] = False,
 ) -> Any:
-    """Declare a parameter derived from others: ``grhoc: ArrayLike = Derived(lambda omega_c: ...)``.
+    """Declare a parameter derived from others: ``omega_g: ArrayLike = Derived(lambda T_cmb: ...)``.
 
     ``value`` is a function whose parameter names are other parameters. It
     is not a constructor argument: ``init`` is there for type checkers,
@@ -460,7 +462,7 @@ def derive_parameters(
 
 
 class State:
-    """A state variable declared on a component: ``etak = State()``, ``theta = State(16)``.
+    """A state variable declared on a component: ``eta = State()``, ``F = State(16)``.
 
     ``shape`` is ``()`` for a scalar, ``n`` for a vector, ``(n, m)`` for a
     matrix, or a function of the component instance returning one of those.
@@ -490,7 +492,7 @@ class State:
 
 
 class Sum:
-    """A quantity summed over the components that contribute to it: ``grho = Sum()``.
+    """A quantity summed over the components that contribute to it: ``rho = Sum()``.
 
     The component that reads a sum declares it, and any component of the
     model adds to it with :func:`contributes`. A model's sums are those its
@@ -560,9 +562,11 @@ class Component:
                 if attr.startswith("_") or attr == "check":
                     continue
                 if isinstance(member, (staticmethod, types.FunctionType)):
-                    quantity = _contributed(member, attr)
-                    if not quantity.startswith("d_"):
-                        found.append(quantity)
+                    found.extend(
+                        quantity
+                        for quantity in _contributed(member, attr)
+                        if not quantity.startswith("d_")
+                    )
         return tuple(dict.fromkeys(found))
 
     @classmethod
@@ -572,7 +576,7 @@ class Component:
         The copy is a subclass whose states, parameters and quantities
         carry the prefix ``name_``: the state ``delta`` becomes
         ``dr_delta``, the key ``Omega`` ``dr_Omega``, the quantity
-        ``grho_t`` ``dr_grho_t``. Its functions are the class's own, and
+        ``density`` ``dr_density``. Its functions are the class's own, and
         each name in their signatures that the component itself declares
         resolves to the prefixed one. Every other name, and a contribution
         to one of the model's sums, stays as written. So one model may list
@@ -681,8 +685,8 @@ class Species(Component):
 class Gravity(Component):
     """A component of the theory of gravity: the expansion rate, the metric and its constraints.
 
-    The species read what these provide, the conformal Hubble rate ``adotoa``
-    and the metric sources ``z`` and ``sigma``, and never each other, so a
+    The species read what these provide, the conformal Hubble rate ``aH``
+    and the metric sources ``h_prime`` and ``alpha``, and never each other, so a
     model changes its theory of gravity by replacing them.
     """
 
@@ -807,36 +811,81 @@ class _Provider:
         self.signature = tuple(names)
 
 
-def contributes(quantity: str) -> Callable[[F], F]:
-    """Mark a method as a contribution to a sum or a derivative: ``@contributes("dgrho")``.
+def contributes(*quantities: str) -> Callable[[F], F]:
+    """Mark a method as a contribution to a sum or a derivative: ``@contributes("delta_rho")``.
 
     A method otherwise provides the quantity it is named after, and a sum
-    (``grho``, ``dgrho``, ...) or a state's derivative ``d_x`` takes a
+    (``rho``, ``delta_rho``, ...) or a state's derivative ``d_x`` takes a
     contribution from several components. Under their shared name, those
     methods would clash in a model class that inherits them all, which type
     checkers report. So each contribution gets a name of its own and says
     what it contributes to::
 
-        @contributes("dgrho")
-        def dgrho_b(self, grhob_t, clxb):
-            return grhob_t * clxb
+        @contributes("delta_rho")
+        def delta_rho_b(self, rho_b, delta_b):
+            return rho_b * delta_b
 
-    A method named after the sum still contributes to it at run time.
+    One method may add the same value to several sums::
+
+        @contributes("rho", "rho_radiation")
+        def rho_photons(self, rho_g):
+            return rho_g
     """
+
+    if not quantities:
+        raise TypeError("contributes() needs the quantity the method adds to")
+    if len(quantities) > 1 and any(q.startswith("d_") for q in quantities):
+        raise TypeError(
+            f"contributes{quantities}: a method contributes to several sums or "
+            "to one derivative"
+        )
 
     def mark(method: F) -> F:
         fn = method.__func__ if isinstance(method, staticmethod) else method
-        setattr(fn, "_contributes", quantity)
+        setattr(fn, "_contributes", quantities)
         return method
 
     return mark
 
 
-def _contributed(member, attr: str) -> str:
-    """The quantity a class member provides: what it ``@contributes`` to, else its name."""
+def derivative(state: str) -> Callable[[F], F]:
+    """Mark a method as a contribution to a state's rate: ``@derivative("theta_b")``.
+
+    A scalar state's contribution is returned. A vector state's is written
+    into the method's ``output``. Several components may contribute to one
+    state, and the rate is their sum::
+
+        @derivative("theta_b")
+        def euler_b(self, aH, theta_b, k, cs2, delta_b):
+            return -aH * theta_b + k * k * cs2 * delta_b
+
+    The rate itself is the quantity ``d_theta_b``, which a provider or a
+    save hook may read.
+    """
+
+    return contributes(f"d_{state}")
+
+
+def _undeclared(label: str, attr: str, sums: Sequence[str]) -> None:
+    """Raise ``TypeError`` for a method whose name alone says it adds to a rate or a sum."""
+
+    if attr.startswith("d_"):
+        raise TypeError(
+            f"{label}.{attr}: a contribution to a state's rate is declared "
+            f"with @derivative({attr[2:]!r})"
+        )
+    if attr in sums:
+        raise TypeError(
+            f"{label}.{attr}: a contribution to the sum {attr!r} is declared "
+            f"with @contributes({attr!r})"
+        )
+
+
+def _contributed(member, attr: str) -> tuple[str, ...]:
+    """The quantities a class member provides: what it ``@contributes`` to, else its name."""
 
     fn = member.__func__ if isinstance(member, staticmethod) else member
-    return getattr(fn, "_contributes", attr)
+    return getattr(fn, "_contributes", (attr,))
 
 
 def _model_name(component: Component, name: str, sums: Sequence[str] = ()) -> str:
@@ -863,8 +912,12 @@ def _providers(
             # named after, or the one it @contributes to.
             if isinstance(member, (staticmethod, types.FunctionType)):
                 fn = member.__func__ if isinstance(member, staticmethod) else member
-                quantity = _contributed(member, attr)
-                found.append(_Provider(component, quantity, fn, states, sums, attr))
+                if not hasattr(fn, "_contributes"):
+                    _undeclared(component.label, attr, sums)
+                found.extend(
+                    _Provider(component, quantity, fn, states, sums, attr)
+                    for quantity in _contributed(member, attr)
+                )
     for attr, value in vars(component).items():
         if (
             attr not in seen
@@ -872,7 +925,12 @@ def _providers(
             and isinstance(value, types.FunctionType)
         ):
             seen.add(attr)
-            found.append(_Provider(component, attr, value, states, sums))
+            if not hasattr(value, "_contributes"):
+                _undeclared(component.label, attr, sums)
+            found.extend(
+                _Provider(component, quantity, value, states, sums, attr)
+                for quantity in _contributed(value, attr)
+            )
     return found
 
 
@@ -1286,7 +1344,7 @@ class Equations:
     components write their rates per unit of a time of their own (the
     conformal time), and ``clock`` names the quantity that converts: the
     rate of ``time`` in it, so that the built right-hand side is every
-    rate divided by ``clock``. With ``time="lna"`` and ``clock="adotoa"``
+    rate divided by ``clock``. With ``time="lna"`` and ``clock="aH"``
     (``d ln a / d tau``) the equations integrate in ``ln a``, the conformal
     time being a state whose rate is one. Without a clock the rates are
     returned as written.
@@ -1551,8 +1609,8 @@ class Equations:
         the components, or a provider, whose dependencies resolve the same
         way. ``math`` is the module the providers' ``math.sqrt`` and friends
         use: the standard library for floats, ``jax.numpy`` for JAX arrays.
-        That makes the background expansion rate the model's own ``grho`` and
-        ``adotoa``, traced under ``jit``. Returns one value or a tuple.
+        That makes the background expansion rate the model's own ``rho`` and
+        ``aH``, traced under ``jit``. Returns one value or a tuple.
         """
 
         memo = self.__dict__.setdefault("_host_memo", {}).setdefault(id(math), {})
@@ -1765,7 +1823,7 @@ class Equations:
         """The states of a flat state array ``y`` (last axis), by name.
 
         A vector state comes back with its components as the leading axis (a
-        matrix with two), so a provider's ``theta[l]`` and ``psi[i, l]`` index
+        matrix with two), so a provider's ``F[l]`` and ``psi[i, l]`` index
         the component and broadcast over the rest. That lets :meth:`evaluate`
         run the model over a whole history on the host. ``xp`` is ``numpy``
         or ``jax.numpy``, matching ``y``.
