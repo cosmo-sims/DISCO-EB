@@ -55,6 +55,7 @@ def _kept_values(
     *,
     to_inputs=None,
     drop_first: bool = True,
+    split_derivatives: bool = False,
     error_weights=None,
     rtol: float = PERTURB_RTOL,
     atol: float = PERTURB_ATOL,
@@ -86,6 +87,12 @@ def _kept_values(
     variable nobody differentiates costs none. The rule contracts the
     columns with the variables' tangent, which is linear, so ``jax.grad``
     works off the same launch.
+
+    With ``split_derivatives`` the launch instead copies each trajectory
+    once per differentiated variable, and each copy's thread integrates the
+    state and one column. Every copy repeats the primal, so a full device
+    does more work, but a small ensemble finishes sooner since the columns
+    run side by side (:func:`~discoeb.solver.solve_eb`).
 
     The joint launch uses the fp64 LU and keeps the sensitivities out of step
     control. Its primal agrees with the plain fp32-LU one to ~1e-6 of a
@@ -164,33 +171,49 @@ def _kept_values(
         widths = [leaf.reshape(n_cosmo, -1).shape[1] for leaf in moving]
         n_rep = sum(widths)
 
-        def joint(*moved):
+        # Thread-local memory, not registers, bounds the joint system's
+        # occupancy. An uncapped register budget halves the resident threads
+        # the driver reserves local memory for.
+        joint_options: dict[str, Any] = dict(
+            lu_precision="fp64",
+            max_registers=None,
+            sens_error_control=False,
+            reio_weight=REIO_ERROR_WEIGHT,
+        )
+
+        def moved_to(*moved):
             full = list(leaves)
             for i, leaf in zip(live, moved):
                 full[i] = leaf
-            return launch(
-                treedef.unflatten(full),
-                params,
-                y0,
-                t_span,
-                lu_precision="fp64",
-                # Thread-local memory, not registers, bounds the joint system's
-                # occupancy. An uncapped register budget halves the resident
-                # threads the driver reserves local memory for.
-                max_registers=None,
-                sens_error_control=False,
-                reio_weight=REIO_ERROR_WEIGHT,
-            )
+            return treedef.unflatten(full)
 
-        # One unit direction per differentiated column of a leaf. modax
-        # integrates a sensitivity column along each beside the state, in
-        # the trajectory's own thread.
+        # One unit direction per differentiated column of a leaf.
         units, start = [], 0
         for leaf, m in zip(moving, widths):
             unit = np.zeros((n_rep, n_cosmo, m))
             unit[np.arange(start, start + m), :, np.arange(m)] = 1.0
             units.append(jnp.asarray(unit.reshape((n_rep,) + leaf.shape)))
             start += m
+
+        derivative = split if split_derivatives else together
+        values, jacobian = derivative(
+            moved_to, moving, units, (params, y0, t_span), joint_options
+        )
+        # jacobian[r, c] = d q_c / d v_r. The contraction with the variables'
+        # tangent is linear, so jax.grad transposes it.
+        dv = jnp.concatenate(
+            [jnp.reshape(d_leaves[i], (n_cosmo, -1)) for i in live], axis=1
+        )
+        return values, jnp.einsum("rc...,cr->c...", jacobian, dv)
+
+    def together(moved_to, moving, units, fixed, joint_options):
+        # modax integrates a sensitivity column along each direction beside
+        # the state, in the trajectory's own thread.
+        n_rep = units[0].shape[0]
+
+        def joint(*moved):
+            return launch(moved_to(*moved), *fixed, **joint_options)
+
         along = jax.vmap(
             lambda *direction: jax.jvp(joint, tuple(moving), direction),
             out_axes=(None, 0),
@@ -210,14 +233,50 @@ def _kept_values(
             along(*(u[i * width : (i + 1) * width] for u in units))
             for i in range(launches)
         ]
-        values = parts[0][0]
         jacobian = jnp.concatenate([part[1] for part in parts])[:n_rep]
-        # jacobian[r, c] = d q_c / d v_r. The contraction with the variables'
-        # tangent is linear, so jax.grad transposes it.
-        dv = jnp.concatenate(
-            [jnp.reshape(d_leaves[i], (n_cosmo, -1)) for i in live], axis=1
-        )
-        return values, jnp.einsum("rc...,cr->c...", jacobian, dv)
+        return parts[0][0], jacobian
+
+    def split(moved_to, moving, units, fixed, joint_options):
+        # Row (k_idx * n_cosmo + ci) * n_rep + r is copy r of a trajectory.
+        # Its inputs' tangent is d x / d v_r, so its thread integrates the
+        # state and that one column.
+        n_rep = units[0].shape[0]
+        params, y0, t_span = fixed
+        x, dx = jax.vmap(
+            lambda *direction: jax.jvp(
+                lambda *moved: to_inputs(moved_to(*moved)), tuple(moving), direction
+            ),
+            out_axes=(None, 0),
+        )(*units)
+
+        def copies(rows):
+            return jnp.repeat(rows, n_rep, axis=0)
+
+        weights = error_weights
+        if weights is not None and np.ndim(weights) == 2:
+            weights = np.repeat(np.asarray(weights), n_rep, axis=0)
+        params, y0 = copies(params), copies(y0)
+
+        def joint(x_rows):
+            _, out = _launch(
+                prepared,
+                params.at[:, columns].set(x_rows),
+                y0,
+                t_span,
+                error_weights=weights,
+                save_hook=hook,
+                save_history=False,
+                **settings,
+                **joint_options,
+            )
+            return out
+
+        dx_rows = jnp.tile(jnp.swapaxes(dx, 0, 1), (n_k, 1, 1))
+        dx_rows = dx_rows.reshape(-1, dx.shape[-1])
+        out, d_out = jax.jvp(joint, (copies(jnp.tile(x, (n_k, 1))),), (dx_rows,))
+        d_out = d_out.reshape((n_k * n_cosmo, n_rep) + d_out.shape[1:])
+        jacobian = jnp.stack([arrange(d_out[:, r]) for r in range(n_rep)])
+        return arrange(out[::n_rep]), jacobian
 
     kept.defjvp(kept_jvp, symbolic_zeros=True)
 

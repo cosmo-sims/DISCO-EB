@@ -181,6 +181,48 @@ def test_matter_power_spectrum_derivatives(benchmark):
 
 
 @pytest.mark.gpu
+def test_split_derivatives_match_one_thread():
+    """A thread per parameter gives the Jacobian the trajectory's own thread gives.
+
+    Two distinct cosmologies and a Jacobian in each one's parameters, so a
+    copy in the wrong row would show. At the default tolerance the two
+    differ by 1e-3 of a column's scale (3e-3 for ``Tcmb``), which is the
+    solve's own error, so the comparison runs at 1e-6, where they agree to
+    1e-7 (6e-6 for ``Tcmb``).
+    """
+
+    import jax
+    import jax.numpy as jnp
+
+    from discoeb.models import LCDM
+
+    cosmologies = _perturbed_cosmologies(2)
+    theta = jnp.asarray([[c[name] for name in DENSITY_PARAMETERS] for c in cosmologies])
+
+    def power(t, split):
+        batch = [
+            {**c, **dict(zip(DENSITY_PARAMETERS, row))}
+            for c, row in zip(cosmologies, t)
+        ]
+        return _matter_power(
+            MATTER_POWER_K,
+            cosmologies_of(LCDM, batch),
+            split_derivatives=split,
+            rtol=1e-6,
+            atol=1e-6,
+        )
+
+    together = np.asarray(jax.jacfwd(lambda t: power(t, False))(theta))
+    split = np.asarray(jax.jacfwd(lambda t: power(t, True))(theta))
+    assert np.abs(together).max() > 0.0
+    for c in range(2):  # a cosmology's P(k) reads its own parameters only
+        assert np.all(split[c, :, 1 - c] == 0.0)
+    scale = np.abs(together).max(axis=1, keepdims=True)
+    worst = (np.abs(split - together) / np.where(scale > 0.0, scale, 1.0)).max(axis=1)
+    assert worst.max() < 1e-4, f"split and one-thread Jacobians differ by {worst}"
+
+
+@pytest.mark.gpu
 def test_matter_power_spectrum_under_jit():
     """``solve_eb`` and ``matter_power_spectrum`` trace under ``jit``, every key traced.
 

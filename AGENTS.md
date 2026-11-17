@@ -566,6 +566,14 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    several launches of one size, the last padded with zero directions.
    Measured (RTX 4070 SUPER, five parameters): one cosmology 2.4 s where
    replicas took 0.39 s, 128 cosmologies 3.6 s where they took 4.5 s.
+   `solve_eb(..., split_derivatives=True)` (default `False`) brings the
+   replicas back: the rule copies each trajectory once per differentiated
+   variable (row `(k_idx * n_cosmo + ci) * R + r`) and takes one `jax.jvp`
+   of the launch with copy `r`'s row tangent `d inputs / d variable_r`, so
+   each thread holds the state and one column, with no cap or chunking.
+   One cosmology, five parameters: 0.38 s against 2.4 s. The two modes
+   agree to 1e-7 at rtol 1e-6 and to 1e-3 at the default 1e-4
+   (`test_split_derivatives_match_one_thread`).
    The launch runs with `sens_error_control=False` and keeps each
    quantity's derivative beside it. Until 2026-11-17 the rule built
    replicas of every trajectory and the `eps` and `dir` columns by hand. fp64

@@ -43,6 +43,7 @@ def solve_eb(
     max_steps: int = PERTURB_MAX_STEPS,
     error_weights=None,
     thermo_weight: float = THERMO_ERROR_WEIGHT,
+    split_derivatives: bool = False,
 ) -> Annotated[jax.Array, ("cosmology", "name", "k", "a")]:
     """Solve the Einstein-Boltzmann system of ``cosmologies`` and keep ``keep`` at the scale factors ``a``.
 
@@ -102,6 +103,15 @@ def solve_eb(
         cosmologies within). In the dictionary, each weight is a number or a
         function of the trajectories' wave numbers that returns one per
         trajectory, and unnamed states keep weight one.
+    split_derivatives
+        How a derivative uses the device's threads. By default a trajectory
+        and its sensitivity columns share one thread, which costs the least
+        work and suits a batch that fills the device. With ``True`` each
+        differentiated parameter gets a copy of every trajectory in a thread
+        of its own, holding the state and one column. The copies repeat the
+        primal but run side by side, so one cosmology finishes about five
+        times sooner, and a thread's memory no longer grows with the
+        parameters.
 
     Returns
     -------
@@ -201,6 +211,7 @@ def solve_eb(
         first_step=first_step,
         max_steps=max_steps,
         thermo_weight=thermo_weight,
+        split_derivatives=split_derivatives,
     )
     return of_variables(variables)
 
