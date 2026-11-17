@@ -81,6 +81,7 @@ dev = [
     "ruff>=0.15.5",
     # The same type checker CI and the pre-commit hook run.
     "ty>=0.0.83",
+    "pytest-xdist>=3.8.0",
 ]
 
 [build-system]
@@ -112,7 +113,7 @@ testpaths = ["tests"]
 # tests/helpers.py and tests/sweep.py, imported by name from every folder
 pythonpath = ["tests"]
 # `pytest -m slow` (a later -m wins) or `-m ""` runs the slow tests too
-addopts = ["-m", "not slow"]
+addopts = ["-m", "not slow", "--dist", "loadgroup"]
 markers = [
   "slow: needs a kernel the fast suite does not compile, or is not essential; deselected by default",
   "gpu: launches a kernel; skipped without a CUDA device",

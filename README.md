@@ -102,6 +102,7 @@ git clone https://github.com/cosmo-sims/DISCO-EB.git && cd DISCO-EB
 uv sync --extra cuda13  # or --extra cuda12
 
 uv run pytest tests -rs   # needs a GPU, and -rs shows skipped CLASS comparisons
+uv run pytest tests -m "not gpu" -n auto   # the host tests, on every core
 uv run ruff format && uv run ruff check --fix
 uv run ty check
 uv run pre-commit install   # the checks above, and a commit-message check
