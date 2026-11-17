@@ -1,7 +1,7 @@
 """``solve_eb``, the interface to the Einstein-Boltzmann solve.
 
 It runs one modax launch over every (wave mode, cosmology) pair and
-records only the named quantities at the scale factors you give. The
+records only the named quantities at the scale factors given. The
 values are differentiable in the model's :func:`differentiable_parameters`.
 """
 

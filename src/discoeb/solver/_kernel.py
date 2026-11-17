@@ -1,4 +1,5 @@
-"""The joint kernel, from the parameter row to the modax launch.
+"""
+Constructs a modax GPU kernel.
 
 One launch integrates every (wave mode, cosmology) pair of a batch. The
 recombination block steps ahead of the perturbations as a modax
