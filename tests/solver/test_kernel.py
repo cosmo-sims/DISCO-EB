@@ -359,3 +359,28 @@ def test_the_field_is_background_and_its_perturbation_is_not():
     # the perturbations read the field's velocity itself, and the potential
     # stands for the field: its slope and curvature follow from it
     assert model.published() == ("phidot", "tau", "V", "opacity", "cs2")
+
+
+# --- The columns of a batch, and the keys the solve holds fixed.
+
+
+def test_a_held_key_raises_when_differentiated():
+    """``YHe`` is read by the solve but not differentiated: no silent zero."""
+    import jax
+
+    from discoeb.models._model import _batch_of
+    from discoeb.solver._kernel import _columns
+
+    reference = cosmologies_of(LCDM, COSMOLOGY)
+
+    def column(key):
+        def of(value):
+            batch = _batch_of(reference.replace(**{key: value}))
+            return _columns(batch.cosmologies, batch.model)[key][0]
+
+        return jax.grad(of)(getattr(reference, key))
+
+    assert float(column("omega_c")) == 1.0
+    assert float(column("A_s")) == 0.0  # never read by the solve: no tangent
+    with pytest.raises(ValueError, match="YHe"):
+        column("YHe")

@@ -40,8 +40,13 @@ def test_solve_eb_derivatives():
     import jax.numpy as jnp
 
     from discoeb.models import LCDM
-    from discoeb.models._cosmology import _columns
-    from discoeb.solver._kernel import A_START, _prepare_solve, parameter_layout
+    from discoeb.models._model import _batch_of
+    from discoeb.solver._kernel import (
+        A_START,
+        _columns,
+        _prepare_solve,
+        parameter_layout,
+    )
     from discoeb.solver._sensitivities import _directed_inputs, _kept_values
     from discoeb.solver._solver import solve_eb
 
@@ -54,11 +59,8 @@ def test_solve_eb_derivatives():
 
     def inputs_of(theta):
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
-        columns = _columns(
-            [physical(LCDM, param)],
-            LCDM.parameter_keys(),
-            differentiable=LCDM.spec.differentiable_parameters(),
-        )
+        batch = _batch_of(LCDM.from_dict(physical(LCDM, param)))
+        columns = _columns(batch.cosmologies, batch.model)
         return _directed_inputs(columns, LCDM)
 
     densities = inputs_of(theta)

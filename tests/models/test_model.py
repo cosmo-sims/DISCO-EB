@@ -161,15 +161,12 @@ def test_a_model_rejects_a_cosmology_it_cannot_represent():
     )
     with pytest.raises(ValueError, match="DarkEnergy"):
         LCDM.from_dict({**BASE_COSMOLOGY, "w_DE_0": -0.9})
-    # traced, a key the model lacks can't be checked yet: the cosmology holds
-    # it for the solve, which raises if it is differentiated
+    # traced, a key the model lacks can't be checked, and the model reads
+    # none of it
     import jax
 
-    from discoeb.models._model import _batch_of
-
-    held = jax.jit(lambda w: LCDM.from_dict({**BASE_COSMOLOGY, "w_DE_0": w}))(-1.0)
-    assert "w_DE_0" not in held.to_dict() and "w_DE_0" in held._held
-    assert _batch_of(held).cosmologies[0]["w_DE_0"] == -1.0
+    traced = jax.jit(lambda w: LCDM.from_dict({**BASE_COSMOLOGY, "w_DE_0": w}))(-0.9)
+    assert traced.to_dict() == LCDM(**BASE_COSMOLOGY).to_dict()
 
 
 def test_a_cosmology_is_an_immutable_pytree_of_its_parameters():

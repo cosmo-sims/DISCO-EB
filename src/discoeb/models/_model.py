@@ -35,7 +35,6 @@ from ..components._component import (
 )
 from ..components.gravity import GRHOM_PER_H0SQ
 from ..components.recombination import Recombination, ReionizationDepth
-from ._cosmology import _is_concrete
 
 __all__ = ["Model", "ModelSpec"]
 
@@ -388,6 +387,12 @@ def _expansion_reads_state(model: ModelSpec) -> bool:
     return _host_equations(model).reads_state("adotoa")
 
 
+def _is_concrete(value) -> bool:
+    """Whether ``value`` is a number now, not a JAX tracer of ``jit`` or a derivative."""
+
+    return not isinstance(value, jax.core.Tracer)
+
+
 def _is_number(value) -> bool:
     """Whether ``value`` is a plain number, not a JAX or numpy array."""
 
@@ -445,8 +450,6 @@ class Model(Recombination):
     spec: ClassVar[ModelSpec]
     """The components and settings the solver reads, on which it caches the kernel."""
     _keys: ClassVar[dict[str, Any]] = {}
-    _held: dict[str, Any] = {}
-    """Traced keys of other components :meth:`from_dict` was given, held for the solve."""
 
     def __init_subclass__(cls, *, name: str | None = None, **settings):
         super().__init_subclass__()
@@ -516,19 +519,11 @@ class Model(Recombination):
         without dark energy), and ignores keys no component declares
         (:meth:`ModelSpec.check_keys`). For a dictionary written for another
         model. Under ``jit`` such a key's value is traced and can't be
-        checked yet, so the cosmology holds it for the solve, which raises if
-        anything differentiates it rather than return a silent zero.
+        checked. The model reads none of it either way.
         """
 
         cls.spec.check_keys(params)
-        cosmology = cls(**{key: params[key] for key in cls._keys if key in params})
-        held = {
-            key: value
-            for key, value in params.items()
-            if key not in cls._keys and declarations_of(key) and not _is_concrete(value)
-        }
-        object.__setattr__(cosmology, "_held", held)
-        return cosmology
+        return cls(**{key: params[key] for key in cls._keys if key in params})
 
     @classmethod
     def from_density_parameters(
@@ -567,9 +562,7 @@ class Model(Recombination):
     def replace(self, **changes) -> Model:
         """Return this cosmology with ``changes`` to its parameters: ``planck.replace(H0=70.0)``."""
 
-        cosmology = type(self)(**{**self.to_dict(), **changes})
-        object.__setattr__(cosmology, "_held", self._held)
-        return cosmology
+        return type(self)(**{**self.to_dict(), **changes})
 
     __replace__ = replace
 
@@ -676,19 +669,14 @@ def _set(cosmology: Model, values: dict) -> None:
 
 
 def _flatten(cosmology: Model):
-    held = cosmology._held
-    values = tuple(getattr(cosmology, key) for key in type(cosmology)._keys)
-    return (*values, *held.values()), tuple(held)
+    return tuple(getattr(cosmology, key) for key in type(cosmology)._keys), None
 
 
-def _unflatten(cls: type[Model], held: tuple, leaves) -> Model:
+def _unflatten(cls: type[Model], _, leaves) -> Model:
     # No check: under jit or a transformation the leaves are tracers or
     # placeholders.
     cosmology = object.__new__(cls)
-    n = len(cls._keys)
-    _set(cosmology, dict(zip(cls._keys, leaves[:n])))
-    if held:
-        object.__setattr__(cosmology, "_held", dict(zip(held, leaves[n:])))
+    _set(cosmology, dict(zip(cls._keys, leaves)))
     return cosmology
 
 
@@ -746,7 +734,7 @@ def _batch_of(cosmologies) -> CosmologyBatch:
             f"got {', '.join(c.__name__ for c in classes)}"
         )
     return CosmologyBatch(
-        classes[0].spec, tuple({**c._held, **c.to_dict()} for c in batch), classes[0]
+        classes[0].spec, tuple(c.to_dict() for c in batch), classes[0]
     )
 
 

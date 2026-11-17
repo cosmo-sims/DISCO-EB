@@ -413,19 +413,19 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    - The momentum bins (`neutrino_momentum_bins`, cached) live in `util.py`
      beside the Gauss-Laguerre rule
 
-5. **models/_cosmology.py** - The batch's parameter columns.
-   `_columns(cosmologies, keys=model.parameter_keys(), differentiable=...)`,
-   the cosmologies `_batch_of`'s dictionaries,
-   stacks a batch into JAX columns `(n_cosmo,)` by key, values traced or
-   not, plus any key another component declares that a cosmology gives
-   (`w_DE_0` in an LCDM dict); a key the solve reads but the model does not
-   differentiate (outside `differentiable` = `ModelSpec.differentiable_parameters()`,
-   by default none:
-   `Nmnu`, `YHe`, `cs2_DE`, `w_DE_*` without `DarkEnergy`,
-   `mnu` without `MassiveNeutrinos`) passes through `_not_differentiable`, a `custom_jvp`
-   whose rule raises, so a derivative is never a silent zero.
-   A dictionary may leave out a key whose declaration has a default (`w_DE_0`,
-   `omega_k`, `Nmnu`, `k_p`, ...). `ModelSpec.check` skips traced values
+5. **models/_cosmology.py** is gone (2026-11-17). `_columns(cosmologies,
+   model, held=True)` lives in `solver/_kernel.py`: it stacks a batch's
+   dictionaries (`_batch_of`'s, every key present) into JAX columns
+   `(n_cosmo,)` by key, values traced or not. With `held` a key declared
+   `solved=False` gets `stop_gradient`, and a key the solve reads but the
+   model does not differentiate (outside
+   `ModelSpec.differentiable_parameters()`: `Nmnu`, `YHe`, `cs2_DE`) passes
+   through `_not_differentiable`, a `custom_jvp` whose rule raises, so a
+   derivative is never a silent zero. `_is_concrete` lives in
+   `models/_model.py`. A cosmology no longer holds traced keys of other
+   models (`_held`): `from_dict` drops a key the model lacks, concrete
+   ones checked against their default first, since the model reads none
+   of it
 
 6. **components/recombination.py** - Recombination history, inside the joint kernel
    - The conformal time `tau`, RECFAST's `(x_H, x_He, T_m)` and the optical

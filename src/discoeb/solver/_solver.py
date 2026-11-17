@@ -14,12 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..components.recombination import THERMO_ERROR_WEIGHT
-from ..models._cosmology import (
-    _columns,
-    _is_concrete,
-    _is_unsolved,
-)
-from ..models._model import Model, ModelSpec, _batch_of, _spec_of
+from ..models._model import Model, ModelSpec, _batch_of, _is_concrete, _spec_of
 from ._kernel import (
     A_START,
     N_COMMON_DIRECTED,
@@ -27,6 +22,7 @@ from ._kernel import (
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
     PERTURB_RTOL,
+    _columns,
     _prepare_solve,
     _solve_batch,
     parameter_layout,
@@ -202,23 +198,14 @@ def solve_eb(
         drop_first = True  # traced values must lie after A_START
     tau_grid = jnp.concatenate((jnp.asarray([A_START]), a)) if drop_first else a
 
-    columns = _columns(
-        batch.cosmologies,
-        keys=model.parameter_keys(),
-        differentiable=differentiable_parameters(model),
-    )
+    columns = _columns(batch.cosmologies, model)
     prepared = _prepare_solve(model, batch, k_values, extra, columns)
     # The variables of the derivative. JAX arithmetic maps them to the
     # directed inputs (_directed_inputs), and the rule of _kept_values
-    # launches one sensitivity replica per variable actually differentiated.
-    variables = {
-        # The primordial keys the solve never reads carry no tangent, and so
-        # no replica, when P(k) differentiates them.
-        "columns": {
-            k: jax.lax.stop_gradient(v) if _is_unsolved(k) else v
-            for k, v in columns.items()
-        },
-    }
+    # integrates one sensitivity column per variable actually differentiated.
+    # The primordial keys the solve never reads carry no tangent (_columns),
+    # and so no column, when P(k) differentiates them.
+    variables = {"columns": columns}
     to_inputs = functools.partial(_inputs_of, model, tuple(extra), 0)
     if inputs is not None:
         # The given inputs are the solve's variables. The cosmologies set
@@ -310,7 +297,7 @@ def directed_inputs(cosmologies) -> jax.Array:
     """
 
     batch = _batch_of(cosmologies)
-    columns = _columns(batch.cosmologies, keys=batch.model.parameter_keys(), held=False)
+    columns = _columns(batch.cosmologies, batch.model, held=False)
     return _directed_inputs(columns, batch.model)
 
 

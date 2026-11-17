@@ -19,7 +19,6 @@ import numpy as np
 
 from ..components._component import Equations, _compile, derive_parameters
 from ..components.recombination import THERMO_ERROR_WEIGHT, Recombination
-from ..models._cosmology import _columns
 from ..models._model import Model, ModelSpec, _batch_of, _spec_of
 
 A_START = 2.0e-7
@@ -287,7 +286,7 @@ def _prepare_solve(
     ``cosmologies`` is a cosmology, a sequence of one model's or their
     :class:`~discoeb.models._model.CosmologyBatch`; their values may be traced under ``jit``. ``k_values`` must be
     numbers: they set the launch's shape and order. ``columns`` are the
-    cosmologies' :func:`~discoeb.models._cosmology._columns` if already at hand. Every
+    cosmologies' :func:`_columns` if already at hand. Every
     cosmology must suit
     the model (:meth:`ModelSpec.check
     <discoeb.models.ModelSpec.check>`), checked when its values are
@@ -307,11 +306,7 @@ def _prepare_solve(
     order = np.argsort(k, kind="stable")
     k_sorted = k[order]
     if columns is None:
-        columns = _columns(
-            cosmologies,
-            keys=resolved.parameter_keys(),
-            differentiable=resolved.differentiable_parameters(),
-        )
+        columns = _columns(cosmologies, resolved)
     columns = jax.lax.stop_gradient(columns)
     params, y0 = _pack(resolved, tuple(extra), tuple(k_sorted.tolist()), columns)
     return _PreparedSolve(
@@ -354,6 +349,53 @@ def _pack(model: ModelSpec, extra, k_sorted, columns):
     return params, y0
 
 
+@functools.partial(jax.custom_jvp, nondiff_argnums=(1,))
+def _not_differentiable(value, name):
+    """Return ``value``, and raise if anything differentiates with respect to it."""
+
+    return value
+
+
+@_not_differentiable.defjvp
+def _not_differentiable_jvp(name, primals, tangents):
+    raise ValueError(
+        f"{name!r} cannot be differentiated through solve_eb of this model. The "
+        "differentiable parameters are those its components declare "
+        "differentiable (differentiable_parameters(model))"
+    )
+
+
+def _columns(cosmologies, model: type[Model] | ModelSpec, held: bool = True) -> dict:
+    """Return a batch's parameters as JAX columns ``(n_cosmologies,)`` by key.
+
+    ``cosmologies`` are the batch's parameter dictionaries
+    (:func:`~discoeb.models._model._batch_of`), their values numbers or JAX
+    values, traced or not. With ``held``, the columns are the variables of
+    a derivative. A key the solve never reads (``solved=False``) then
+    carries no tangent, and a key it reads but the model does not
+    differentiate (:meth:`ModelSpec.differentiable_parameters
+    <discoeb.models.ModelSpec.differentiable_parameters>`) raises if
+    differentiated, where its derivative would come back as a silent zero.
+    """
+
+    spec = _spec_of(model)
+    declared = spec.parameters()
+    differentiable = spec.differentiable_parameters()
+    columns = {}
+    for key in spec.parameter_keys():
+        values = [c[key] for c in cosmologies]
+        if any(isinstance(v, jax.Array) for v in values):
+            column = jnp.stack([jnp.asarray(v, dtype=jnp.float64) for v in values])
+        else:  # one device array, not one per cosmology
+            column = jnp.asarray(np.asarray(values, dtype=np.float64))
+        if held and not declared[key].solved:
+            column = jax.lax.stop_gradient(column)
+        elif held and key not in differentiable:
+            column = _not_differentiable(column, key)
+        columns[key] = column
+    return columns
+
+
 def _rows(layout: ParameterLayout, values, n_cosmo: int):
     """Return the cosmologies' parameter rows ``(n_cosmologies, layout.n)``, without the wave number.
 
@@ -385,9 +427,7 @@ def make_params(
     The row is ``model``'s (:func:`parameter_layout`).
     """
 
-    columns = _columns(
-        _batch_of(cosmology).cosmologies, held=False, keys=model.parameter_keys()
-    )
+    columns = _columns(_batch_of(cosmology).cosmologies, model, held=False)
     row = _rows(parameter_layout(model), density_parameters(columns, model=model), 1)
     params = np.tile(np.asarray(row), (len(k_values), 1))
     params[:, parameter_layout(model).columns["k"]] = k_values
@@ -411,11 +451,7 @@ def make_initial_states(
     the trajectories.
     """
 
-    columns = _columns(
-        _batch_of(cosmology).cosmologies,
-        held=False,
-        keys=cosmology_model.parameter_keys(),
-    )
+    columns = _columns(_batch_of(cosmology).cosmologies, cosmology_model, held=False)
     inputs = density_parameters(columns, model=cosmology_model)
 
     def per(values):

@@ -27,6 +27,16 @@ from discoeb.models import LCDM
 OMEGA_FLUID = 0.08
 
 
+def test_a_dictionary_names_no_model():
+    """No model stands in for a bare dictionary: the caller names one."""
+
+    from discoeb import directed_inputs
+
+    with pytest.raises(TypeError, match="LCDM"):
+        directed_inputs(COSMOLOGY)
+    directed_inputs(cosmologies_of(LCDM, COSMOLOGY))
+
+
 @pytest.mark.slow
 @pytest.mark.gpu
 def test_splitting_the_dark_matter_into_a_named_fluid_leaves_the_solve_unchanged():
