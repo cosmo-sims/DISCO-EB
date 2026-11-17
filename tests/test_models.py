@@ -23,7 +23,6 @@ from helpers import (
     ty_executable,
 )
 from sweep import (
-    CROSSING_COSMOLOGY,
     check_dark_energy_crossing_minus_one,
     check_self_convergence,
     check_sweep_is_stable,
@@ -156,6 +155,11 @@ def test_a_model_rejects_a_cosmology_it_cannot_represent():
         LCDM(**BASE_COSMOLOGY, w_DE_0=-0.9)  # ty: ignore[unknown-argument]
     with pytest.raises(ValueError, match="w != -1"):
         W0WACDM(**BASE_COSMOLOGY)
+    # a CPL history that reaches w = -1 on the way, or today, or at the start
+    for w_0, w_a in ((-1.02, 0.36), (-0.9, -0.3), (-1.0, 0.1), (-0.9, -0.1)):
+        with pytest.raises(ValueError, match="through -1"):
+            W0WACDM(**BASE_COSMOLOGY, w_DE_0=w_0, w_DE_a=w_a)
+    W0WACDM(**BASE_COSMOLOGY, w_DE_0=-1.1, w_DE_a=-0.2)  # phantom throughout
     with pytest.raises(TypeError, match="no parameter 'N_mnu'.*MassiveNeutrinos"):
         LCDM(**BASE_COSMOLOGY, N_mnu=1.0)  # ty: ignore[unknown-argument]
     with pytest.raises(TypeError, match=r"needs the parameters \['omega_c'\]"):
@@ -562,17 +566,6 @@ def test_sweep(name):
     check_sweep_matches_class(name)
 
 
-@pytest.mark.gpu
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "W0WACDM's fluid divides by 1 + w: a w(a) crossing -1 runs out of steps "
-        "(20000) and returns a finite, positive P(k) 5.5 to 99 percent off CLASS, "
-        f"with no error raised. E.g. {CROSSING_COSMOLOGY}"
-    ),
-)
-@pytest.mark.slow
 def test_dark_energy_crossing_minus_one():
     check_dark_energy_crossing_minus_one()
 

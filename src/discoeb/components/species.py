@@ -642,7 +642,10 @@ class DarkEnergy(_DarkEnergyDensity):
                   - 9 (1+w)(cs2 - c_a^2) (aH)^2 theta_de / k^2``,
     ``theta_de' = -(1 - 3 cs2) aH theta_de + cs2 k^2 delta_de / (1+w)``.
 
-    Valid for ``w != -1``. Use :class:`CosmologicalConstant` for ``w = -1``.
+    Valid for ``w != -1`` at every scale factor: a history that reaches
+    ``w = -1`` between the start and today is rejected (``check``), since a
+    single fluid cannot cross it. Use :class:`CosmologicalConstant` for
+    ``w = -1``.
     The fluid starts in the adiabatic mode, ``delta_de = (1 + w_0) delta_c`` at rest.
     """
 
@@ -657,11 +660,26 @@ class DarkEnergy(_DarkEnergyDensity):
 
     @classmethod
     def check(cls, w_DE_0, w_DE_a):
-        """The fluid equations divide by ``1 + w``."""
-        if float(w_DE_0) == -1.0 and float(w_DE_a) == 0.0:
+        """The fluid equations divide by ``1 + w``, which must keep its sign.
+
+        ``1 + w`` runs linearly in the scale factor from ``1 + w_DE_0 +
+        w_DE_a`` early on to ``1 + w_DE_0`` today, so it reaches zero on
+        the way if the two differ in sign or either is zero. The solve then
+        runs out of steps and returns a finite ``P(k)`` 5 to 99 percent off.
+        """
+        today = 1.0 + float(w_DE_0)
+        early = today + float(w_DE_a)
+        if today == 0.0 and early == 0.0:
             raise ValueError(
                 "it evolves a dark-energy fluid, which needs w != -1; use a model "
                 "with a cosmological constant for w_DE_0 = -1, w_DE_a = 0"
+            )
+        if today * early <= 0.0:
+            raise ValueError(
+                "it evolves a dark-energy fluid, which needs w != -1 at every "
+                f"scale factor, and w_DE_0 = {float(w_DE_0)}, w_DE_a = "
+                f"{float(w_DE_a)} runs from w = {early - 1.0:.4g} early on to "
+                f"{today - 1.0:.4g} today, through -1"
             )
 
     def w_de(self, a, w_DE_0, w_DE_a):

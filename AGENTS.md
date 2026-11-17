@@ -783,7 +783,10 @@ The typical computation flow is:
   the other models against a 100x tighter solve on their own kernel). CLASS
   is the reference for eight of a sweep's cosmologies, as for eight of the
   128 in `test_matter_power_spectrum_matches_class`. A CPL
-  `w(a)` crossing -1 hits `max_steps` and is silently wrong (strict `xfail`).
+  `w(a)` that reaches -1 for `0 < a <= 1` is rejected by `DarkEnergy.check`
+  (2026-11-17; until then it hit `max_steps` and was silently 5 to 99 percent
+  off). Concrete values only: a traced one is not checked. Crossing needs
+  PPF (Fang, Hu & Lewis 2008), which is not implemented.
   The sweeps and the self-convergence tests are marked `slow`
 - A GPU run's time is its kernels (reorganised 2026-11-17). modax compiles
   one per (model, settings, kept names, **number of save times**, sensitivity
@@ -798,7 +801,7 @@ The typical computation flow is:
   `_matter_power(..., a=, keep=)` computes `P(k)` from either. A derivative
   in one parameter is a `jax.jvp` (the one-column kernel; `jax.grad`
   integrates a column per moved directed input)
-- The default run is the fast suite: 126 tests, 14 on the GPU, all LCDM, on
+- The default run is the fast suite: 127 tests, 14 on the GPU, all LCDM, on
   6 kernels: `P(k)` plain, with one and with two sensitivity columns,
   `DIAG_KEEP` plain, the history (`_solve_batch`), and `REIO_KEEP` of
   `LCDM_REIO`. Its derivative tests take the `two_columns` fixture
@@ -810,7 +813,7 @@ The typical computation flow is:
   history, plain and one-column `P(k)` of `W0WACDM` and `LCDM_MNU`, one
   column of `LCDM_REIO`, `LCDM_OUTSIDE` (`SecondDarkMatter`, a named `Fluid`
   and `CosmicTime` in one model) plain and with one column, and `QCDM`.
-  Run everything with `uv run pytest tests -m "" -rs`: 141 tests, 29 on the
+  Run everything with `uv run pytest tests -m "" -rs`: 141 tests, 28 on the
   GPU. Measured on an RTX 4070 SUPER: the fast GPU tests 1 min 43 s with
   one kernel compiling, everything 4 min 22 s with one compiling and 6 min
   42 s with several

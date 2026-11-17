@@ -242,20 +242,18 @@ CROSSING_COSMOLOGY = {
 
 
 def check_dark_energy_crossing_minus_one():
-    """CPL histories that cross ``w = -1``, which the model accepts without warning.
+    """The model rejects every CPL history of the sweep that crosses ``w = -1``.
 
-    The sweep's seven crossing cosmologies hit ``max_steps`` on every one and
-    miss CLASS by 5.5e-2 to 9.9e-1 (measured 2026-11-13).
+    Until 2026-11-17 it accepted them without warning: the sweep's seven
+    crossing cosmologies hit ``max_steps`` on every one and missed CLASS
+    (with PPF) by 5.5e-2 to 9.9e-1 (measured 2026-11-13).
     """
-
-    from discoeb.solver._kernel import PERTURB_MAX_STEPS
 
     cosmologies = [c for c in sweep("w0wacdm") if _crosses_phantom_divide(c)]
     assert CROSSING_COSMOLOGY in cosmologies
-    pk, steps = _matter_power_and_steps(_model("w0wacdm"), cosmologies)
-    assert steps.max() < PERTURB_MAX_STEPS
-    pk_class = np.stack([_class_pk(param, SWEEP_K) for param in cosmologies])
-    assert np.abs(pk / pk_class - 1.0).max() < SWEEP_PK_GATES["w0wacdm"]
+    for cosmology in cosmologies:
+        with pytest.raises(ValueError, match="through -1"):
+            cosmologies_of(_model("w0wacdm"), cosmology)
 
 
 CONVERGENCE_COSMOLOGIES = {
