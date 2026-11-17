@@ -34,7 +34,8 @@ def pytest_collection_modifyitems(config, items):
 
     Under pytest-xdist (``-n auto``) the host tests spread over the cores.
     Two processes on one GPU return garbage and no error, so every ``gpu``
-    test joins one group, which ``--dist loadgroup`` gives to one worker.
+    test joins one group, which ``-n auto --dist loadgroup`` gives to one
+    worker.
     """
 
     gpu = [item for item in items if item.get_closest_marker("gpu") is not None]

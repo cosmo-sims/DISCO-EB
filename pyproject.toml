@@ -113,7 +113,7 @@ testpaths = ["tests"]
 # tests/helpers.py and tests/sweep.py, imported by name from every folder
 pythonpath = ["tests"]
 # `pytest -m slow` (a later -m wins) or `-m ""` runs the slow tests too
-addopts = ["-m", "not slow", "--dist", "loadgroup"]
+addopts = ["-m", "not slow"]
 markers = [
   "slow: needs a kernel the fast suite does not compile, or is not essential; deselected by default",
   "gpu: launches a kernel; skipped without a CUDA device",
