@@ -7,6 +7,7 @@ sensitivity launch maps that over the differentiated variables and stores
 each kept quantity's derivative beside its value.
 """
 
+import os
 from typing import Any
 
 import jax
@@ -26,6 +27,13 @@ from ._kernel import (
     density_parameters,
     parameter_layout,
 )
+
+MAX_SENSITIVITY_STATE = int(os.environ.get("DISCO_MAX_SENSITIVITY_STATE", "330"))
+"""The most components one thread integrates in a sensitivity launch: the
+state and its sensitivity columns. The driver reserves every resident
+thread's local memory, so this bounds the columns per launch, and a
+derivative in more variables takes several launches. 330 is five columns of
+the 55-state LCDM system, which fills 9 GB of a 12 GB card. Seven exhaust it."""
 
 
 def _directed_inputs(columns, model, extra=()) -> jax.Array:
@@ -184,10 +192,27 @@ def _kept_values(
             unit[np.arange(start, start + m), :, np.arange(m)] = 1.0
             units.append(jnp.asarray(unit.reshape((n_rep,) + leaf.shape)))
             start += m
-        values, jacobian = jax.vmap(
+        along = jax.vmap(
             lambda *direction: jax.jvp(joint, tuple(moving), direction),
             out_axes=(None, 0),
-        )(*units)
+        )
+        # As many columns per launch as a thread's memory holds, in launches
+        # of one size, so that one kernel serves them. The last launch's
+        # spare columns run along zero.
+        most = max(1, MAX_SENSITIVITY_STATE // prepared.model.nvar - 1)
+        launches = -(-n_rep // most)
+        width = -(-n_rep // launches)
+        spare = launches * width - n_rep
+        if spare:
+            units = [
+                jnp.concatenate([u, jnp.zeros((spare,) + u.shape[1:])]) for u in units
+            ]
+        parts = [
+            along(*(u[i * width : (i + 1) * width] for u in units))
+            for i in range(launches)
+        ]
+        values = parts[0][0]
+        jacobian = jnp.concatenate([part[1] for part in parts])[:n_rep]
         # jacobian[r, c] = d q_c / d v_r. The contraction with the variables'
         # tangent is linear, so jax.grad transposes it.
         dv = jnp.concatenate(
