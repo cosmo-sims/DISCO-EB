@@ -1,7 +1,4 @@
-"""
-This module defines comsological models. Each model is built by inheriting
-from :class:`Model` and base components.
-"""
+"""Cosmological models. A model is a class whose bases are its components, and a cosmology is an instance of it."""
 
 from ._model import Model, ModelSpec
 from .lcdm import LCDM, LCDM_MNU

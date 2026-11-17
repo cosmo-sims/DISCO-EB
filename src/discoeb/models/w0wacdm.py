@@ -1,4 +1,4 @@
-"""w0waCDM: a CPL dark-energy fluid, with massless or massive neutrinos."""
+"""w0waCDM, a CPL dark-energy fluid with massless or massive neutrinos."""
 
 from __future__ import annotations
 

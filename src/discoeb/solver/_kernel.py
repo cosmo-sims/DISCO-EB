@@ -1,10 +1,9 @@
-"""The joint kernel: the parameter row, the packed batch and the modax launch.
+"""The joint kernel, from the parameter row to the modax launch.
 
-One modax launch integrates every (wave mode, cosmology) pair of a batch. The
-joint model is the perturbation model with the recombination block
-(:class:`~discoeb.components.recombination.Recombination`) stepping ahead of it as a modax
+One launch integrates every (wave mode, cosmology) pair of a batch. The
+recombination block steps ahead of the perturbations as a modax
 :class:`~modax.Hierarchy`. This module builds that hierarchy, packs a batch
-into parameter rows and initial states, launches it, and compiles the save
+into parameter rows and initial states, launches it and compiles the save
 hooks that keep named quantities.
 """
 

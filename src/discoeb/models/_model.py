@@ -1,28 +1,16 @@
-"""The base classes of cosmological models: :class:`Model` and :class:`ModelSpec`.
+"""The base classes of cosmological models, :class:`Model` and :class:`ModelSpec`.
 
-A model is a class whose bases are its components, and an instance of it is
-a cosmology: the model with values for its parameters. The components declare
-the parameters (:func:`~discoeb.components._component.Parameter`), so the constructor
-takes exactly the model's, and a type checker sees them::
+A model is a class whose bases are its components in state order. An
+instance of it is a cosmology, the model with values for its parameters.
+The components declare the parameters, so the constructor takes exactly
+those and a type checker sees them. The densities are physical,
+``omega = Omega h^2``, and their sum gives the Hubble constant.
 
-    class LCDM_MNU(LCDM, MassiveNeutrinos):
-        \"\"\"LCDM with massive neutrinos.\"\"\"
-
-    planck = LCDM(omega_b=0.02238, omega_c=0.1201, omega_de=0.3107,
-                  A_s=2.1e-9, n_s=0.966, Tcmb=2.7255, YHe=0.2454, Neff=3.046)
-    solve_eb([planck, planck.replace(omega_c=0.125)], k, tau, keep=("R",))
-
-The densities are physical ones, ``omega = Omega h^2``, and the Hubble
-constant is what they sum to (:attr:`Model.H0`).
-:meth:`Model.from_density_parameters` takes ``Omegam``, ``Omegab`` and ``H0``
-instead and finds the dark-energy density that closes the budget.
-
-A model's bases are its components in state order, a model among them
-standing for its own components: ``LCDM_MNU`` is LCDM's components, then
-:class:`~discoeb.components.species.MassiveNeutrinos`. :meth:`Model.swap`,
-:meth:`Model.add`, :meth:`Model.remove` and :meth:`Model.with_settings`
-derive models at run time; a type checker sees only those written as class
-statements.
+>>> class LCDM_MNU(LCDM, MassiveNeutrinos):
+...     \"\"\"LCDM with massive neutrinos.\"\"\"
+>>> planck = LCDM(omega_b=0.02238, omega_c=0.1201, omega_de=0.3107,
+...               A_s=2.1e-9, n_s=0.966, Tcmb=2.7255, YHe=0.2454, Neff=3.046)
+>>> solve_eb([planck, planck.replace(omega_c=0.125)], k, a, keep=("R",))
 """
 
 from __future__ import annotations

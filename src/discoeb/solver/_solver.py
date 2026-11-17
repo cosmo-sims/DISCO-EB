@@ -1,8 +1,8 @@
-"""Solving the Einstein-Boltzmann system: keep named quantities at chosen times.
+"""``solve_eb``, the interface to the Einstein-Boltzmann solve.
 
-:func:`solve_eb` is the interface the CMB code uses. It runs one modax launch
-over every (wave mode, cosmology) pair and records only the named quantities,
-differentiable in the model's :func:`differentiable_parameters`.
+It runs one modax launch over every (wave mode, cosmology) pair and
+records only the named quantities at the scale factors you give. The
+values are differentiable in the model's :func:`differentiable_parameters`.
 """
 
 import functools

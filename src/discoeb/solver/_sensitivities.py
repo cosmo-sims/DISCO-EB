@@ -1,14 +1,10 @@
-"""Derivatives of kept quantities: forward sensitivities along the directed inputs.
+"""Derivatives of kept quantities by forward sensitivities.
 
-A derivative moves the model's directed parameters
-(:func:`~discoeb.solver._kernel.parameter_layout`, led by
-:data:`~discoeb.solver._kernel.DIRECTED_NAMES`), columns of the parameter
-row. ``jax.jvp`` of a modax launch integrates the one sensitivity column
-along the row's tangent, and a ``vmap`` over tangents integrates one column
-per direction, in the trajectory's own thread. A sensitivity launch is that
-``vmap`` over the differentiated variables, each column along the direction
-``dx / dv`` of its variable, with each kept quantity's derivative stored
-beside it.
+A derivative moves the model's directed parameters, the leading columns of
+the parameter row. ``jax.jvp`` of a modax launch integrates one sensitivity
+column along the row's tangent, in the trajectory's own thread. A
+sensitivity launch maps that over the differentiated variables and stores
+each kept quantity's derivative beside its value.
 """
 
 from typing import Any
