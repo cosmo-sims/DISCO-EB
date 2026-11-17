@@ -4,19 +4,18 @@ from typing import Annotated
 
 import jax
 import jax.numpy as jnp
-from jax.typing import ArrayLike
 
 
 def matter_power_spectrum(
-    k: ArrayLike,
+    k,
     *,
-    clxc: ArrayLike,
-    clxb: ArrayLike,
-    omega_c: ArrayLike,
-    omega_b: ArrayLike,
-    A_s: ArrayLike,
-    n_s: ArrayLike,
-    k_p: ArrayLike,
+    clxc,
+    clxb,
+    omega_c,
+    omega_b,
+    A_s,
+    n_s,
+    k_p,
 ) -> Annotated[jax.Array, ("k",)]:
     """Return the linear ``P(k)`` in Mpc^3 from the density contrasts.
 
@@ -26,10 +25,10 @@ def matter_power_spectrum(
 
     with ``delta_m`` their density-weighted contrast at unit initial
     curvature. Keep ``clxc`` and ``clxb`` in
-    :func:`~discoeb.solver.solve_eb` at the scale factor of interest, 0 in
-    ``ln a`` for today, and pass their values there::
+    :func:`~discoeb.solver.solve_eb` at the scale factor of interest, 1
+    for today, and pass their values there::
 
-        values = solve_eb(cosmology, k, [0.0], keep=("clxc", "clxb"), thermo_weight=0.1)
+        values = solve_eb(cosmology, k, [1.0], keep=("clxc", "clxb"), thermo_weight=0.1)
         clxc, clxb = jnp.unstack(values[0, :, :, -1])
         pk = matter_power_spectrum(
             k,
@@ -67,8 +66,7 @@ def matter_power_spectrum(
     -----
     Differentiable in the model's
     :func:`~discoeb.solver.differentiable_parameters` given as JAX values,
-    as ``solve_eb``'s values are: the derivative at fixed scale factor,
-    since the solve integrates in ``ln a``.
+    as ``solve_eb``'s values are: the derivative at fixed scale factor.
     """
 
     ks, clxc, clxb, omega_c, omega_b, A_s, n_s, k_p = (
