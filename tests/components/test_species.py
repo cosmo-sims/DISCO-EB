@@ -31,9 +31,9 @@ def test_a_cold_pressureless_copy_moves_as_the_dark_matter():
     for name, value in dict(
         grhog=1.5e-7, grhornomass=1.0e-7, grhoc=0.8e-4, grhob=1.9e-5, grhov=2.0e-7
     ).items():
-        p[columns[f"{name}_nominal"]] = value
-    p[columns["x_grho0_nominal"]] = 0.3e-4
-    p[columns["y_grho0_nominal"]] = 0.1e-4
+        p[columns[f"{name}"]] = value
+    p[columns["x_grho0"]] = 0.3e-4
+    p[columns["y_grho0"]] = 0.1e-4
     p[columns["y_w"]], p[columns["y_cs2"]] = 1.0 / 3.0, 1.0 / 3.0
     p[columns["k"]] = 0.05
     y = np.random.default_rng(0).standard_normal(model.nvar)

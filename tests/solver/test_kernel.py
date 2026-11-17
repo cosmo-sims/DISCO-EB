@@ -47,7 +47,7 @@ def test_two_copies_share_a_model():
     layout = parameter_layout(LCDM_XY)
     # the reionization redshift, declared by the recombination block, comes last
     assert layout.directed[-3:] == ("x_grho0", "y_grho0", "z_re")
-    assert {"x_w", "y_cs2", "x_grho0_nominal", "dir_y_grho0"} <= set(layout.columns)
+    assert {"x_w", "y_cs2", "x_grho0", "y_grho0"} <= set(layout.columns)
     # unnamed, the fluid's theta is the photons'
     with pytest.raises(ValueError, match="theta"):
         LCDM.add(Fluid, name="clash").build()
@@ -216,12 +216,13 @@ def test_the_parameter_reaches_the_dictionary_the_row_and_the_inputs():
     own = parameter_layout(LCDM).directed
     assert layout.directed[:7] == own[:7]
     assert sorted(layout.directed) == sorted((*own, "grhox"))
-    assert {"grhox_nominal", "dir_grhox"} <= set(layout.columns)
     i = layout.directed.index("grhox")
-    assert layout.columns["dir_grhox"] == layout.ix_dir + i
-    assert layout.directed_columns[i] == layout.columns["grhox_nominal"]
+    assert layout.directed_columns[i] == layout.columns["grhox"]
+    # the directed parameters lead the row, and nothing else stands for them
+    assert layout.directed_columns == tuple(range(len(layout.directed)))
+    assert not {"eps", "grhox_nominal", "dir_grhox"} & set(layout.columns)
     # The built-in models' rows have no trace of it.
-    assert "grhox_nominal" not in parameter_layout(LCDM).columns
+    assert "grhox" not in parameter_layout(LCDM).columns
 
 
 # --- The joint system as a modax hierarchy: the recombination block publishing what the hierarchy reads.

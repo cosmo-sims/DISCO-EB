@@ -58,20 +58,19 @@ as ``inputs``."""
 class ParameterLayout:
     """The columns of a model's parameter row, generated from its parameters.
 
-    The row is ``(x_nominal for each directed x, SOLVER_COLUMNS, the other
-    column parameters, eps, dir_x for each directed x)``. The directed
-    parameters come in :data:`DIRECTED_NAMES` order, then in component
-    order, and the other columns in component and declaration order, so the
-    layout is a function of the resolved model and the kernels cached on it
-    stay valid. ``eps`` is zero in every primal solve, and the derivative in
-    it is the directional derivative along ``dir``
-    (:func:`~discoeb.solver._sensitivities._kept_values`).
+    The row is ``(the directed parameters, SOLVER_COLUMNS, the other column
+    parameters)``. The directed parameters come in :data:`DIRECTED_NAMES`
+    order, then in component order, and the other columns in component and
+    declaration order, so the layout is a function of the resolved model and
+    the kernels cached on it stay valid. A derivative moves the directed
+    columns alone: modax integrates the one sensitivity column along their
+    tangent (:func:`~discoeb.solver._sensitivities._kept_values`).
     """
 
     columns: dict
-    """Column by the name the providers read it under: ``grhoc_nominal``, ``k``, ``eps``, ``dir_grhoc``."""
+    """Column by the name the providers read it under: ``grhoc``, ``k``."""
     directed: tuple[str, ...]
-    """The directed parameters: the inputs a sensitivity launch moves."""
+    """The directed parameters: the inputs a derivative moves."""
     values: tuple[tuple[str, int], ...]
     """``(parameter, column)`` of the parameters the row holds."""
 
@@ -80,17 +79,9 @@ class ParameterLayout:
         return len(self.columns)
 
     @property
-    def ix_eps(self) -> int:
-        return self.columns["eps"]
-
-    @property
-    def ix_dir(self) -> int:
-        return self.ix_eps + 1
-
-    @property
     def directed_columns(self) -> tuple[int, ...]:
-        """The nominal columns of :attr:`directed`."""
-        return tuple(self.columns[f"{name}_nominal"] for name in self.directed)
+        """The columns of :attr:`directed`."""
+        return tuple(self.columns[name] for name in self.directed)
 
 
 def parameter_layout(model: type[Model] | ModelSpec, extra=()) -> ParameterLayout:
@@ -112,17 +103,9 @@ def _parameter_layout(model: ModelSpec, extra) -> ParameterLayout:
     clash = sorted(set(SOLVER_COLUMNS) & set(parameters))
     if clash:
         raise ValueError(f"{clash} name solver columns, not parameters")
-    names = [
-        *(f"{n}_nominal" for n in directed),
-        *SOLVER_COLUMNS,
-        *others,
-        "eps",
-        *(f"dir_{n}" for n in directed),
-    ]
+    names = [*directed, *SOLVER_COLUMNS, *others]
     columns = {name: i for i, name in enumerate(names)}
-    values = tuple(
-        (n, columns[parameters[n].column_name]) for n in (*directed, *others)
-    )
+    values = tuple((n, columns[n]) for n in (*directed, *others))
     return ParameterLayout(columns, tuple(directed), values)
 
 
@@ -376,8 +359,7 @@ def _rows(layout: ParameterLayout, values, n_cosmo: int):
     """Return the cosmologies' parameter rows ``(n_cosmologies, layout.n)``, without the wave number.
 
     ``values`` are the model's parameters (:func:`density_parameters`), each
-    ``(n_cosmologies,)``. ``eps`` and the direction block are zero, as in
-    every primal solve.
+    ``(n_cosmologies,)``.
     """
 
     by_column = {column: values[name] for name, column in layout.values}
@@ -528,8 +510,6 @@ def _launch(
     from modax import solve as modax_solve
 
     method = Rodas5P(lu_precision=lu_precision, gains=PIDGains(pcoeff=0.3, icoeff=0.4))
-    # A tuple is the row split into leaves.
-    head = params[0] if isinstance(params, tuple) else params
     return modax_solve(
         prepared.ode_fn,
         y0,
@@ -543,7 +523,7 @@ def _launch(
         trajectories_per_block=TRAJECTORIES_PER_BLOCK,
         max_registers=max_registers,
         error_weights=error_weights_for(
-            prepared, np.shape(head)[0], error_weights, thermo_weight, reio_weight
+            prepared, np.shape(params)[0], error_weights, thermo_weight, reio_weight
         ),
         cache=True,
         **extra,

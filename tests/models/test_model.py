@@ -61,11 +61,11 @@ def test_the_rhs_builds_and_is_finite(name):
     p = np.zeros(N_PARAM)
     p[:5] = [1.5e-7, 1.0e-7, 1.1e-4, 1.9e-5, 2.0e-7]
     p[PARAM_COLUMNS["k"]] = 0.05
-    p[PARAM_COLUMNS["w_DE_0_nominal"]], p[PARAM_COLUMNS["cs2_DE_nominal"]] = -0.9, 1.0
+    p[PARAM_COLUMNS["w_DE_0"]], p[PARAM_COLUMNS["cs2_DE"]] = -0.9, 1.0
     (
-        p[PARAM_COLUMNS["grhor_nu_nominal"]],
+        p[PARAM_COLUMNS["grhor_nu"]],
         p[PARAM_COLUMNS["n_mnu"]],
-        p[PARAM_COLUMNS["amnu_nominal"]],
+        p[PARAM_COLUMNS["amnu"]],
     ) = 1e-7, 1.0, 300.0
     y = rng.standard_normal(model.nvar)
     dy = np.asarray(rhs(tuple(y), 100.0, tuple(p)))
@@ -403,7 +403,7 @@ def finite_difference_jacobian_pattern(
     p = rng.uniform(
         0.5, 1.5, N_PARAM
     )  # order one, curvature and sensitivity direction included
-    p[PARAM_COLUMNS["w_DE_0_nominal"]] = -0.9
+    p[PARAM_COLUMNS["w_DE_0"]] = -0.9
     y = rng.standard_normal(nvar(model))
 
     def f(state):

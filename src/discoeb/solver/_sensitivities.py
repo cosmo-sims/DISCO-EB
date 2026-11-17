@@ -1,12 +1,14 @@
 """Derivatives of kept quantities: forward sensitivities along the directed inputs.
 
-The model reads each input a derivative may move (its directed parameters,
-led by :data:`~discoeb.solver._kernel.DIRECTED_NAMES`) as
-``x_nominal + eps dir_x``. A sensitivity launch replicates every
-trajectory once per differentiated variable, with the direction ``dx / dv``
-of that variable, and differentiates the launch in ``eps``, a leaf of the
-parameter row of its own, with ``jax.jvp``: modax then integrates one
-sensitivity column per replica and keeps each quantity's derivative beside it.
+A derivative moves the model's directed parameters
+(:func:`~discoeb.solver._kernel.parameter_layout`, led by
+:data:`~discoeb.solver._kernel.DIRECTED_NAMES`), columns of the parameter
+row. ``jax.jvp`` of a modax launch integrates the one sensitivity column
+along the row's tangent, and a ``vmap`` over tangents integrates one column
+per direction, in the trajectory's own thread. A sensitivity launch is that
+``vmap`` over the differentiated variables, each column along the direction
+``dx / dv`` of its variable, with each kept quantity's derivative stored
+beside it.
 """
 
 from typing import Any
@@ -68,18 +70,18 @@ def _kept_values(
     len(names), n_k, n_tau)`` in the caller's wave-mode order.
 
     It is a ``jax.custom_jvp`` in ``v``. The plain hooked launch gives the
-    value. A forward-sensitivity launch gives the tangent. It replicates every
-    trajectory once per *differentiated* variable, a column of a leaf whose
-    tangent is not a symbolic zero, and replica ``r`` carries the single
-    column ``S = dy / d eps`` along the direction ``dx / dv_r`` (``jax.jvp``
-    of ``to_inputs``) through ``eps`` and the ``dir`` block. That column is
-    ``jax.jvp`` of the launch in ``eps``, a leaf of the parameter row of its
-    own, so modax integrates it alone. modax stores each kept quantity of
-    :func:`build_keep_hook` and its derivative along the column, so the
-    kernel forms the derivative too and stores no history. A derivative in
-    the five parameters of the densities therefore costs five replicas
-    however many inputs the model directs, and a variable nobody
-    differentiates costs none.
+    value. A forward-sensitivity launch gives the tangent: ``jax.jvp`` of
+    the launch along ``dx / dv_r`` for each *differentiated* variable
+    ``v_r``, a column of a leaf whose tangent is not a symbolic zero, mapped
+    over ``r`` with ``jax.vmap``. modax integrates one sensitivity column
+    along each direction beside the state, one thread per trajectory, and
+    stores each kept quantity of :func:`build_keep_hook` with its
+    derivative, so the kernel forms the derivative too and stores no
+    history. A derivative in the five parameters of the densities therefore
+    costs five columns however many inputs the model directs, and a
+    variable nobody differentiates costs none. The rule contracts the
+    columns with the variables' tangent, which is linear, so ``jax.grad``
+    works off the same launch.
 
     The joint launch uses the fp64 LU and keeps the sensitivities out of step
     control. Its primal agrees with the plain fp32-LU one to ~1e-6 of a
@@ -108,20 +110,10 @@ def _kept_values(
         )
     n_k, n_grid, n_keep = len(k_sorted), len(tau_grid), len(names)
     first = 1 if drop_first else 0
-    layout = prepared.layout
-    ix_eps, ix_dir = layout.ix_eps, layout.ix_dir
     columns = np.asarray(
-        layout.directed_columns
+        prepared.layout.directed_columns
     )  # a constant: no tracer for the rule to close over
-    n_dir = len(columns)
     hook = _keep_hook(model, extra, names)
-
-    def with_inputs(base, x, replicas=1):
-        # Row k_idx * n_cosmo + ci (times replicas) takes cosmology ci's row of x.
-        def per_row(v):
-            return jnp.repeat(jnp.tile(v, (n_k, 1)), replicas, axis=0)
-
-        return base.at[:, columns].set(per_row(x))
 
     def arrange(rows):
         # Rows are k-major (row = k_idx * n_cosmo + cosmology_idx) and each
@@ -133,74 +125,51 @@ def _kept_values(
             values = values[:, :, jnp.asarray(np.argsort(order)), :]
         return values
 
-    # The rows, the initial state and the save times are arguments, not
-    # closed over: under jit they are tracers, and a custom_jvp may not close
-    # over those. The derivative holds them fixed, so the rule drops their
-    # tangents.
-    @jax.custom_jvp
-    def kept(v, params, y0, t_span):
+    def launch(v, params, y0, t_span, **options):
+        # Row k_idx * n_cosmo + ci takes cosmology ci's row of the inputs.
+        x = jnp.tile(to_inputs(v), (n_k, 1))
         _, out = _launch(
             prepared,
-            with_inputs(params, to_inputs(v)),
+            params.at[:, columns].set(x),
             y0,
             t_span,
             error_weights=error_weights,
             save_hook=hook,
             save_history=False,
             **settings,
+            **options,
         )
         return arrange(out)
+
+    # The rows, the initial state and the save times are arguments, not
+    # closed over: under jit they are tracers, and a custom_jvp may not close
+    # over those. The derivative holds them fixed, so the rule drops their
+    # tangents.
+    @jax.custom_jvp
+    def kept(v, params, y0, t_span):
+        return launch(v, params, y0, t_span)
 
     def kept_jvp(primals, tangents):
         v, params, y0, t_span = primals
         leaves, treedef = jax.tree_util.tree_flatten(v)
         d_leaves = treedef.flatten_up_to(tangents[0])
-        x = to_inputs(v)
-
-        # One replica per differentiated column of a leaf, along dx / dv.
-        directions, coefficients = [], []
-        for i, (leaf, d_leaf) in enumerate(zip(leaves, d_leaves)):
-            if isinstance(d_leaf, SymbolicZero):
-                continue
-            leaf = jnp.asarray(leaf, dtype=jnp.float64)
-            m = leaf.reshape(n_cosmo, -1).shape[1]
-
-            def x_of(value, i=i):
-                return to_inputs(
-                    treedef.unflatten([*leaves[:i], value, *leaves[i + 1 :]])
-                )
-
-            for j in range(m):
-                unit = jnp.zeros((n_cosmo, m)).at[:, j].set(1.0).reshape(leaf.shape)
-                directions.append(jax.jvp(x_of, (leaf,), (unit,))[1])
-            coefficients.append(jnp.reshape(d_leaf, (n_cosmo, m)))
-        if not directions:  # every tangent zero: no sensitivity launch
+        live = [i for i, d in enumerate(d_leaves) if not isinstance(d, SymbolicZero)]
+        if not live:  # every tangent zero: no sensitivity launch
             values = kept(v, params, y0, t_span)
             return values, jnp.zeros_like(values)
-        V = jnp.stack(directions, axis=1)  # (n_cosmo, n_rep, n_dir)
-        dv = jnp.concatenate(coefficients, axis=1)  # (n_cosmo, n_rep)
-        n_rep = V.shape[1]
+        moving = [jnp.asarray(leaves[i], dtype=jnp.float64) for i in live]
+        widths = [leaf.reshape(n_cosmo, -1).shape[1] for leaf in moving]
+        n_rep = sum(widths)
 
-        # Replica r of trajectory i is row i * n_rep + r, along V[:, r].
-        row = with_inputs(jnp.repeat(params, n_rep, axis=0), x, n_rep)
-        row = row.at[:, ix_dir : ix_dir + n_dir].set(
-            jnp.tile(V, (n_k, 1, 1)).reshape(-1, n_dir)
-        )
-        head, eps, tail = row[:, :ix_eps], row[:, ix_eps:ix_dir], row[:, ix_dir:]
-
-        def kept_of(e):
-            # eps is a leaf of its own, so differentiating it carries the one
-            # column S = dy / d eps, out of step control.
-            _, out = _launch(
-                prepared,
-                (head, e, tail),
-                jnp.repeat(y0, n_rep, axis=0),
+        def joint(*moved):
+            full = list(leaves)
+            for i, leaf in zip(live, moved):
+                full[i] = leaf
+            return launch(
+                treedef.unflatten(full),
+                params,
+                y0,
                 t_span,
-                error_weights=None
-                if error_weights is None
-                else np.repeat(np.asarray(error_weights), n_rep, axis=0),
-                save_hook=hook,
-                save_history=False,
                 lu_precision="fp64",
                 # Thread-local memory, not registers, bounds the joint system's
                 # occupancy. An uncapped register budget halves the resident
@@ -208,20 +177,27 @@ def _kept_values(
                 max_registers=None,
                 sens_error_control=False,
                 reio_weight=REIO_ERROR_WEIGHT,
-                **settings,
             )
-            return out
 
-        out, d_out = jax.jvp(kept_of, (eps,), (jnp.ones_like(eps),))
-        out = out.reshape(n_k * n_cosmo, n_rep, n_grid, n_keep)
-        d_out = d_out.reshape(n_k * n_cosmo, n_rep, n_grid, n_keep)
-        # Every replica integrates the same state, so the first's primal serves.
-        values = arrange(out[:, 0])
-        # d_out[i, r] = d q_i / d v_r at every save. The contraction with the
-        # variables' tangent is linear, so jax.grad transposes it.
-        dv_rows = jnp.tile(dv, (n_k, 1))
-        tangent = arrange(jnp.einsum("irsq,ir->isq", d_out, dv_rows))
-        return values, tangent
+        # One unit direction per differentiated column of a leaf. modax
+        # integrates a sensitivity column along each beside the state, in
+        # the trajectory's own thread.
+        units, start = [], 0
+        for leaf, m in zip(moving, widths):
+            unit = np.zeros((n_rep, n_cosmo, m))
+            unit[np.arange(start, start + m), :, np.arange(m)] = 1.0
+            units.append(jnp.asarray(unit.reshape((n_rep,) + leaf.shape)))
+            start += m
+        values, jacobian = jax.vmap(
+            lambda *direction: jax.jvp(joint, tuple(moving), direction),
+            out_axes=(None, 0),
+        )(*units)
+        # jacobian[r, c] = d q_c / d v_r. The contraction with the variables'
+        # tangent is linear, so jax.grad transposes it.
+        dv = jnp.concatenate(
+            [jnp.reshape(d_leaves[i], (n_cosmo, -1)) for i in live], axis=1
+        )
+        return values, jnp.einsum("rc...,cr->c...", jacobian, dv)
 
     kept.defjvp(kept_jvp, symbolic_zeros=True)
 

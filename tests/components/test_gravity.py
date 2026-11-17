@@ -108,7 +108,7 @@ def test_the_pressure_sums_over_the_species_and_gives_the_comoving_curvature():
     grhog, grhor, grhoc, grhob, grhov = 1.5e-7, 1.0e-7, 1.1e-4, 1.9e-5, 2.0e-7
     p[:5] = [grhog, grhor, grhoc, grhob, grhov]
     p[PARAM_COLUMNS["k"]] = 0.05
-    p[PARAM_COLUMNS["w_DE_0_nominal"]] = -1.0
+    p[PARAM_COLUMNS["w_DE_0"]] = -1.0
     y = np.zeros(model.nvar)
     y[state_index(cosmology_model)["etak"]] = -0.05
     y[state_index(cosmology_model)["vb"]] = 0.3
@@ -271,7 +271,7 @@ def test_the_metric_rate_is_a_quantity_of_the_model():
     for name, value in dict(
         grhog=1.5e-7, grhornomass=1.0e-7, grhoc=0.8e-4, grhob=1.9e-5, grhov=2.0e-7
     ).items():
-        p[PARAM_COLUMNS[f"{name}_nominal"]] = value
+        p[PARAM_COLUMNS[f"{name}"]] = value
     p[PARAM_COLUMNS["k"]] = 0.05
     y = np.random.default_rng(1).standard_normal(model.nvar)
     d_etak, adotoa_prime = fn(tuple(y), 100.0, tuple(p))
@@ -306,7 +306,7 @@ def test_the_streaming_approximation_is_a_component_a_model_may_drop():
     for name, value in dict(
         grhog=1.5e-7, grhornomass=1.0e-7, grhoc=0.8e-4, grhob=1.9e-5, grhov=2.0e-7
     ).items():
-        p[PARAM_COLUMNS[f"{name}_nominal"]] = value
+        p[PARAM_COLUMNS[f"{name}"]] = value
     p[PARAM_COLUMNS["k"]] = 0.5
     model, rhs = rhs_of(full)
     y = np.random.default_rng(2).standard_normal(model.nvar)

@@ -49,7 +49,6 @@ determined by tracing the dependencies of the various provider methods.
 
 from __future__ import annotations
 
-import functools
 import graphlib
 import inspect
 import itertools
@@ -244,9 +243,8 @@ class ParameterDeclaration:
     it out when it has a ``default``. With ``value``, a function whose
     parameter names are other parameters, it is derived from them on the host
     in JAX. ``column`` puts it in the kernel's parameter row under its name,
-    for the providers to read. ``directed`` puts it there as ``x_nominal`` and
-    ``dir_x`` instead and generates the provider ``x = x_nominal + eps *
-    dir_x``, so the forward sensitivities may move it. ``differentiable``
+    for the providers to read. ``directed`` also makes it an input of the
+    solve: a column a derivative may move, which leads the row. ``differentiable``
     lets ``solve_eb`` differentiate a key; any other key raises if
     differentiated, unless ``solved`` is false: a key the solve never reads
     (the primordial spectrum's), whose tangent ``solve_eb`` drops.
@@ -306,20 +304,6 @@ class ParameterDeclaration:
         """Whether a cosmology dictionary gives it (else it is derived)."""
         return self.value is None
 
-    @property
-    def column_name(self) -> str:
-        """The row column the kernel reads it from: ``x``, or ``x_nominal`` if directed."""
-        return f"{self.name}_nominal" if self.directed else str(self.name)
-
-    @functools.cached_property
-    def provider(self) -> Callable:
-        """``x(self, x_nominal, eps, dir_x)`` of a directed parameter, a provider of its component."""
-        n = str(self.name)
-        source = f"def {n}(self, {n}_nominal, eps, dir_{n}):\n    return {n}_nominal + eps * dir_{n}\n"
-        scope: dict[str, Any] = {}
-        exec(compile(source, f"<discoeb parameter {n}>", "exec"), {}, scope)  # noqa: S102
-        return scope[n]
-
     def renamed(self, renames: Mapping[str, str]) -> ParameterDeclaration:
         """A copy for a named component: it reads its component's own parameters under their new names."""
 
@@ -362,8 +346,8 @@ def Parameter(
     It is an argument of every model whose components include the class:
     required without a ``default``, optional with one. ``column`` puts it in
     the kernel's parameter row under its name, for the providers to read, and
-    ``directed`` as ``x_nominal`` and ``dir_x``, so the forward sensitivities
-    may move it (:class:`ParameterDeclaration`). ``differentiable`` lets
+    ``directed`` among the inputs a derivative may move
+    (:class:`ParameterDeclaration`). ``differentiable`` lets
     ``solve_eb`` differentiate it: set it where the derivative through the
     directed inputs it reaches matches central differences. ``solved=False``
     marks a key the solve never reads, such as the primordial spectrum's:
@@ -881,11 +865,6 @@ def _providers(
                 fn = member.__func__ if isinstance(member, staticmethod) else member
                 quantity = _contributed(member, attr)
                 found.append(_Provider(component, quantity, fn, states, sums, attr))
-    provided = {p.attr for p in found}
-    for attr, parameter in type(component).declared_parameters():
-        # A directed parameter's provider, unless a subclass overrides it.
-        if parameter.directed and attr not in provided:
-            found.append(_Provider(component, attr, parameter.provider, states))
     for attr, value in vars(component).items():
         if (
             attr not in seen
@@ -1644,8 +1623,6 @@ class Equations:
                 derivatives[provider.written.name].append(provider)
             elif q in self.sums:
                 contributions[q].append(provider)
-            elif q in producers and producers[q].fn is provider.fn:
-                continue  # one directed parameter two components declare
             elif q in producers:
                 raise ValueError(
                     f"{provider.label} and {producers[q].label} both provide {q!r}"

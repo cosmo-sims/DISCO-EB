@@ -62,8 +62,10 @@ numba-enzyme-cuda come from PyPI. The code needs modax 0.4.0 or later:
 method object (`kernel._launch` passes `method=Rodas5P(lu_precision=...,
 gains=PIDGains(pcoeff=0.3, icoeff=0.4))`), a save hook is a plain `(y, t, p)
 -> tuple` function whose values come back as `(N, n_save, n_out)`, and
-`params` may be a pytree whose leaves `jax.jvp` differentiates one at a
-time. There is no `sensitivity=`, `hook_size` or `quantity_hook` any more. numba-enzyme-cuda's CPU-only cap on numba
+`params` may be a pytree. It also needs modax's directional forward mode
+(2026-11-17, the release after 0.4.0): `jax.jvp` of a launch integrates
+one sensitivity column along the row's tangent, and a `vmap` over tangents
+integrates one column per direction in the trajectory's own thread. There is no `sensitivity=`, `hook_size` or `quantity_hook` any more. numba-enzyme-cuda's CPU-only cap on numba
 and llvmlite is lifted by `override-dependencies`, since only the CUDA
 backend is used. To develop against a modax checkout, `uv pip install
 --no-deps -e ../modax`; never replace `site-packages/numba_enzyme` by a
@@ -227,8 +229,10 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `ParameterDeclaration`: `Derived`'s `init: Literal[False]` default keeps
      it out of the signature a type checker sees, and `__set_name__` raises
      on an unannotated declaration, which no type checker would see.
-     `directed=True` makes columns `x_nominal` and
-     `dir_x` and generates the provider `x = x_nominal + eps * dir_x`.
+     `directed=True` makes it one of the leading row columns a
+     derivative may move (until 2026-11-17 it made columns `x_nominal`
+     and `dir_x` and a generated provider `x = x_nominal + eps * dir_x`;
+     modax's directional mode does that itself for every column now).
      No parameter closes a budget any more (2026-11-17, `closes_budget`
      removed): every density is given, physically (`omega = Omega h^2`),
      and `Model.from_density_parameters` does the closure's algebra for
@@ -520,15 +524,14 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      self-convergence 5.7e-5 (5.7e-5), 267 ms (270), one cosmology 186 ms
      (188); `PERTURB_FIRST_STEP` = `A_START`
    - The parameter row is generated: `parameter_layout(model, extra)` (cached
-     per resolved model) is `(x_nominal of each directed parameter,
+     per resolved model) is `(the directed parameters,
      SOLVER_COLUMNS = k,
-     the other column parameters, eps, dir_x of each directed)`, the directed
+     the other column parameters)`, the directed
      ones in `DIRECTED_NAMES` order, then component order. `grhok`, `w_DE_*`, `cs2_DE`,
      `grhor_nu` and `amnu` are directed (2026-11-13), `z_re` too
      (2026-11-16, last: `Recombination` comes last); `H0` and `Omegab`
      left with the physical densities (2026-11-17); `amnu` is one
-     declaration `MassiveNeutrinos` and `Recombination` share, and
-     `Equations._collect` lets two components bring the same generated provider. `_rows` and the
+     declaration `MassiveNeutrinos` and `Recombination` share. `_rows` and the
      initial state iterate over the declarations. Host tests that build any
      built-in model on one row use `helpers.PARAM_COLUMNS` and `N_PARAM`,
      `W0WACDM_MNU`'s row, a superset of every built-in model's
@@ -539,14 +542,20 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
 
 8. **solver/_sensitivities.py** - `_kept_values`: the hooked launch as a
    `jax.custom_jvp` in a pytree of variables that `to_inputs` maps to the
-   layout's directed inputs (`solve_eb` passes the cosmology columns). Its rule (`symbolic_zeros=True`) replicates every trajectory once
-   per *differentiated* variable, with direction `d inputs / d variable`
-   from `jax.jvp` of `to_inputs`, so the cost is the number of parameters
-   differentiated (5 for the densities' five), not of directed inputs, and
-   an undifferentiated input costs nothing. It runs `jax.jvp` of the launch
-   in the parameter row's `eps` column, split into a leaf of its own (`(head, eps,
-   tail)`), with `sens_error_control=False`: modax integrates one sensitivity
-   column per replica and keeps each quantity's derivative beside it. fp64
+   layout's directed inputs (`solve_eb` passes the cosmology columns). Its rule (`symbolic_zeros=True`) is
+   `jax.vmap` of `jax.jvp` of the launch over one unit direction per
+   *differentiated* variable, contracted with the variables' tangent
+   (linear, so `grad` works off the same launch). modax's directional mode
+   integrates one sensitivity column along each direction's row tangent
+   (`d inputs / d variable`, plain JAX through `to_inputs`) and its vmap
+   rule packs the directions as columns of the trajectory's own thread
+   (one trajectory, one thread: no replicas), so the cost is
+   the number of parameters differentiated (5 for the densities' five),
+   not of directed inputs, and an undifferentiated input costs nothing.
+   The joint kernel is compiled per number of directions.
+   The launch runs with `sens_error_control=False` and keeps each
+   quantity's derivative beside it. Until 2026-11-17 the rule built
+   replicas of every trajectory and the `eps` and `dir` columns by hand. fp64
    LU; the joint path's primal agrees with the plain fp32-LU one to ~1e-6 of
    scale. At *fixed scale factor*, and at fixed initial state. (A `tau_reio` input with the implicit
    function theorem on a host bisection for `z_re` missed central

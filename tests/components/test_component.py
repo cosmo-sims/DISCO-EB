@@ -803,34 +803,33 @@ def test_names_resolve_in_initial_conditions_and_sums():
 # --- A species with a parameter of its own, added without touching the package.
 
 
-def test_the_right_hand_side_reads_the_generated_provider():
-    """``grhox = grhox_nominal + eps * dir_grhox``, and clxx evolves as clxc does."""
+def test_the_right_hand_side_reads_the_parameter_from_its_column():
+    """``grhox`` is a column of the row, and clxx evolves as clxc does."""
 
     from discoeb.solver._kernel import parameter_layout
 
     columns = parameter_layout(LCDM_X).columns
     model = LCDM_X.build(ConstantThermalHistory())
     rhs = model.build(columns, **HOST)
-    assert (
-        "grhox = SecondDarkMatter__grhox(SecondDarkMatter_self, grhox_nominal, eps, dir_grhox)"
-        in [line.strip() for line in model.source.splitlines()]
-    )
+    assert f"grhox = p[{columns['grhox']}]" in [
+        line.strip() for line in model.source.splitlines()
+    ]
     p = np.zeros(len(columns))
     for name, value in dict(
         grhog=1.5e-7, grhornomass=1.0e-7, grhoc=0.8e-4, grhob=1.9e-5, grhov=2.0e-7
     ).items():
-        p[columns[f"{name}_nominal"]] = value
-    p[columns["grhox_nominal"]] = 0.3e-4
+        p[columns[f"{name}"]] = value
+    p[columns["grhox"]] = 0.3e-4
     p[columns["k"]] = 0.05
     y = np.random.default_rng(0).standard_normal(model.nvar)
     y[model.index["clxx"]] = y[model.index["clxc"]]
     dy = np.asarray(rhs(tuple(y), 100.0, tuple(p)))
     assert np.isfinite(dy).all()
     assert dy[model.index["clxx"]] == dy[model.index["clxc"]]
-    # Moving grhox along its direction moves dgrho as moving grhoc does.
+    # Moving grhox moves dgrho as moving grhoc does.
     for name in ("grhox", "grhoc"):
         q = p.copy()
-        q[columns["eps"]], q[columns[f"dir_{name}"]] = 1.0, 1.0e-5
+        q[columns[name]] += 1.0e-5
         moved = np.asarray(rhs(tuple(y), 100.0, tuple(q)))
         if name == "grhox":
             along_x = moved - dy
