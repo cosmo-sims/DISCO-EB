@@ -6,7 +6,6 @@ from ..components.gravity import (
     AdiabaticMode,
     Background,
     Curvature,
-    Kinematics,
     Metric,
 )
 from ..components.interactions import ThomsonScattering
@@ -26,7 +25,6 @@ __all__ = ["LCDM", "LCDM_MNU"]
 
 class LCDM(
     Model,
-    Kinematics,
     Background,
     RadiationStreaming,
     AdiabaticMode,

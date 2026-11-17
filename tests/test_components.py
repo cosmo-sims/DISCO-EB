@@ -907,7 +907,7 @@ def test_the_einstein_sources_sum_over_the_enabled_species():
     )
     assert "psi = cuda.local.array((2, 10), float64)" in model.source
     assert (
-        "MassiveNeutrinos__d_psi(MassiveNeutrinos_self, k, z, sigma, a, amnu, psi, inv_tau, c_MassiveNeutrinos__d_psi)"
+        "MassiveNeutrinos__d_psi(MassiveNeutrinos_self, k, z, sigma, a, amnu, psi, tau, c_MassiveNeutrinos__d_psi)"
         in model.source
     )
     assert "d_psi[i, j] += c_MassiveNeutrinos__d_psi[i, j]" in model.source
@@ -1311,7 +1311,7 @@ def test_thomson_scattering_writes_the_photon_and_baryon_derivatives():
         in lines
     )
     assert lines.index(
-        "Photons__d_theta(Photons_self, k, z, sigma, theta, inv_tau, rsa, c_Photons__d_theta)"
+        "Photons__d_theta(Photons_self, k, z, sigma, theta, tau, rsa, c_Photons__d_theta)"
     ) < lines.index(
         "ThomsonScattering__d_theta_thomson(ThomsonScattering_self, opacity, slip, polter, theta, rsa, c_ThomsonScattering__d_theta_thomson)"
     )

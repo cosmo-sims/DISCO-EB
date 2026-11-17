@@ -1,8 +1,7 @@
 """
 Gravity in synchronous gauge including the metric, Friedmann sum and initial mode.
 
-:class:`Kinematics` holds the powers of the scale factor and the wave number
-every component reads. :class:`Background` defines the Friedmann equation, turning
+:class:`Background` defines the Friedmann equation, turning
 the summed density ``grho`` into the expansion rate. :class:`Metric`
 holds ``etak`` and the Einstein constraints, :class:`Curvature` the spatial
 curvature, and :class:`AdiabaticMode` the growing-mode quantities the
@@ -27,25 +26,6 @@ GRHO_PER_OMEGA = 1.0e4 * GRHOM_PER_H0SQ  # per unit physical density omega = Ome
 GRHOG_PER_TCMB4 = 1.49594245e-13  # photons, per K^4
 GRHOR_PER_TCMB4 = 3.39739477e-14  # one massless neutrino flavour, per K^4
 C2OK = 1.62581581e4  # K / eV: amnu = m_nu c^2 / (k_B T_nu0) = mnu * C2OK / Tcmb
-
-
-class Kinematics(Component):
-    """Powers of the scale factor, ``1/tau`` and ``1/k^2``, for every component to read."""
-
-    def a2(self, a):
-        return a * a
-
-    def inv_a(self, a):
-        return 1.0 / a
-
-    def inv_a2(self, inv_a):
-        return inv_a * inv_a
-
-    def inv_tau(self, tau):
-        return 1.0 / tau
-
-    def inv_k2(self, k):
-        return 1.0 / (k * k)
 
 
 class Background(Gravity):
@@ -130,8 +110,9 @@ class Curvature(Gravity):
     omega_k: ArrayLike = Parameter(0.0, differentiable=True)
     grhok: ArrayLike = Derived(lambda omega_k: GRHO_PER_OMEGA * omega_k, directed=True)
 
-    def s2(self, grhok, inv_k2):
+    def s2(self, grhok, k):
         """``s2^2 = 1 - 3K/k^2 = 1 + grhok/k^2`` (1 when flat)."""
+        inv_k2 = 1.0 / (k * k)
         return 1.0 + grhok * inv_k2
 
     def inv_s2(self, s2):
@@ -168,7 +149,8 @@ class Metric(Gravity):
     def z(self, dgrho, k, s2, etak, adotoa):
         return (0.5 * dgrho / k + s2 * etak) / adotoa
 
-    def sigma(self, z, dgq, inv_k2, inv_s2):
+    def sigma(self, z, dgq, k, inv_s2):
+        inv_k2 = 1.0 / (k * k)
         return (z + 1.5 * dgq * inv_k2) * inv_s2
 
     def R(self, etak, k, adotoa, dgq, grho, gpres):

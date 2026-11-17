@@ -6,7 +6,6 @@ from ..components.gravity import (
     AdiabaticMode,
     Background,
     Curvature,
-    Kinematics,
     Metric,
 )
 from ..components.interactions import ThomsonScattering
@@ -26,7 +25,6 @@ __all__ = ["W0WACDM", "W0WACDM_MNU"]
 
 class W0WACDM(
     Model,
-    Kinematics,
     Background,
     RadiationStreaming,
     AdiabaticMode,

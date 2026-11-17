@@ -550,8 +550,9 @@ class Recombination(Component):
         """Free electrons per hydrogen nucleus from recombination alone."""
         return x_H + fHe * x_He
 
-    def xe_reio(self, inv_a, xe_rec, fHe, z_re):
+    def xe_reio(self, a, xe_rec, fHe, z_re):
         """CAMB's reionization step, zero if ``z_re = 0``."""
+        inv_a = 1.0 / a
         z = inv_a - 1.0
         # fp32 under FP32_MATH, unlike ``a``. The step matters only where the
         # opacity is too small for the rounding to show.
@@ -569,11 +570,14 @@ class Recombination(Component):
     def akthom(self, YHe, grhob):
         return AKTHOM_PER_GRHOB * (1.0 - YHe) * grhob
 
-    def opacity(self, xe, akthom, inv_a2):
+    def opacity(self, xe, akthom, a):
+        inv_a = 1.0 / a
+        inv_a2 = inv_a * inv_a
         return max(xe * akthom * inv_a2, 1.0e-30)
 
-    def cs2(self, Tmat, xe_rec, YHe, dTm_dz, inv_a):
+    def cs2(self, Tmat, xe_rec, YHe, dTm_dz, a):
         """``c_s^2 = k_B T_m / (mu m_H c^2) (1 - (1/3) d ln T_m / d ln a)``."""
+        inv_a = 1.0 / a
         inv_mu = 1.0 + (1.0 / const_mHe_mH - 1.0) * YHe + (1.0 - YHe) * xe_rec
         dTm_dlna = -dTm_dz * inv_a
         return max(
@@ -583,18 +587,21 @@ class Recombination(Component):
 
     # The rates
 
-    def zred(self, inv_a):
+    def zred(self, a):
+        inv_a = 1.0 / a
         return inv_a - 1.0
 
-    def Hz(self, adotoa, inv_a):
+    def Hz(self, adotoa, a):
         """``H`` in 1/s, from the model's conformal Hubble rate in 1/Mpc."""
+        inv_a = 1.0 / a
         return adotoa * inv_a * const_c_Mpc_s
 
     def Nnow(self, grhob, YHe):
         """The hydrogen number density today, in 1/m^3."""
         return DENS_FAC_PER_GRHOB * grhob * (1.0 - YHe)
 
-    def n_H(self, Nnow, inv_a):
+    def n_H(self, Nnow, a):
+        inv_a = 1.0 / a
         return Nnow * inv_a**3
 
     def K_peebles(self, Hz, zred):
@@ -622,9 +629,9 @@ class Recombination(Component):
         K_peebles,
         dTm_dz,
         adotoa,
-        inv_a,
         output,
     ):
+        inv_a = 1.0 / a
         dz_dtau = -adotoa * inv_a
         output[0] = (
             hydrogen_rate(x_H, xe_rec, Tmat, zred, n_H, Hz, Tcmb, Nnow, K_peebles)
@@ -655,6 +662,8 @@ class ReionizationDepth(Component):
 
     kappa_reio = State()
 
-    def d_kappa_reio(self, xe_reio, akthom, inv_a2):
+    def d_kappa_reio(self, xe_reio, akthom, a):
         """The opacity of reionization's electrons alone, whose integral is ``tau_reio``."""
+        inv_a = 1.0 / a
+        inv_a2 = inv_a * inv_a
         return xe_reio * akthom * inv_a2

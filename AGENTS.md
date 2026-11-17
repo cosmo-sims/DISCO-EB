@@ -260,8 +260,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
 
 2. **components/species.py, interactions.py, gravity.py** - The Einstein-Boltzmann system
    as components (`eb_model.py` was split into these on 2026-11-12)
-   - `gravity.py`: `Kinematics` (`a2`, `inv_a`, `inv_a2`, `inv_tau`,
-     `inv_k2`), `Background` (the Friedmann equation: `adotoa = sqrt(grho/3 -
+   - `gravity.py`: `Background` (the Friedmann equation: `adotoa = sqrt(grho/3 -
      Kcurv)` and `adotoa_prime = -(grho + 3 gpres)/6`), `Metric`
      (etak and the Einstein constraints `z`, `sigma`, and `R`, the comoving
      curvature perturbation `-etak/k - aH dgq / (k (grho + gpres))`,
@@ -325,7 +324,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `LCDM` and `LCDM_MNU`, `w0wacdm.py` `W0WACDM` and `W0WACDM_MNU`, and
      `models/__init__.py` exports them
    - Since 2026-11-15 a model is a class and a cosmology an instance of it:
-     `class LCDM(Model, Kinematics, Background, ..., ThomsonScattering)`,
+     `class LCDM(Model, Background, ..., ThomsonScattering)`,
      `class LCDM_MNU(LCDM, MassiveNeutrinos, name="LCDM+mnu")`, then
      `LCDM(omega_b=0.0224, omega_c=0.120, omega_de=0.311, ...)`. The bases are the components in state
      order, a model among them standing for its own (`Model.__init_subclass__`
@@ -714,9 +713,11 @@ The typical computation flow is:
   Host tests run in parallel: `uv run pytest tests -m "not gpu" -n auto`
   (pytest-xdist). A run that excludes the `gpu` tests keeps JAX on the CPU
   (`conftest.pytest_configure`), so it holds no device memory and may run
-  beside a GPU run. With `-n` and the `gpu` tests included, `--dist
-  loadgroup` (in `addopts`) keeps every `gpu` test on one worker, since two
-  processes on one GPU return garbage. What several files share lives in
+  beside a GPU run. With `-n` and the `gpu` tests included, pass `--dist
+  loadgroup` too: it keeps every `gpu` test on one worker, since two
+  processes on one GPU return garbage. It is not in `addopts`:
+  pytest-benchmark takes any `--dist` for an xdist run and disables the
+  benchmarks, which then run their warm-up batch alone. What several files share lives in
   `tests/helpers.py` (host stand-ins, `MODELS`, the components added from
   outside: `SecondDarkMatter`, `Quintessence`, `CosmicTime`, the named
   fluids) and `tests/sweep.py`, imported by name (`pythonpath`). A test that

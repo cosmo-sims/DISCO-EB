@@ -239,7 +239,8 @@ class SecondDarkMatter(Species):
         if omega_x < 0.0:
             raise ValueError(f"omega_x = {omega_x} must not be negative")
 
-    def grhox_t(self, grhox, inv_a):
+    def grhox_t(self, grhox, a):
+        inv_a = 1.0 / a
         return grhox * inv_a
 
     def grho(self, grhox_t):
@@ -315,13 +316,16 @@ class Quintessence(Species):
     def V_phiphi(self, V, lam):
         return lam * lam * V
 
-    def grho(self, phidot, V, a2):
+    def grho(self, phidot, V, a):
+        a2 = a * a
         return 0.5 * phidot * phidot + a2 * V
 
-    def gpres(self, phidot, V, a2):
+    def gpres(self, phidot, V, a):
+        a2 = a * a
         return 0.5 * phidot * phidot - a2 * V
 
-    def dgrho(self, phidot, ddphi, a2, V_phi, dphi):
+    def dgrho(self, phidot, ddphi, a, V_phi, dphi):
+        a2 = a * a
         return phidot * ddphi + a2 * V_phi * dphi
 
     def dgq(self, k, phidot, dphi):
@@ -330,13 +334,15 @@ class Quintessence(Species):
     def d_phi(self, phidot):
         return phidot
 
-    def d_phidot(self, phidot, adotoa, a2, V_phi):
+    def d_phidot(self, phidot, adotoa, a, V_phi):
+        a2 = a * a
         return -2.0 * adotoa * phidot - a2 * V_phi
 
     def d_dphi(self, ddphi):
         return ddphi
 
-    def d_ddphi(self, ddphi, dphi, adotoa, k, a2, V_phiphi, z, phidot):
+    def d_ddphi(self, ddphi, dphi, adotoa, k, a, V_phiphi, z, phidot):
+        a2 = a * a
         return -2.0 * adotoa * ddphi - (k * k + a2 * V_phiphi) * dphi - k * z * phidot
 
 

@@ -62,7 +62,8 @@ class ColdDarkMatter(Species):
     omega_c: ArrayLike = Parameter(differentiable=True)  # Omega_c h^2
     grhoc: ArrayLike = Derived(lambda omega_c: GRHO_PER_OMEGA * omega_c, directed=True)
 
-    def grhoc_t(self, grhoc, inv_a):
+    def grhoc_t(self, grhoc, a):
+        inv_a = 1.0 / a
         return grhoc * inv_a
 
     @contributes("grho")
@@ -97,7 +98,8 @@ class Baryons(Species):
     YHe: ArrayLike = Parameter(directed=True)
     grhob: ArrayLike = Derived(lambda omega_b: GRHO_PER_OMEGA * omega_b, directed=True)
 
-    def grhob_t(self, grhob, inv_a):
+    def grhob_t(self, grhob, a):
+        inv_a = 1.0 / a
         return grhob * inv_a
 
     @contributes("grho")
@@ -182,7 +184,8 @@ class Fluid(Species):
     def dgq_fluid(self, grho_t, w, theta, k):
         return grho_t * (1.0 + w) * theta / k
 
-    def d_delta(self, delta, theta, z, k, adotoa, w, cs2, inv_k2):
+    def d_delta(self, delta, theta, z, k, adotoa, w, cs2):
+        inv_k2 = 1.0 / (k * k)
         return (
             -(1.0 + w) * (theta + k * z)
             - 3.0 * (cs2 - w) * adotoa * delta
@@ -329,7 +332,9 @@ class Photons(Species):
         super().__init__(**settings)
         _needs_octupole(LMAX_G=self.LMAX_G, LMAX_POL=self.LMAX_POL)
 
-    def grhog_t(self, grhog, inv_a2):
+    def grhog_t(self, grhog, a):
+        inv_a = 1.0 / a
+        inv_a2 = inv_a * inv_a
         return grhog * inv_a2
 
     @contributes("grho")
@@ -383,12 +388,14 @@ class Photons(Species):
     def dgpi_g(self, grhog_t, pig):
         return grhog_t * pig
 
-    def d_theta(self, k, z, sigma, theta, inv_tau, rsa, output):
+    def d_theta(self, k, z, sigma, theta, tau, rsa, output):
+        inv_tau = 1.0 / tau
         stream(k, k, z, sigma, -4.0, theta, inv_tau, output)
         for ell in range(len(theta)):
             output[ell] = (1.0 - rsa) * output[ell]
 
-    def d_e(self, k, e, inv_tau, rsa, output):
+    def d_e(self, k, e, tau, rsa, output):
+        inv_tau = 1.0 / tau
         lmax = len(e) + 1
         output[0] = -k * e[1] * (1.0 / 3.0)
         for ell in range(3, lmax):
@@ -434,7 +441,9 @@ class MasslessNeutrinos(Species):
         super().__init__(**settings)
         _needs_octupole(LMAX_NR=self.LMAX_NR)
 
-    def grhor_t(self, grhornomass, inv_a2):
+    def grhor_t(self, grhornomass, a):
+        inv_a = 1.0 / a
+        inv_a2 = inv_a * inv_a
         return grhornomass * inv_a2
 
     @contributes("grho")
@@ -469,7 +478,8 @@ class MasslessNeutrinos(Species):
     def dgpi_r(self, grhor_t, n, rsa):
         return grhor_t * (1.0 - rsa) * n[2]
 
-    def d_n(self, k, z, sigma, n, inv_tau, rsa, output):
+    def d_n(self, k, z, sigma, n, tau, rsa, output):
+        inv_tau = 1.0 / tau
         stream(k, k, z, sigma, -4.0, n, inv_tau, output)
         for ell in range(len(n)):
             output[ell] = (1.0 - rsa) * output[ell]
@@ -542,7 +552,9 @@ class MassiveNeutrinos(Species):
             total += self.nu_w[i] / math.sqrt(1.0 + (a * amnu / self.nu_q[i]) ** 2)
         return (1.0 + massive * (total - 1.0)) * (1.0 / 3.0)
 
-    def nu_norm(self, grhor_nu, n_mnu, inv_a2):
+    def nu_norm(self, grhor_nu, n_mnu, a):
+        inv_a = 1.0 / a
+        inv_a2 = inv_a * inv_a
         return grhor_nu * n_mnu * inv_a2
 
     @contributes("grho")
@@ -578,7 +590,8 @@ class MassiveNeutrinos(Species):
             total += self.weight[i] * psi[i, 2] / inv_v
         return nu_norm * total
 
-    def d_psi(self, k, z, sigma, a, amnu, psi, inv_tau, output):
+    def d_psi(self, k, z, sigma, a, amnu, psi, tau, output):
+        inv_tau = 1.0 / tau
         for i in range(self.NQMAX):
             inv_v = math.sqrt(1.0 + (a * amnu * self.inv_q[i]) ** 2)
             kv = k * (1.0 / inv_v)
@@ -610,7 +623,8 @@ class _DarkEnergyDensity(Species):
 class CosmologicalConstant(_DarkEnergyDensity):
     """A cosmological constant: density only, no perturbations."""
 
-    def grhov_t(self, grhov, a2):
+    def grhov_t(self, grhov, a):
+        a2 = a * a
         return grhov * a2
 
     @contributes("gpres")
@@ -659,7 +673,8 @@ class DarkEnergy(_DarkEnergyDensity):
             3.0 * (a - 1.0) * w_DE_a
         )
 
-    def grhov_t(self, grhov, rho_Q, a2):
+    def grhov_t(self, grhov, rho_Q, a):
+        a2 = a * a
         return grhov * rho_Q * a2
 
     @contributes("gpres")
@@ -680,7 +695,8 @@ class DarkEnergy(_DarkEnergyDensity):
     def ca2_Q(self, w_Q, w_Q_prime, adotoa):
         return w_Q - w_Q_prime / (3.0 * (1.0 + w_Q) * adotoa)
 
-    def d_clxq(self, clxq, thetaq, z, k, adotoa, w_Q, cs2_DE, ca2_Q, inv_k2):
+    def d_clxq(self, clxq, thetaq, z, k, adotoa, w_Q, cs2_DE, ca2_Q):
+        inv_k2 = 1.0 / (k * k)
         return (
             -(1.0 + w_Q) * (thetaq + k * z)
             - 3.0 * (cs2_DE - w_Q) * adotoa * clxq
