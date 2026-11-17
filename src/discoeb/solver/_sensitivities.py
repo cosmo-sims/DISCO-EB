@@ -71,7 +71,7 @@ def _kept_values(
     ``(n_cosmologies, n_directed)`` inputs ``x = to_inputs(v)`` of the
     layout's directed parameters (JAX, cosmology by cosmology; by default
     ``v`` is ``x``) and returns the kept quantities as ``(n_cosmologies,
-    len(names), n_k, n_tau)`` in the caller's wave-mode order.
+    len(names), n_k, n_a)`` in the caller's wave-mode order.
 
     It is a ``jax.custom_jvp`` in ``v``. The plain hooked launch gives the
     value. A forward-sensitivity launch gives the tangent: ``jax.jvp`` of
@@ -89,8 +89,7 @@ def _kept_values(
 
     The joint launch uses the fp64 LU and keeps the sensitivities out of step
     control. Its primal agrees with the plain fp32-LU one to ~1e-6 of a
-    quantity's scale. ``tau0``, ``ln a`` at the start, the reionization
-    redshift and the initial state stay those of ``prepared``.
+    quantity's scale. The initial state stays that of ``prepared``.
     """
 
     model = prepared.cosmology_model

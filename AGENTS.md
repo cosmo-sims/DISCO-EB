@@ -260,6 +260,10 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
 
 2. **components/species.py, interactions.py, gravity.py** - The Einstein-Boltzmann system
    as components (`eb_model.py` was split into these on 2026-11-12)
+   - There is no `Kinematics` component (removed 2026-11-17): a provider
+     computes `1.0 / a`, `1.0 / tau` or `1.0 / (k * k)` itself. LLVM merges
+     the repeated divisions, so the kernel compiles and runs as before
+     (35.5 s cold either way, P(k) 186 ms and 270 ms)
    - `gravity.py`: `Background` (the Friedmann equation: `adotoa = sqrt(grho/3 -
      Kcurv)` and `adotoa_prime = -(grho + 3 gpres)/6`), `Metric`
      (etak and the Einstein constraints `z`, `sigma`, and `R`, the comoving
@@ -554,7 +558,14 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    (one trajectory, one thread: no replicas), so the cost is
    the number of parameters differentiated (5 for the densities' five),
    not of directed inputs, and an undifferentiated input costs nothing.
-   The joint kernel is compiled per number of directions.
+   The joint kernel is compiled per number of directions, and a thread's
+   local memory, which the driver reserves for every resident thread,
+   grows with them: seven columns of the 55-state system exhaust a 12 GB
+   card. `MAX_SENSITIVITY_STATE` (330 components, `DISCO_MAX_SENSITIVITY_STATE`)
+   caps a thread's joint state, and a derivative in more variables runs as
+   several launches of one size, the last padded with zero directions.
+   Measured (RTX 4070 SUPER, five parameters): one cosmology 2.4 s where
+   replicas took 0.39 s, 128 cosmologies 3.6 s where they took 4.5 s.
    The launch runs with `sens_error_control=False` and keeps each
    quantity's derivative beside it. Until 2026-11-17 the rule built
    replicas of every trajectory and the `eps` and `dir` columns by hand. fp64

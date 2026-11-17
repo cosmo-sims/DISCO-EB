@@ -42,9 +42,8 @@ def _needs_octupole(**lmax):
 
 # --- matter -------------------------------------------------------------------------
 # Each density coefficient ``grho_i = 8 pi G rho_i a^2`` today is a directed
-# parameter: the row holds a nominal value and a direction, the generated
-# provider reads ``grho_i = nominal + eps * direction``, and modax's
-# sensitivity in ``eps`` is the derivative along that direction.
+# parameter, a leading column of the parameter row that a derivative may
+# move.
 
 
 class ColdDarkMatter(Species):
