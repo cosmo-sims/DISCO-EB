@@ -34,8 +34,8 @@ import os
 
 from jax.typing import ArrayLike
 
-from ._component import Component, Parameter, State, float32, float64
-from .gravity import GRHO_PER_OMEGA
+from ._component import Component, Parameter, State, derivative, float32, float64
+from .gravity import H100_SQ
 
 # RECFAST's physical and atomic constants (PDG 2023 where noted).
 const_mH = 1.67353284e-27  # H atom mass [kg], PDG 2023
@@ -165,10 +165,10 @@ AKTHOM_PER_OMEGAB_H0SQ = 2.3038921003709498e-9
 """``n_H sigma_T c / (H_0 units)``: ``kappa' = x_e akthom / a^2`` with
 ``akthom = this (1 - Y_He) Omega_b H_0^2``."""
 
-AKTHOM_PER_GRHOB = 1.0e4 * AKTHOM_PER_OMEGAB_H0SQ / GRHO_PER_OMEGA
-DENS_FAC_PER_GRHOB = const_dens_fac / GRHO_PER_OMEGA
-"""The same and the hydrogen density's factor per unit ``grhob``, the baryon
-density the kernel holds (``omega_b = Omega_b h^2`` times ``GRHO_PER_OMEGA``)."""
+AKTHOM_PER_OMEGAB = 1.0e4 * AKTHOM_PER_OMEGAB_H0SQ
+DENS_FAC_PER_OMEGAB = const_dens_fac
+"""The same and the hydrogen density's factor per unit ``omega_b = Omega_b
+h^2``, the baryon density the kernel holds."""
 
 FP32_MATH = os.environ.get("DISCO_THERMO_FP32_MATH", "1") == "1"
 """Evaluate the exponentials, fractional powers and logarithms of RECFAST's
@@ -208,7 +208,7 @@ else:
         return math.log(x)
 
 
-def saha_slope(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
+def saha_slope(z, T_cmb, Nnow, E_ion, offset, g_factor, f_factor):
     """``d x / d z`` of the Saha ionization fraction at ``z`` (RECFAST's Saha equation).
 
     Has a single return on purpose. numba-cuda-mlir gives a function that
@@ -217,7 +217,7 @@ def saha_slope(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
     typed-pointer verifier rejects.
     """
 
-    T = Tcmb * (1.0 + z)
+    T = T_cmb * (1.0 + z)
     CR_T = CR * T
     phi = CR_T * math.sqrt(CR_T) / Nnow / (1.0 + z) ** 3
     R = g_factor * phi * exp_(-E_ion / T)
@@ -225,7 +225,7 @@ def saha_slope(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
     if R > 1.0e-20 and T <= E_ion * 0.1:
         alpha = R + offset
         beta = R * f_factor
-        dR = R * (-1.5 / (1.0 + z) + E_ion / (Tcmb * (1.0 + z) ** 2))
+        dR = R * (-1.5 / (1.0 + z) + E_ion / (T_cmb * (1.0 + z) ** 2))
         discr = alpha * alpha + 4.0 * beta
         if discr < 1.0e-35:
             root = math.sqrt(1.0e-35)
@@ -240,7 +240,7 @@ def saha_slope(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
     return slope
 
 
-def saha_fraction(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
+def saha_fraction(z, T_cmb, Nnow, E_ion, offset, g_factor, f_factor):
     """The Saha ionization fraction at ``z``, the integral of :func:`saha_slope`.
 
     Returns ``f_factor`` (fully ionized) at high temperature, where
@@ -249,7 +249,7 @@ def saha_fraction(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
     :func:`saha_slope` follows it. Single return, as in :func:`saha_slope`.
     """
 
-    T = Tcmb * (1.0 + z)
+    T = T_cmb * (1.0 + z)
     CR_T = CR * T
     phi = CR_T * math.sqrt(CR_T) / Nnow / (1.0 + z) ** 3
     R = g_factor * phi * exp_(-E_ion / T)
@@ -261,10 +261,10 @@ def saha_fraction(z, Tcmb, Nnow, E_ion, offset, g_factor, f_factor):
     return frac
 
 
-def hydrogen_rate(x_H, xe, Tmat, z, n_H, Hz, Tcmb, Nnow, K_peebles):
+def hydrogen_rate(x_H, xe, Tmat, z, n_H, Hz, T_cmb, Nnow, K_peebles):
     """``d x_H / d z``: Saha above ``Z_H_SAHA_END``, blended into the rate equation below it."""
 
-    saha = saha_slope(z, Tcmb, Nnow, CB1, 0.0, 1.0, 1.0)
+    saha = saha_slope(z, T_cmb, Nnow, CB1, 0.0, 1.0, 1.0)
     f0 = saha
     if z < Z_H_SAHA_END:
         fu = FUDGE_H
@@ -293,7 +293,7 @@ def hydrogen_rate(x_H, xe, Tmat, z, n_H, Hz, Tcmb, Nnow, K_peebles):
     return f0
 
 
-def helium_rate(x_H, x_He, xe, Tmat, z, a, n_H, Hz, Tcmb, Nnow, fHe):
+def helium_rate(x_H, x_He, xe, Tmat, z, a, n_H, Hz, T_cmb, Nnow, fHe):
     """``d x_He / d z``: both Saha stages while their fraction exceeds 0.9, the singlet and triplet rates below.
 
     The switch is RECFAST's ``x_He > 0.9``, tested on the Saha fraction at
@@ -311,12 +311,12 @@ def helium_rate(x_H, x_He, xe, Tmat, z, a, n_H, Hz, Tcmb, Nnow, fHe):
     """
 
     saha = (
-        saha_slope(z, Tcmb, Nnow, CB1_He1, 1.0, 4.0, fHe)
-        + saha_slope(z, Tcmb, Nnow, const_EionHe12s, 1.0 + fHe, 1.0, fHe)
+        saha_slope(z, T_cmb, Nnow, CB1_He1, 1.0, 4.0, fHe)
+        + saha_slope(z, T_cmb, Nnow, const_EionHe12s, 1.0 + fHe, 1.0, fHe)
     ) / fHe
     saha_x = (
-        saha_fraction(z, Tcmb, Nnow, CB1_He1, 1.0, 4.0, fHe)
-        + saha_fraction(z, Tcmb, Nnow, const_EionHe12s, 1.0 + fHe, 1.0, fHe)
+        saha_fraction(z, T_cmb, Nnow, CB1_He1, 1.0, 4.0, fHe)
+        + saha_fraction(z, T_cmb, Nnow, const_EionHe12s, 1.0 + fHe, 1.0, fHe)
     ) / fHe
     f1 = 0.0
     if saha_x > 0.9 or a < 3.0e-4:
@@ -444,17 +444,17 @@ def peebles_K(Hz, zred):
     )
 
 
-def matter_temperature_rate(Tmat, xe, fHe, zred, Hz, Tcmb):
+def matter_temperature_rate(Tmat, xe, fHe, zred, Hz, T_cmb):
     """RECFAST's matter-temperature equation ``dT_m/dz``, ``T_m`` locked to ``T_rad`` in tight Compton coupling.
 
     The Hubble time of the switch is the model's own, ``2 / (3 H)``.
-    RECFAST estimates it as ``2 / (3 H0 (1+z)^1.5)``, which needs ``H0``
+    RECFAST estimates it as ``2 / (3 H_0 (1+z)^1.5)``, which needs ``H_0``
     ahead of the solve.
     """
 
     z_term = 1.0 + zred
     inv_z = 1.0 / z_term
-    Trad = Tcmb * z_term
+    Trad = T_cmb * z_term
     compton = CT * Trad**4 * xe / (1.0 + xe + fHe)  # 1 / timeTh
     inv_timeH = 1.5 * Hz
     locked = Tmat * inv_z
@@ -482,28 +482,29 @@ def logistic(x):
 # The component
 
 
-def _thermo_initial(a, Tcmb, output):
+def _thermo_initial(a, T_cmb, output):
     """Fully ionized and in Compton equilibrium: ``x_H = 1``, ``x_He = 2``, ``T_m = T_cmb / a``."""
 
     output[0] = 1.0
     output[1] = 2.0
-    output[2] = Tcmb / a
+    output[2] = T_cmb / a
 
 
-def _tau_initial(adotoa, grho_matter):
+def _tau_initial(aH, rho_matter, a):
     """The conformal time at the start, deep in radiation domination.
 
     With radiation and matter alone, ``a'^2 = (R + M a) / 3`` integrates to
-    ``tau = 2 sqrt(3) a / (sqrt(R + M a) + sqrt(R))``, which is ``1 / adotoa``
+    ``tau = 2 sqrt(3) a / (sqrt(R + M a) + sqrt(R))``, which is ``1 / aH``
     times ``2 sqrt(1 + e) / (sqrt(1 + e) + 1)`` with ``e = M a / R`` the
-    matter-to-radiation ratio. The model's own ``adotoa`` carries every
+    matter-to-radiation ratio. The model's own ``aH`` carries every
     species, so the radiation is what it leaves beside the matter (massive
     neutrinos included, relativistic then), and the ratio, 1e-4 at the
     start, only corrects it.
     """
 
-    root = math.sqrt(1.0 + grho_matter / (3.0 * adotoa * adotoa - grho_matter))
-    return 2.0 * root / (root + 1.0) / adotoa
+    matter = H100_SQ * a * a * rho_matter
+    root = math.sqrt(1.0 + matter / (aH * aH - matter))
+    return 2.0 * root / (root + 1.0) / aH
 
 
 class Recombination(Component):
@@ -511,11 +512,11 @@ class Recombination(Component):
 
     The solve integrates in ``ln a``, so ``a`` is the time itself and the
     conformal time ``tau`` a state whose rate is one (per unit of itself:
-    the solve divides every rate by ``adotoa``,
+    the solve divides every rate by ``a'``,
     :class:`~discoeb.components._component.Equations`). It starts from the
     radiation era's closed form, and its value today is the conformal age.
     ``thermo`` holds RECFAST's three states,
-    whose rates in ``z`` convert with ``dz/dtau = -adotoa / a``. ``kappa`` is
+    whose rates in ``z`` convert with ``dz/dtau = -aH / a``. ``kappa`` is
     ``int_{tau_start}^tau kappa' dtau``, from which the hook of
     :mod:`discocmb.cmb` forms the visibility
     ``kappa'(tau) exp(-(kappa(tau_0) - kappa(tau)))``. The hierarchy reads
@@ -530,12 +531,12 @@ class Recombination(Component):
     thermo = State(3, initial=_thermo_initial)
     kappa = State()
 
-    # The rates read YHe, Tcmb and grhob, which the species declare.
+    # The rates read Y_He, T_cmb and omega_b, which the species declare.
     z_re: ArrayLike = Parameter(0.0, directed=True, differentiable=True)
     """The redshift half way through CAMB's reionization step (0: none)."""
 
-    def fHe(self, YHe):
-        return YHe / (const_mHe_mH * (1.0 - YHe))
+    def fHe(self, Y_He):
+        return Y_He / (const_mHe_mH * (1.0 - Y_He))
 
     def x_H(self, thermo):
         return min(max(thermo[0], 0.0), 1.0)
@@ -567,18 +568,18 @@ class Recombination(Component):
     def xe(self, xe_rec, xe_reio):
         return xe_rec + xe_reio
 
-    def akthom(self, YHe, grhob):
-        return AKTHOM_PER_GRHOB * (1.0 - YHe) * grhob
+    def akthom(self, Y_He, omega_b):
+        return AKTHOM_PER_OMEGAB * (1.0 - Y_He) * omega_b
 
     def opacity(self, xe, akthom, a):
         inv_a = 1.0 / a
         inv_a2 = inv_a * inv_a
         return max(xe * akthom * inv_a2, 1.0e-30)
 
-    def cs2(self, Tmat, xe_rec, YHe, dTm_dz, a):
+    def cs2(self, Tmat, xe_rec, Y_He, dTm_dz, a):
         """``c_s^2 = k_B T_m / (mu m_H c^2) (1 - (1/3) d ln T_m / d ln a)``."""
         inv_a = 1.0 / a
-        inv_mu = 1.0 + (1.0 / const_mHe_mH - 1.0) * YHe + (1.0 - YHe) * xe_rec
+        inv_mu = 1.0 + (1.0 / const_mHe_mH - 1.0) * Y_He + (1.0 - Y_He) * xe_rec
         dTm_dlna = -dTm_dz * inv_a
         return max(
             const_kB / (3.0 * const_mH * const_c**2) * inv_mu * (3.0 * Tmat - dTm_dlna),
@@ -591,14 +592,14 @@ class Recombination(Component):
         inv_a = 1.0 / a
         return inv_a - 1.0
 
-    def Hz(self, adotoa, a):
+    def Hz(self, aH, a):
         """``H`` in 1/s, from the model's conformal Hubble rate in 1/Mpc."""
         inv_a = 1.0 / a
-        return adotoa * inv_a * const_c_Mpc_s
+        return aH * inv_a * const_c_Mpc_s
 
-    def Nnow(self, grhob, YHe):
+    def Nnow(self, omega_b, Y_He):
         """The hydrogen number density today, in 1/m^3."""
-        return DENS_FAC_PER_GRHOB * grhob * (1.0 - YHe)
+        return DENS_FAC_PER_OMEGAB * omega_b * (1.0 - Y_He)
 
     def n_H(self, Nnow, a):
         inv_a = 1.0 / a
@@ -607,13 +608,15 @@ class Recombination(Component):
     def K_peebles(self, Hz, zred):
         return peebles_K(Hz, zred)
 
-    def dTm_dz(self, Tmat, xe_rec, fHe, zred, Hz, Tcmb):
-        return matter_temperature_rate(Tmat, xe_rec, fHe, zred, Hz, Tcmb)
+    def dTm_dz(self, Tmat, xe_rec, fHe, zred, Hz, T_cmb):
+        return matter_temperature_rate(Tmat, xe_rec, fHe, zred, Hz, T_cmb)
 
-    def d_tau(self):
+    @derivative("tau")
+    def conformal_time(self):
         return 1.0
 
-    def d_thermo(
+    @derivative("thermo")
+    def recfast(
         self,
         x_H,
         x_He,
@@ -623,27 +626,28 @@ class Recombination(Component):
         a,
         n_H,
         Hz,
-        Tcmb,
+        T_cmb,
         Nnow,
         fHe,
         K_peebles,
         dTm_dz,
-        adotoa,
+        aH,
         output,
     ):
         inv_a = 1.0 / a
-        dz_dtau = -adotoa * inv_a
+        dz_dtau = -aH * inv_a
         output[0] = (
-            hydrogen_rate(x_H, xe_rec, Tmat, zred, n_H, Hz, Tcmb, Nnow, K_peebles)
+            hydrogen_rate(x_H, xe_rec, Tmat, zred, n_H, Hz, T_cmb, Nnow, K_peebles)
             * dz_dtau
         )
         output[1] = (
-            helium_rate(x_H, x_He, xe_rec, Tmat, zred, a, n_H, Hz, Tcmb, Nnow, fHe)
+            helium_rate(x_H, x_He, xe_rec, Tmat, zred, a, n_H, Hz, T_cmb, Nnow, fHe)
             * dz_dtau
         )
         output[2] = dTm_dz * dz_dtau
 
-    def d_kappa(self, opacity):
+    @derivative("kappa")
+    def optical_depth(self, opacity):
         return opacity
 
 
@@ -662,7 +666,8 @@ class ReionizationDepth(Component):
 
     kappa_reio = State()
 
-    def d_kappa_reio(self, xe_reio, akthom, a):
+    @derivative("kappa_reio")
+    def reionization_depth(self, xe_reio, akthom, a):
         """The opacity of reionization's electrons alone, whose integral is ``tau_reio``."""
         inv_a = 1.0 / a
         inv_a2 = inv_a * inv_a

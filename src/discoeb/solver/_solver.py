@@ -79,7 +79,7 @@ def solve_eb(
         block's ``tau``, ``thermo_0``, ``thermo_1``, ``thermo_2``, ``kappa``,
         ``kappa_reio``) or
         quantities the joint model provides, such as the comoving curvature
-        perturbation ``R``, the shear ``sigma``, the expansion rate ``adotoa`` or
+        perturbation ``R``, the shear ``alpha``, the expansion rate ``aH`` or
         the opacity. Default: every element of the perturbation state, which
         amounts to the hierarchy's full history.
     extra
@@ -92,7 +92,7 @@ def solve_eb(
         (:func:`directed_inputs`, in the order of its
         :func:`~discoeb.solver._kernel.parameter_layout`), or only the first seven
         every built-in model shares (the five background densities and the
-        recombination block's ``YHe`` and ``Tcmb``),
+        recombination block's ``Y_He`` and ``T_cmb``),
         replacing those the cosmologies imply. They are differentiable in
         their own right: the solution becomes a function of them. Given
         seven, the rest come from the cosmologies.
@@ -129,7 +129,7 @@ def solve_eb(
     parameter rows and the initial states
     (:func:`~discoeb.solver._kernel._pack`), so ``solve_eb`` traces under ``jit``, and
     the whole solve then runs on the device. Under ``jit`` the cosmologies are
-    not checked against the model, since their ``w_DE_*`` and ``Nmnu`` have no
+    not checked against the model, since their ``w_DE_*`` and ``N_mnu`` have no
     values yet. The returned values are differentiable in the
     cosmologies' :func:`differentiable_parameters` of the model under
     ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad``, with or without ``jit``.
@@ -234,8 +234,8 @@ def differentiable_parameters(model: type[Model]) -> tuple[str, ...]:
     Each component marks its own: ``Parameter(differentiable=True)``
     (:meth:`Model.differentiable_parameters
     <discoeb.models.Model.differentiable_parameters>`). For the built-in
-    components these are ``omega_b``, ``omega_c``, ``omega_de``, ``Tcmb``,
-    ``Neff`` and ``omega_k``, ``mnu`` with
+    components these are ``omega_b``, ``omega_c``, ``omega_de``, ``T_cmb``,
+    ``N_eff`` and ``omega_k``, ``m_nu`` with
     :class:`~discoeb.components.species.MassiveNeutrinos`, ``w_DE_0`` and
     ``w_DE_a`` with :class:`~discoeb.components.species.DarkEnergy` and
     ``z_re`` with :class:`~discoeb.components.recombination.ReionizationDepth`.
@@ -244,7 +244,7 @@ def differentiable_parameters(model: type[Model]) -> tuple[str, ...]:
     history. The derivative is at fixed scale factor and holds the initial
     state fixed.
 
-    Differentiating another key raises: ``Nmnu``, a count, and ``YHe`` and
+    Differentiating another key raises: ``N_mnu``, a count, and ``Y_He`` and
     ``cs2_DE``, whose derivatives of ``P(k)`` miss central differences by
     0.8 and 1 percent. The solve never reads ``A_s``, ``n_s`` and ``k_p``.
     """
@@ -258,7 +258,7 @@ def directed_inputs(cosmologies) -> jax.Array:
     ``cosmologies`` is a cosmology or a sequence of cosmologies of one
     model. These are the model's directed
     parameters: the five background densities and the recombination block's
-    ``YHe`` and ``Tcmb``, then those of the model's other
+    ``Y_He`` and ``T_cmb``, then those of the model's other
     components (curvature, dark energy, massive neutrinos): the variables
     :func:`solve_eb` takes as
     ``inputs`` and differentiates with respect to. A JAX array, traceable

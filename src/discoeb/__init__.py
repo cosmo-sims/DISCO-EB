@@ -4,6 +4,7 @@
 # an array or touches the device.
 from . import _jax_config  # noqa: F401
 from .components import Component
+from .components.gravity import H100
 from .components.recombination import THERMO_ERROR_WEIGHT
 from .models import (
     LCDM,
@@ -32,6 +33,7 @@ __all__ = [
     "Model",
     "DIRECTED_NAMES",
     "A_START",
+    "H100",
     "PERTURB_ATOL",
     "PERTURB_FIRST_STEP",
     "PERTURB_MAX_STEPS",

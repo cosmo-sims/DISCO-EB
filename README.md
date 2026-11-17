@@ -65,18 +65,18 @@ import numpy as np
 from discoeb import LCDM, solve_eb
 
 planck = LCDM.from_density_parameters(
-    Omegam=0.3142, Omegab=0.0494, H0=67.32,
-    A_s=2.1e-9, n_s=0.966, Tcmb=2.7255, YHe=0.2454, Neff=3.046,
+    Omega_m=0.3142, Omega_b=0.0494, H_0=67.32,
+    A_s=2.1e-9, n_s=0.966, T_cmb=2.7255, Y_He=0.2454, N_eff=3.046,
 )
 k = np.geomspace(1e-4, 1.0, 64)      # 1/Mpc
 a = np.geomspace(1e-6, 1.0, 100)     # scale factors, the last one today
 
-values = solve_eb([planck, planck.replace(omega_c=0.125)], k, a, keep=("R", "clxc"))
+values = solve_eb([planck, planck.replace(omega_c=0.125)], k, a, keep=("R", "delta_c"))
 R = values[:, 0]  # (2, 64, 100): cosmologies, wave modes, scale factors
 ```
 
 A model's own parameters are physical densities, `omega_b`, `omega_c` and
-`omega_de` ($\omega = \Omega h^2$), and `planck.H0` is what they sum to.
+`omega_de` ($\omega = \Omega h^2$), and `planck.H_0` is what they sum to.
 `from_density_parameters` takes $\Omega_m$, $\Omega_b$ and $H_0$ and
 finds the dark-energy density that closes the budget. The solve integrates
 in the scale factor, so nothing runs before it and every cosmology ends at

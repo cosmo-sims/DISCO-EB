@@ -1,9 +1,12 @@
 """
 Each species is a :mod:`discoeb.components._component` that owns its own state.
 
-The Boltzmann hierarchies are vector states: ``theta`` holds ``Theta_0 ..
-Theta_lmax``, ``e`` holds ``E_2 .. E_lmax``, ``n`` the neutrino multipoles
-and ``psi`` one row per massive-neutrino momentum bin. Their equations loop
+The variables are those of Ma & Bertschinger (1995): a density contrast
+``delta`` and a velocity divergence ``theta`` per fluid. The Boltzmann
+hierarchies are vector states: ``F`` holds the photons' ``F_0 .. F_lmax``,
+``E`` holds ``E_2 .. E_lmax``, ``N`` the neutrino multipoles and ``psi``
+one row per massive-neutrino momentum bin. A density is a physical density
+parameter, ``omega_i(a)`` (:mod:`discoeb.components.gravity`). Their equations loop
 over multipoles and share the free-streaming tail in :func:`stream`. The
 truncations are component settings: ``LMAX_G`` and ``LMAX_POL`` on
 :class:`Photons`, ``LMAX_NR`` on :class:`MasslessNeutrinos`, ``LMAX_NU`` and
@@ -24,9 +27,10 @@ from ._component import (
     Species,
     State,
     contributes,
+    derivative,
 )
 from ._util import neutrino_momentum_bins
-from .gravity import C2OK, GRHO_PER_OMEGA, GRHOG_PER_TCMB4, GRHOR_PER_TCMB4
+from .gravity import C2OK, OMEGA_G_PER_TCMB4, OMEGA_NU_PER_TCMB4
 
 
 def _needs_octupole(**lmax):
@@ -41,9 +45,8 @@ def _needs_octupole(**lmax):
 
 
 # --- matter -------------------------------------------------------------------------
-# Each density coefficient ``grho_i = 8 pi G rho_i a^2`` today is a directed
-# parameter, a leading column of the parameter row that a derivative may
-# move.
+# Each density today, ``omega_i``, is a directed parameter, a leading column
+# of the parameter row that a derivative may move.
 
 
 class ColdDarkMatter(Species):
@@ -56,30 +59,26 @@ class ColdDarkMatter(Species):
     fixes_gauge = True
 
     # adiabatic mode: 3/4 of the photon density contrast
-    clxc = State(initial=lambda theta: 0.75 * theta[0])
+    delta_c = State(initial=lambda F: 0.75 * F[0])
 
-    omega_c: ArrayLike = Parameter(differentiable=True)  # Omega_c h^2
-    grhoc: ArrayLike = Derived(lambda omega_c: GRHO_PER_OMEGA * omega_c, directed=True)
+    omega_c: ArrayLike = Parameter(directed=True, differentiable=True)  # Omega_c h^2
 
-    def grhoc_t(self, grhoc, a):
+    def rho_c(self, omega_c, a):
         inv_a = 1.0 / a
-        return grhoc * inv_a
+        return omega_c * inv_a * inv_a * inv_a
 
-    @contributes("grho")
-    def grho_c(self, grhoc_t):
-        return grhoc_t
+    @contributes("rho", "rho_matter")
+    def rho_cdm(self, rho_c):
+        return rho_c
 
-    @contributes("grho_matter")
-    def grho_matter_c(self, grhoc_t):
-        return grhoc_t
+    @contributes("delta_rho")
+    def delta_rho_c(self, rho_c, delta_c):
+        return rho_c * delta_c
 
-    @contributes("dgrho")
-    def dgrho_c(self, grhoc_t, clxc):
-        return grhoc_t * clxc
-
-    def d_clxc(self, z, k):
-        """CDM is pressureless and at rest in synchronous gauge: ``clxc' = -k z``."""
-        return -k * z
+    @derivative("delta_c")
+    def continuity_c(self, h_prime):
+        """CDM is pressureless and at rest in synchronous gauge: ``delta_c' = -h' / 2``."""
+        return -0.5 * h_prime
 
 
 class Baryons(Species):
@@ -88,40 +87,37 @@ class Baryons(Species):
     :class:`ThomsonScattering` adds the drag.
     """
 
-    clxb = State(initial=lambda theta: 0.75 * theta[0])
-    vb = State(initial=lambda theta: 0.75 * theta[1])
+    delta_b = State(initial=lambda F: 0.75 * F[0])
+    theta_b = State(initial=lambda F, k: 0.75 * k * F[1])
 
-    # The recombination rates read grhob and the helium fraction YHe too.
-    omega_b: ArrayLike = Parameter(differentiable=True)  # Omega_b h^2
+    # The recombination rates read omega_b and the helium fraction Y_He too.
+    omega_b: ArrayLike = Parameter(directed=True, differentiable=True)  # Omega_b h^2
     # not differentiable: dP/dYHe misses central differences by 0.8 percent
-    YHe: ArrayLike = Parameter(directed=True)
-    grhob: ArrayLike = Derived(lambda omega_b: GRHO_PER_OMEGA * omega_b, directed=True)
+    Y_He: ArrayLike = Parameter(directed=True)
 
-    def grhob_t(self, grhob, a):
+    def rho_b(self, omega_b, a):
         inv_a = 1.0 / a
-        return grhob * inv_a
+        return omega_b * inv_a * inv_a * inv_a
 
-    @contributes("grho")
-    def grho_b(self, grhob_t):
-        return grhob_t
+    @contributes("rho", "rho_matter")
+    def rho_baryons(self, rho_b):
+        return rho_b
 
-    @contributes("grho_matter")
-    def grho_matter_b(self, grhob_t):
-        return grhob_t
+    @contributes("delta_rho")
+    def delta_rho_b(self, rho_b, delta_b):
+        return rho_b * delta_b
 
-    @contributes("dgrho")
-    def dgrho_b(self, grhob_t, clxb):
-        return grhob_t * clxb
+    @contributes("momentum")
+    def momentum_b(self, rho_b, theta_b):
+        return rho_b * theta_b
 
-    @contributes("dgq")
-    def dgq_b(self, grhob_t, vb):
-        return grhob_t * vb
+    @derivative("delta_b")
+    def continuity_b(self, h_prime, theta_b):
+        return -theta_b - 0.5 * h_prime
 
-    def d_clxb(self, z, vb, k):
-        return -k * (z + vb)
-
-    def d_vb(self, adotoa, vb, k, cs2, clxb):
-        return -adotoa * vb + k * cs2 * clxb
+    @derivative("theta_b")
+    def euler_b(self, aH, theta_b, k, cs2, delta_b):
+        return -aH * theta_b + k * k * cs2 * delta_b
 
 
 class Fluid(Species):
@@ -130,17 +126,17 @@ class Fluid(Species):
     The fluid equations of :class:`DarkEnergy` at constant ``w``, where the
     adiabatic sound speed is ``w`` itself:
 
-    ``delta' = -(1+w)(theta + k z) - 3 (cs2 - w) aH delta
+    ``delta' = -(1+w)(theta + h'/2) - 3 (cs2 - w) aH delta
                - 9 (1+w)(cs2 - w) (aH)^2 theta / k^2``,
     ``theta' = -(1 - 3 cs2) aH theta + cs2 k^2 delta / (1+w)``,
 
     with no anisotropic stress. Its physical density today is ``omega``
     (``Omega h^2``) and scales as ``a^(-3(1+w))``. It starts in the adiabatic
-    mode, ``delta = (1 + w) clxc`` at rest. ``w = cs2 = 0`` is a second cold
+    mode, ``delta = (1 + w) delta_c`` at rest. ``w = cs2 = 0`` is a second cold
     dark matter and ``w = cs2 = 1/3`` a dark radiation without shear. The
     growing mode's series does not count it: a subclass that is matter or
-    radiation contributes its ``grho_t`` to ``grho_matter`` or
-    ``grho_radiation``.
+    radiation contributes its ``density`` to ``rho_matter`` or
+    ``rho_radiation``.
 
     Its names (``delta``, ``theta``, ``w``, ``cs2``) are generic, so a model
     must rename it appropriately::
@@ -148,13 +144,18 @@ class Fluid(Species):
         LCDM.add(Fluid.named("dr"), name="LCDM+dr")   # dr_omega, dr_w, dr_delta ...
     """
 
-    delta = State(initial=lambda w, clxc: (1.0 + w) * clxc)
+    delta = State(initial=lambda w, delta_c: (1.0 + w) * delta_c)
     theta = State()
 
-    omega: ArrayLike = Parameter(0.0)
+    omega: ArrayLike = Parameter(0.0, directed=True)
     w: ArrayLike = Parameter(0.0, column=True)
     cs2: ArrayLike = Parameter(0.0, column=True)
-    grho0: ArrayLike = Derived(lambda omega: GRHO_PER_OMEGA * omega, directed=True)
+
+    def __init__(self, **settings):
+        super().__init__(**settings)
+        if type(self) is Fluid:
+            # Unnamed, its cs2 would stand in for the baryons' sound speed.
+            raise ValueError("a Fluid needs a name of its own: Fluid.named('dr')")
 
     @classmethod
     def check(cls, omega, w):
@@ -164,35 +165,37 @@ class Fluid(Species):
         if float(omega) < 0.0:
             raise ValueError(f"a fluid's density omega = {omega} must not be negative")
 
-    def grho_t(self, grho0, a, w):
-        return grho0 * a ** (-1.0 - 3.0 * w)
+    def density(self, omega, a, w):
+        return omega * a ** (-3.0 - 3.0 * w)
 
-    @contributes("grho")
-    def grho_fluid(self, grho_t):
-        return grho_t
+    @contributes("rho")
+    def rho_fluid(self, density):
+        return density
 
-    @contributes("gpres")
-    def gpres_fluid(self, grho_t, w):
-        return w * grho_t
+    @contributes("pressure")
+    def pressure_fluid(self, density, w):
+        return w * density
 
-    @contributes("dgrho")
-    def dgrho_fluid(self, grho_t, delta):
-        return grho_t * delta
+    @contributes("delta_rho")
+    def delta_rho_fluid(self, density, delta):
+        return density * delta
 
-    @contributes("dgq")
-    def dgq_fluid(self, grho_t, w, theta, k):
-        return grho_t * (1.0 + w) * theta / k
+    @contributes("momentum")
+    def momentum_fluid(self, density, w, theta):
+        return density * (1.0 + w) * theta
 
-    def d_delta(self, delta, theta, z, k, adotoa, w, cs2):
+    @derivative("delta")
+    def continuity(self, delta, theta, h_prime, k, aH, w, cs2):
         inv_k2 = 1.0 / (k * k)
         return (
-            -(1.0 + w) * (theta + k * z)
-            - 3.0 * (cs2 - w) * adotoa * delta
-            - 9.0 * (1.0 + w) * (cs2 - w) * adotoa**2 * inv_k2 * theta
+            -(1.0 + w) * (theta + 0.5 * h_prime)
+            - 3.0 * (cs2 - w) * aH * delta
+            - 9.0 * (1.0 + w) * (cs2 - w) * aH**2 * inv_k2 * theta
         )
 
-    def d_theta(self, delta, theta, k, adotoa, w, cs2):
-        return -(1.0 - 3.0 * cs2) * adotoa * theta + cs2 / (1.0 + w) * k**2 * delta
+    @derivative("theta")
+    def euler(self, delta, theta, k, aH, w, cs2):
+        return -(1.0 - 3.0 * cs2) * aH * theta + cs2 / (1.0 + w) * k**2 * delta
 
 
 # --- the radiation streaming approximation ------------------------------------------
@@ -209,7 +212,7 @@ class RadiationStreaming(Component):
 
         delta = 4 (aH h' - k^2 eta) / k^2,   theta = -h'/2,   no shear, no polarization,
 
-    (synchronous gauge, ``h' = 2 k z``, ``k eta = etak``), takes ``h'``
+    (synchronous gauge), takes ``h'``
     without the streaming species as CLASS does, and freezes their states.
     The switch is CLASS's: ``k tau > RSA_K_TAU`` (45) and ``kappa' tau <
     RSA_KAPPA_TAU`` (``tau_c / tau > 5``). Like CLASS, which switches at a
@@ -218,8 +221,8 @@ class RadiationStreaming(Component):
     reionization are missing. ``RSA = 0`` (``DISCO_RSA=0``) turns it off.
 
     It provides the switch ``rsa`` and the streaming solution ``rsa_delta``
-    and ``rsa_q``, and names no species. Each species that follows it reads
-    those and adds its own density to the sum ``dgrho_streaming``. The
+    and ``rsa_theta``, and names no species. Each species that follows it reads
+    those and adds its own density to the sum ``delta_rho_streaming``. The
     solution is general relativity's (:class:`NoRadiationStreaming` for
     another theory).
     """
@@ -237,13 +240,14 @@ class RadiationStreaming(Component):
         latched = 0.5 + 0.5 * math.copysign(1.0, a - self.RSA_A_LATCH)
         return self.RSA * inside * (decoupled + latched - decoupled * latched)
 
-    def rsa_delta(self, adotoa, z, etak, k):
+    def rsa_delta(self, aH, h_prime, eta, k):
         """The streaming radiation's density contrast, ``4 (aH h' - k^2 eta) / k^2``."""
-        return (8.0 * adotoa * z - 4.0 * etak) / k
+        inv_k2 = 1.0 / (k * k)
+        return (4.0 * aH * inv_k2) * h_prime - 4.0 * eta
 
-    def rsa_q(self, z):
-        """The streaming radiation's ``q = 4 theta / (3k)`` with ``theta = -h'/2 = -k z``."""
-        return -(4.0 / 3.0) * z
+    def rsa_theta(self, h_prime):
+        """The streaming radiation's velocity divergence, ``theta = -h' / 2``."""
+        return -0.5 * h_prime
 
 
 class NoRadiationStreaming(Component):
@@ -261,22 +265,22 @@ class NoRadiationStreaming(Component):
     def rsa_delta(self):
         return 0.0
 
-    def rsa_q(self):
+    def rsa_theta(self):
         return 0.0
 
 
 # --- radiation ----------------------------------------------------------------------
 
 
-def stream(k, kv, z, sigma, dlnf0, x, inv_tau, output):
+def stream(k, kv, h_prime, alpha, dlnf0, x, inv_tau, output):
     """Free streaming of a hierarchy ``x`` (``x_0 .. x_L``), into ``output``.
 
-    The lowest three multipoles carry the metric sources (CLASS
-    ``perturbations.c``, synchronous gauge, ``h' = 2 k z``)::
+    The lowest three multipoles carry the metric sources (Ma & Bertschinger,
+    synchronous gauge)::
 
-        x_0' = -kv x_1 + (k z / 3) dlnf0
+        x_0' = -kv x_1 + (h' / 6) dlnf0
         x_1' = (kv / 3) (x_0 - 2 x_2)
-        x_2' = (kv / 5) (2 x_1 - 3 x_3) - (2/15) k sigma dlnf0
+        x_2' = (kv / 5) (2 x_1 - 3 x_3) - (2/15) k^2 alpha dlnf0
 
     and above them ``x_l' = kv (l x_{l-1} - (l+1) x_{l+1}) / (2l+1)``,
     closing at ``L = len(x) - 1`` with ``x_L' = kv x_{L-1} - (L+1) x_L / tau``.
@@ -286,10 +290,11 @@ def stream(k, kv, z, sigma, dlnf0, x, inv_tau, output):
     damping to the same derivatives.
     """
 
-    output[0] = -kv * x[1] + k * z * (1.0 / 3.0) * dlnf0
+    output[0] = -kv * x[1] + ((1.0 / 6.0) * dlnf0) * h_prime
     output[1] = kv * (1.0 / 3.0) * (x[0] - 2.0 * x[2])
     output[2] = (
-        kv * (1.0 / 5.0) * (2.0 * x[1] - 3.0 * x[3]) - (2.0 / 15.0) * k * sigma * dlnf0
+        kv * (1.0 / 5.0) * (2.0 * x[1] - 3.0 * x[3])
+        - ((2.0 / 15.0) * k * k * dlnf0) * alpha
     )
     lmax = len(x) - 1
     for ell in range(3, lmax):
@@ -300,124 +305,125 @@ def stream(k, kv, z, sigma, dlnf0, x, inv_tau, output):
 
 
 class Photons(Species):
-    """Photon temperature multipoles ``theta`` (``Theta_0 .. Theta_LMAX_G``) and E-modes ``e``.
+    """Photon temperature multipoles ``F`` (``F_0 .. F_LMAX_G``) and E-modes ``E``.
 
-    ``e[l - 2]`` is ``E_l`` for ``l = 2 .. LMAX_POL``. This is the
+    ``F_0 = delta_g``, ``F_1 = 4 theta_g / (3 k)`` and ``F_2 = 2 sigma_g``.
+    ``E[l - 2]`` is ``E_l`` for ``l = 2 .. LMAX_POL``. This is the
     collisionless part of the hierarchy. :class:`ThomsonScattering` damps the
     multipoles and sources the polarization. The E-mode hierarchy couples
     upwards with ``(l+3)(l-1)/(l+1)`` in place of ``l+1`` and closes with
     ``k L E_{L-1} / (2L+1) - (L+3) E_L / tau``. Both hierarchies stream
-    freely above their lowest three (``theta``) or one (``e``) multipoles.
+    freely above their lowest three (``F``) or one (``E``) multipoles.
     The E-modes start at zero.
     """
 
     LMAX_G = Setting(15)
     LMAX_POL = Setting(15)
 
-    def _theta_initial(self, x, omtau, output):
-        """The monopole ``delta_gamma`` and dipole ``q_gamma`` of the growing mode."""
+    def _F_initial(self, x, omtau, output):
+        """The monopole and dipole of the growing mode."""
         output[0] = x * x / 3.0 * (1.0 - omtau / 5.0)
         output[1] = x**3 / 27.0 * (1.0 - omtau / 5.0)
 
-    theta = State(lambda self: self.LMAX_G + 1, initial=_theta_initial)
-    e = State(lambda self: self.LMAX_POL - 1)
+    F = State(lambda self: self.LMAX_G + 1, initial=_F_initial)
+    E = State(lambda self: self.LMAX_POL - 1)
 
-    Tcmb: ArrayLike = Parameter(
+    T_cmb: ArrayLike = Parameter(
         directed=True, differentiable=True
     )  # K, read by the recombination rates too
-    grhog: ArrayLike = Derived(lambda Tcmb: GRHOG_PER_TCMB4 * Tcmb**4, directed=True)
+    omega_g: ArrayLike = Derived(
+        lambda T_cmb: OMEGA_G_PER_TCMB4 * T_cmb**4, directed=True
+    )
 
     def __init__(self, **settings):
         super().__init__(**settings)
         _needs_octupole(LMAX_G=self.LMAX_G, LMAX_POL=self.LMAX_POL)
 
-    def grhog_t(self, grhog, a):
+    def rho_g(self, omega_g, a):
         inv_a = 1.0 / a
         inv_a2 = inv_a * inv_a
-        return grhog * inv_a2
+        return omega_g * inv_a2 * inv_a2
 
-    @contributes("grho")
-    def grho_g(self, grhog_t):
-        return grhog_t
+    @contributes("rho", "rho_radiation")
+    def rho_photons(self, rho_g):
+        return rho_g
 
-    @contributes("grho_radiation")
-    def grho_radiation_g(self, grhog_t):
-        return grhog_t
+    def delta_g(self, F, rsa, rsa_delta):
+        return F[0] + rsa * (rsa_delta - F[0])
 
-    def clxg(self, theta, rsa, rsa_delta):
-        return theta[0] + rsa * (rsa_delta - theta[0])
+    def theta_g(self, F, k, rsa, rsa_theta):
+        return ((1.0 - rsa) * 0.75 * k) * F[1] + rsa * rsa_theta
 
-    def qg(self, theta, rsa, rsa_q):
-        return theta[1] + rsa * (rsa_q - theta[1])
+    def sigma_g(self, F, rsa):
+        return (0.5 * (1.0 - rsa)) * F[2]
 
-    def pig(self, theta, rsa):
-        return (1.0 - rsa) * theta[2]
+    def E2(self, E, rsa):
+        """The E-mode quadrupole, ``E[0]`` (none under the RSA)."""
+        return (1.0 - rsa) * E[0]
 
-    def E2(self, e, rsa):
-        """The E-mode quadrupole, ``e[0]`` (none under the RSA)."""
-        return (1.0 - rsa) * e[0]
-
-    @contributes("dgrho")
-    def dgrho_g(self, grhog_t, theta, rsa):
+    @contributes("delta_rho")
+    def delta_rho_g(self, rho_g, F, rsa):
         """The hierarchy's density, zero under the RSA.
 
         As in CLASS, the ``h'`` that the RSA density reads leaves the
         streaming species out.
         """
-        return grhog_t * (1.0 - rsa) * theta[0]
+        return rho_g * (1.0 - rsa) * F[0]
 
-    @contributes("dgq")
-    def dgq_g(self, grhog_t, qg):
-        return grhog_t * qg
+    @contributes("momentum")
+    def momentum_g(self, rho_g, theta_g):
+        return (4.0 / 3.0) * rho_g * theta_g
 
-    @contributes("dgrho_streaming")
-    def dgrho_streaming_g(self, rsa, rsa_delta, grhog_t):
+    @contributes("delta_rho_streaming")
+    def delta_rho_streaming_g(self, rsa, rsa_delta, rho_g):
         """The photons' density under the RSA.
 
-        ``dgrho`` (and so ``h'``) leaves it out, but as in CLASS everything
-        else that reads the density includes it.
+        ``delta_rho`` (and so ``h'``) leaves it out, but as in CLASS
+        everything else that reads the density includes it.
         """
-        return rsa * rsa_delta * grhog_t
+        return rsa * rsa_delta * rho_g
 
-    @contributes("gpres")
-    def gpres_g(self, grhog_t):
-        return grhog_t * (1.0 / 3.0)
+    @contributes("pressure")
+    def pressure_g(self, rho_g):
+        return rho_g * (1.0 / 3.0)
 
-    @contributes("dgpi")
-    def dgpi_g(self, grhog_t, pig):
-        return grhog_t * pig
+    @contributes("stress")
+    def stress_g(self, rho_g, sigma_g):
+        return (4.0 / 3.0) * rho_g * sigma_g
 
-    def d_theta(self, k, z, sigma, theta, tau, rsa, output):
+    @derivative("F")
+    def streaming_g(self, k, h_prime, alpha, F, tau, rsa, output):
         inv_tau = 1.0 / tau
-        stream(k, k, z, sigma, -4.0, theta, inv_tau, output)
-        for ell in range(len(theta)):
+        stream(k, k, h_prime, alpha, -4.0, F, inv_tau, output)
+        for ell in range(len(F)):
             output[ell] = (1.0 - rsa) * output[ell]
 
-    def d_e(self, k, e, tau, rsa, output):
+    @derivative("E")
+    def streaming_E(self, k, E, tau, rsa, output):
         inv_tau = 1.0 / tau
-        lmax = len(e) + 1
-        output[0] = -k * e[1] * (1.0 / 3.0)
+        lmax = len(E) + 1
+        output[0] = -k * E[1] * (1.0 / 3.0)
         for ell in range(3, lmax):
             upfac = (ell + 3.0) * (ell - 1.0) / (ell + 1.0)
             output[ell - 2] = (
-                k * (ell * e[ell - 3] - upfac * e[ell - 1]) * (1.0 / (2 * ell + 1))
+                k * (ell * E[ell - 3] - upfac * E[ell - 1]) * (1.0 / (2 * ell + 1))
             )
         output[lmax - 2] = (
-            k * lmax * e[lmax - 3] * (1.0 / (2 * lmax + 1))
-            - (lmax + 3) * e[lmax - 2] * inv_tau
+            k * lmax * E[lmax - 3] * (1.0 / (2 * lmax + 1))
+            - (lmax + 3) * E[lmax - 2] * inv_tau
         )
-        for ell in range(len(e)):
+        for ell in range(len(E)):
             output[ell] = (1.0 - rsa) * output[ell]
 
 
 class MasslessNeutrinos(Species):
-    """Massless neutrinos ``n`` (``N_0 .. N_LMAX_NR``) exhibit collisionless free streaming."""
+    """Massless neutrinos ``N`` (``N_0 .. N_LMAX_NR``) exhibit collisionless free streaming."""
 
     LMAX_NR = Setting(15)
 
-    def _n_initial(self, x, Rv, Rp15, omtau, theta, output):
+    def _N_initial(self, x, Rv, Rp15, omtau, F, output):
         """The growing mode's neutrino monopole, dipole, quadrupole and octupole."""
-        output[0] = theta[0]
+        output[0] = F[0]
         output[1] = (4.0 * Rv + 23.0) / Rp15 * x**3 / 27.0
         output[2] = (
             -4.0
@@ -429,58 +435,53 @@ class MasslessNeutrinos(Species):
         )
         output[3] = -4.0 / 21.0 / Rp15 * x**3
 
-    n = State(lambda self: self.LMAX_NR + 1, initial=_n_initial)
+    N = State(lambda self: self.LMAX_NR + 1, initial=_N_initial)
 
-    Neff: ArrayLike = Parameter(differentiable=True)
-    grhornomass: ArrayLike = Derived(
-        lambda Neff, Tcmb: Neff * (GRHOR_PER_TCMB4 * Tcmb**4), directed=True
+    N_eff: ArrayLike = Parameter(differentiable=True)
+    omega_ur: ArrayLike = Derived(
+        lambda N_eff, T_cmb: N_eff * (OMEGA_NU_PER_TCMB4 * T_cmb**4), directed=True
     )
 
     def __init__(self, **settings):
         super().__init__(**settings)
         _needs_octupole(LMAX_NR=self.LMAX_NR)
 
-    def grhor_t(self, grhornomass, a):
+    def rho_ur(self, omega_ur, a):
         inv_a = 1.0 / a
         inv_a2 = inv_a * inv_a
-        return grhornomass * inv_a2
+        return omega_ur * inv_a2 * inv_a2
 
-    @contributes("grho")
-    def grho_r(self, grhor_t):
-        return grhor_t
+    @contributes("rho", "rho_radiation", "rho_free_streaming")
+    def rho_neutrinos(self, rho_ur):
+        return rho_ur
 
-    @contributes("grho_radiation")
-    def grho_radiation_r(self, grhor_t):
-        return grhor_t
+    @contributes("delta_rho")
+    def delta_rho_ur(self, rho_ur, N, rsa):
+        return rho_ur * (1.0 - rsa) * N[0]
 
-    @contributes("grho_free_streaming")
-    def grho_free_streaming_r(self, grhor_t):
-        return grhor_t
+    @contributes("momentum")
+    def momentum_ur(self, rho_ur, N, k, rsa, rsa_theta):
+        return ((1.0 - rsa) * k * rho_ur) * N[1] + (
+            (4.0 / 3.0) * rho_ur * rsa
+        ) * rsa_theta
 
-    @contributes("dgrho")
-    def dgrho_r(self, grhor_t, n, rsa):
-        return grhor_t * (1.0 - rsa) * n[0]
+    @contributes("delta_rho_streaming")
+    def delta_rho_streaming_ur(self, rsa, rsa_delta, rho_ur):
+        return rsa * rsa_delta * rho_ur
 
-    @contributes("dgq")
-    def dgq_r(self, grhor_t, n, rsa, rsa_q):
-        return grhor_t * (n[1] + rsa * (rsa_q - n[1]))
+    @contributes("pressure")
+    def pressure_ur(self, rho_ur):
+        return rho_ur * (1.0 / 3.0)
 
-    @contributes("dgrho_streaming")
-    def dgrho_streaming_r(self, rsa, rsa_delta, grhor_t):
-        return rsa * rsa_delta * grhor_t
+    @contributes("stress")
+    def stress_ur(self, rho_ur, N, rsa):
+        return (2.0 / 3.0) * rho_ur * (1.0 - rsa) * N[2]
 
-    @contributes("gpres")
-    def gpres_r(self, grhor_t):
-        return grhor_t * (1.0 / 3.0)
-
-    @contributes("dgpi")
-    def dgpi_r(self, grhor_t, n, rsa):
-        return grhor_t * (1.0 - rsa) * n[2]
-
-    def d_n(self, k, z, sigma, n, tau, rsa, output):
+    @derivative("N")
+    def streaming_ur(self, k, h_prime, alpha, N, tau, rsa, output):
         inv_tau = 1.0 / tau
-        stream(k, k, z, sigma, -4.0, n, inv_tau, output)
-        for ell in range(len(n)):
+        stream(k, k, h_prime, alpha, -4.0, N, inv_tau, output)
+        for ell in range(len(N)):
             output[ell] = (1.0 - rsa) * output[ell]
 
 
@@ -508,19 +509,21 @@ class MassiveNeutrinos(Species):
     LMAX_NU = Setting(15)
     NQMAX = Setting(3)
 
-    def _psi_initial(self, n, output):
+    def _psi_initial(self, N, output):
         """Still relativistic: each bin starts as the massless hierarchy scaled by dlnf0/dlnq."""
         for i in range(self.NQMAX):
             for ell in range(4):
-                output[i, ell] = -0.25 * n[ell] * self.dlnf0[i]
+                output[i, ell] = -0.25 * N[ell] * self.dlnf0[i]
 
     psi = State(lambda self: (self.NQMAX, self.LMAX_NU + 1), initial=_psi_initial)
 
-    Nmnu: ArrayLike = Parameter(0.0)  # flavours, a count: not differentiable
-    mnu: ArrayLike = Parameter(0.0, differentiable=True)  # eV, each
-    grhor_nu: ArrayLike = Derived(lambda Tcmb: GRHOR_PER_TCMB4 * Tcmb**4, directed=True)
-    n_mnu: ArrayLike = Derived(lambda Nmnu: Nmnu, column=True)
-    amnu: ArrayLike = Derived(lambda mnu, Tcmb: mnu * C2OK / Tcmb, directed=True)
+    N_mnu: ArrayLike = Parameter(0.0)  # flavours, a count: not differentiable
+    m_nu: ArrayLike = Parameter(0.0, differentiable=True)  # eV, each
+    omega_nu_flavour: ArrayLike = Derived(
+        lambda T_cmb: OMEGA_NU_PER_TCMB4 * T_cmb**4, directed=True
+    )
+    n_mnu: ArrayLike = Derived(lambda N_mnu: N_mnu, column=True)
+    amnu: ArrayLike = Derived(lambda m_nu, T_cmb: m_nu * C2OK / T_cmb, directed=True)
 
     def __init__(self, **settings):
         super().__init__(**settings)
@@ -551,50 +554,52 @@ class MassiveNeutrinos(Species):
             total += self.nu_w[i] / math.sqrt(1.0 + (a * amnu / self.nu_q[i]) ** 2)
         return (1.0 + massive * (total - 1.0)) * (1.0 / 3.0)
 
-    def nu_norm(self, grhor_nu, n_mnu, a):
+    def rho_nu_massless(self, omega_nu_flavour, n_mnu, a):
+        """The density the flavours would have without their mass."""
         inv_a = 1.0 / a
         inv_a2 = inv_a * inv_a
-        return grhor_nu * n_mnu * inv_a2
+        return omega_nu_flavour * n_mnu * inv_a2 * inv_a2
 
-    @contributes("grho")
-    def grho_nu(self, nu_norm, rhonu):
-        return nu_norm * rhonu
+    @contributes("rho")
+    def rho_nu(self, rho_nu_massless, rhonu):
+        return rho_nu_massless * rhonu
 
-    @contributes("dgrho")
-    def dgrho_nu(self, nu_norm, a, amnu, psi):
+    @contributes("delta_rho")
+    def delta_rho_nu(self, rho_nu_massless, a, amnu, psi):
         total = 0.0
         for i in range(self.NQMAX):
             inv_v = math.sqrt(1.0 + (a * amnu * self.inv_q[i]) ** 2)
             total += self.weight[i] * psi[i, 0] * inv_v
-        return nu_norm * total
+        return rho_nu_massless * total
 
-    @contributes("dgq")
-    def dgq_nu(self, nu_norm, psi):
+    @contributes("momentum")
+    def momentum_nu(self, rho_nu_massless, k, psi):
         total = 0.0
         for i in range(self.NQMAX):
             total += self.weight[i] * psi[i, 1]
-        return nu_norm * total
+        return rho_nu_massless * k * total
 
-    @contributes("gpres")
-    def gpres_nu(self, nu_norm, pnu):
+    @contributes("pressure")
+    def pressure_nu(self, rho_nu_massless, pnu):
         """The background pressure, from ``pnu = (rhonu - d rhonu / d ln a) / 3``."""
-        return nu_norm * pnu
+        return rho_nu_massless * pnu
 
-    @contributes("dgpi")
-    def dgpi_nu(self, nu_norm, a, amnu, psi):
-        """The shear ``Sum w v psi2``: the pressure weighting ``q/epsilon`` of a massive bin."""
+    @contributes("stress")
+    def stress_nu(self, rho_nu_massless, a, amnu, psi):
+        """The shear ``(2/3) Sum w v psi2``: the pressure weighting ``q/epsilon`` of a massive bin."""
         total = 0.0
         for i in range(self.NQMAX):
             inv_v = math.sqrt(1.0 + (a * amnu * self.inv_q[i]) ** 2)
             total += self.weight[i] * psi[i, 2] / inv_v
-        return nu_norm * total
+        return (2.0 / 3.0) * rho_nu_massless * total
 
-    def d_psi(self, k, z, sigma, a, amnu, psi, tau, output):
+    @derivative("psi")
+    def streaming_nu(self, k, h_prime, alpha, a, amnu, psi, tau, output):
         inv_tau = 1.0 / tau
         for i in range(self.NQMAX):
             inv_v = math.sqrt(1.0 + (a * amnu * self.inv_q[i]) ** 2)
             kv = k * (1.0 / inv_v)
-            stream(k, kv, z, sigma, self.dlnf0[i], psi[i], inv_tau, output[i])
+            stream(k, kv, h_prime, alpha, self.dlnf0[i], psi[i], inv_tau, output[i])
 
 
 # --- dark energy --------------------------------------------------------------------
@@ -606,29 +611,25 @@ class _DarkEnergyDensity(Species):
     ``omega_de`` is its physical density today, ``Omega_de h^2``.
     :meth:`Model.from_density_parameters
     <discoeb.models.Model.from_density_parameters>` finds the one that makes
-    a model expand at a given ``H0``.
+    a model expand at a given ``H_0``.
     """
 
-    omega_de: ArrayLike = Parameter(differentiable=True)
-    grhov: ArrayLike = Derived(
-        lambda omega_de: GRHO_PER_OMEGA * omega_de, directed=True
-    )
+    omega_de: ArrayLike = Parameter(directed=True, differentiable=True)
 
-    @contributes("grho")
-    def grho_de(self, grhov_t):
-        return grhov_t
+    @contributes("rho")
+    def rho_dark_energy(self, rho_de):
+        return rho_de
 
 
 class CosmologicalConstant(_DarkEnergyDensity):
     """A cosmological constant: density only, no perturbations."""
 
-    def grhov_t(self, grhov, a):
-        a2 = a * a
-        return grhov * a2
+    def rho_de(self, omega_de):
+        return omega_de
 
-    @contributes("gpres")
-    def gpres_lambda(self, grhov_t):
-        return -grhov_t
+    @contributes("pressure")
+    def pressure_lambda(self, rho_de):
+        return -rho_de
 
 
 class DarkEnergy(_DarkEnergyDensity):
@@ -637,17 +638,17 @@ class DarkEnergy(_DarkEnergyDensity):
     Synchronous-gauge fluid equations after Ballesteros & Lesgourgues 2010, with
     the adiabatic sound speed ``c_a^2 = w - w' / (3 (1+w) aH)``, ``w' = -w_a aH a``:
 
-    ``clxq' = -(1+w)(thetaq + k z) - 3 (cs2 - w) aH clxq
-              - 9 (1+w)(cs2 - c_a^2) (aH)^2 thetaq / k^2``,
-    ``thetaq' = -(1 - 3 cs2) aH thetaq + cs2 k^2 clxq / (1+w)``.
+    ``delta_de' = -(1+w)(theta_de + h'/2) - 3 (cs2 - w) aH delta_de
+                  - 9 (1+w)(cs2 - c_a^2) (aH)^2 theta_de / k^2``,
+    ``theta_de' = -(1 - 3 cs2) aH theta_de + cs2 k^2 delta_de / (1+w)``.
 
     Valid for ``w != -1``. Use :class:`CosmologicalConstant` for ``w = -1``.
-    The fluid starts in the adiabatic mode, ``clxq = (1 + w_0) clxc`` at rest.
+    The fluid starts in the adiabatic mode, ``delta_de = (1 + w_0) delta_c`` at rest.
     """
 
     # adiabatic, at rest
-    clxq = State(initial=lambda w_DE_0, clxc: (1.0 + w_DE_0) * clxc)
-    thetaq = State()
+    delta_de = State(initial=lambda w_DE_0, delta_c: (1.0 + w_DE_0) * delta_c)
+    theta_de = State()
 
     w_DE_0: ArrayLike = Parameter(-1.0, directed=True, differentiable=True)
     w_DE_a: ArrayLike = Parameter(0.0, directed=True, differentiable=True)
@@ -663,46 +664,47 @@ class DarkEnergy(_DarkEnergyDensity):
                 "with a cosmological constant for w_DE_0 = -1, w_DE_a = 0"
             )
 
-    def w_Q(self, a, w_DE_0, w_DE_a):
+    def w_de(self, a, w_DE_0, w_DE_a):
         return w_DE_0 + w_DE_a * (1.0 - a)
 
-    def rho_Q(self, a, w_DE_0, w_DE_a):
-        """``rho_Q(a) / rho_Q(1)`` for the CPL equation of state."""
-        return a ** (-3.0 * (1.0 + w_DE_0 + w_DE_a)) * math.exp(
-            3.0 * (a - 1.0) * w_DE_a
+    def rho_de(self, omega_de, a, w_DE_0, w_DE_a):
+        """``omega_de`` times ``rho(a) / rho(1)`` of the CPL equation of state."""
+        return (
+            omega_de
+            * a ** (-3.0 * (1.0 + w_DE_0 + w_DE_a))
+            * math.exp(3.0 * (a - 1.0) * w_DE_a)
         )
 
-    def grhov_t(self, grhov, rho_Q, a):
-        a2 = a * a
-        return grhov * rho_Q * a2
+    @contributes("pressure")
+    def pressure_de(self, rho_de, w_de):
+        return w_de * rho_de
 
-    @contributes("gpres")
-    def gpres_de(self, grhov_t, w_Q):
-        return w_Q * grhov_t
+    @contributes("delta_rho")
+    def delta_rho_de(self, rho_de, delta_de):
+        return rho_de * delta_de
 
-    @contributes("dgrho")
-    def dgrho_de(self, grhov_t, clxq):
-        return grhov_t * clxq
+    @contributes("momentum")
+    def momentum_de(self, rho_de, w_de, theta_de):
+        return rho_de * (1.0 + w_de) * theta_de
 
-    @contributes("dgq")
-    def dgq_de(self, grhov_t, w_Q, thetaq, k):
-        return grhov_t * (1.0 + w_Q) * thetaq / k
+    def w_de_prime(self, w_DE_a, aH, a):
+        return -w_DE_a * aH * a
 
-    def w_Q_prime(self, w_DE_a, adotoa, a):
-        return -w_DE_a * adotoa * a
+    def ca2_de(self, w_de, w_de_prime, aH):
+        return w_de - w_de_prime / (3.0 * (1.0 + w_de) * aH)
 
-    def ca2_Q(self, w_Q, w_Q_prime, adotoa):
-        return w_Q - w_Q_prime / (3.0 * (1.0 + w_Q) * adotoa)
-
-    def d_clxq(self, clxq, thetaq, z, k, adotoa, w_Q, cs2_DE, ca2_Q):
+    @derivative("delta_de")
+    def continuity_de(self, delta_de, theta_de, h_prime, k, aH, w_de, cs2_DE, ca2_de):
         inv_k2 = 1.0 / (k * k)
         return (
-            -(1.0 + w_Q) * (thetaq + k * z)
-            - 3.0 * (cs2_DE - w_Q) * adotoa * clxq
-            - 9.0 * (1.0 + w_Q) * (cs2_DE - ca2_Q) * adotoa**2 * inv_k2 * thetaq
+            -(1.0 + w_de) * (theta_de + 0.5 * h_prime)
+            - 3.0 * (cs2_DE - w_de) * aH * delta_de
+            - 9.0 * (1.0 + w_de) * (cs2_DE - ca2_de) * aH**2 * inv_k2 * theta_de
         )
 
-    def d_thetaq(self, clxq, thetaq, k, adotoa, w_Q, cs2_DE):
+    @derivative("theta_de")
+    def euler_de(self, delta_de, theta_de, k, aH, w_de, cs2_DE):
         return (
-            -(1.0 - 3.0 * cs2_DE) * adotoa * thetaq + cs2_DE / (1.0 + w_Q) * k**2 * clxq
+            -(1.0 - 3.0 * cs2_DE) * aH * theta_de
+            + cs2_DE / (1.0 + w_de) * k**2 * delta_de
         )

@@ -6,20 +6,23 @@ Not a test file. ``conftest.py`` sets the environment before this imports
 """
 
 import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from jax.typing import ArrayLike
 
+import discoeb
 from discoeb.components._component import (
     Component,
-    Derived,
     Parameter,
     Species,
     State,
+    contributes,
+    derivative,
 )
-from discoeb.components.gravity import GRHO_PER_OMEGA
+from discoeb.components.gravity import H100_SQ
 from discoeb.components.recombination import ReionizationDepth
 from discoeb.components.species import (
     CosmologicalConstant,
@@ -73,20 +76,20 @@ def cosmologies_of(model, params):
 
     Through :meth:`Model.from_dict <discoeb.models.Model.from_dict>`, so a
     dictionary written for another model passes while its other keys keep
-    their defaults. One in ``Omegam``, ``Omegab`` and ``H0`` is converted
+    their defaults. One in ``Omega_m``, ``Omega_b`` and ``H_0`` is converted
     first (:meth:`Model.physical_parameters
     <discoeb.models.Model.physical_parameters>`).
     """
 
     if not isinstance(params, dict):
         return [cosmologies_of(model, p) for p in params]
-    if "Omegam" in params:
+    if "Omega_m" in params:
         params = model.physical_parameters(params)
     return model.from_dict(params)
 
 
 def physical(model, params) -> dict:
-    """A dictionary in ``Omegam``, ``Omegab`` and ``H0`` in the model's own parameters."""
+    """A dictionary in ``Omega_m``, ``Omega_b`` and ``H_0`` in the model's own parameters."""
 
     return model.physical_parameters(params)
 
@@ -155,14 +158,14 @@ LCDM_XY = LCDM.add(X, Y, name="LCDM+x+y")
 
 
 COSMOLOGY = {
-    "Omegam": (0.02238280 + 0.1201075) / 0.6732117**2,
-    "Omegab": 0.02238280 / 0.6732117**2,
+    "Omega_m": (0.02238280 + 0.1201075) / 0.6732117**2,
+    "Omega_b": 0.02238280 / 0.6732117**2,
     "A_s": 2.100549e-9,
     "n_s": 0.9660499,
-    "H0": 67.32117,
-    "Tcmb": 2.7255,
-    "YHe": 0.2454006,
-    "Neff": 3.046,
+    "H_0": 67.32117,
+    "T_cmb": 2.7255,
+    "Y_He": 0.2454006,
+    "N_eff": 3.046,
 }
 
 
@@ -189,9 +192,9 @@ def structure(model):
     """``(core, tails)``: the free-streaming tails above the octupole (``E_2`` for the E-modes), the rest core."""
     ix = state_index(model)
     tails = [
-        [ix[f"theta_{ell}"] for ell in range(3, model.setting("LMAX_G") + 1)],
-        [ix[f"e_{i}"] for i in range(1, model.setting("LMAX_POL") - 1)],
-        [ix[f"n_{ell}"] for ell in range(3, model.setting("LMAX_NR") + 1)],
+        [ix[f"F_{ell}"] for ell in range(3, model.setting("LMAX_G") + 1)],
+        [ix[f"E_{i}"] for i in range(1, model.setting("LMAX_POL") - 1)],
+        [ix[f"N_{ell}"] for ell in range(3, model.setting("LMAX_NR") + 1)],
     ]
     if model.has(MassiveNeutrinos):
         for q in range(model.setting("NQMAX")):
@@ -225,34 +228,37 @@ def diagonal(model) -> set[tuple[int, int]]:
 
 
 class SecondDarkMatter(Species):
-    """Pressureless and at rest in synchronous gauge, like CDM: ``clxx' = -k z``."""
+    """Pressureless and at rest in synchronous gauge, like CDM: ``delta_x' = -h' / 2``."""
 
-    clxx = State(initial=lambda theta: 0.75 * theta[0])
+    delta_x = State(initial=lambda F: 0.75 * F[0])
 
-    omega_x: ArrayLike = Parameter(0.0)
-    grhox: ArrayLike = Derived(lambda omega_x: GRHO_PER_OMEGA * omega_x, directed=True)
+    omega_x: ArrayLike = Parameter(0.0, directed=True)
 
     @classmethod
     def check(cls, omega_x):
         if omega_x < 0.0:
             raise ValueError(f"omega_x = {omega_x} must not be negative")
 
-    def grhox_t(self, grhox, a):
+    def rho_x(self, omega_x, a):
         inv_a = 1.0 / a
-        return grhox * inv_a
+        return omega_x * inv_a * inv_a * inv_a
 
-    def grho(self, grhox_t):
-        return grhox_t
+    @contributes("rho")
+    def rho(self, rho_x):
+        return rho_x
 
-    def grho_matter(self, grhox_t):
+    @contributes("rho_matter")
+    def rho_matter(self, rho_x):
         """It is matter to the growing mode's initial conditions."""
-        return grhox_t
+        return rho_x
 
-    def dgrho(self, grhox_t, clxx):
-        return grhox_t * clxx
+    @contributes("delta_rho")
+    def delta_rho(self, rho_x, delta_x):
+        return rho_x * delta_x
 
-    def d_clxx(self, z, k):
-        return -k * z
+    @derivative("delta_x")
+    def d_delta_x(self, h_prime):
+        return -0.5 * h_prime
 
 
 LCDM_X = LCDM.add(SecondDarkMatter, name="LCDM+x")
@@ -268,7 +274,7 @@ OMEGA_X = 0.08
 def _split(cosmology, omega_x=OMEGA_X):
     """The same universe with ``omega_x`` of its cold dark matter in the second fluid."""
 
-    return {**cosmology, "Omegam": cosmology["Omegam"] - omega_x, "Omega_x": omega_x}
+    return {**cosmology, "Omega_m": cosmology["Omega_m"] - omega_x, "Omega_x": omega_x}
 
 
 # --- A background state added from outside: the equations split the blocks themselves.
@@ -279,6 +285,7 @@ class CosmicTime(Component):
 
     t = State()
 
+    @derivative("t")
     def d_t(self, a):
         return a
 
@@ -290,11 +297,12 @@ LCDM_T = LCDM.add(CosmicTime, name="LCDM+t")
 
 
 class Quintessence(Species):
-    """``phi'' + 2 aH phi' + a^2 V_phi = 0`` and its synchronous-gauge perturbation.
+    """``phi'' + 2 aH phi' + 3 H100^2 a^2 V_phi = 0`` and its synchronous-gauge perturbation.
 
-    Densities are ``8 pi G rho a^2 = phi'^2 / 2 + a^2 V`` with ``V`` in
-    1/Mpc^2. The perturbation obeys ``dphi'' + 2 aH dphi' + (k^2 + a^2
-    V_phiphi) dphi = -k z phi'``. The field starts frozen.
+    The potential ``V`` is a density in units of ``omega``, and the field's
+    density is ``phi'^2 / (6 H100^2 a^2) + V``. The perturbation obeys
+    ``dphi'' + 2 aH dphi' + (k^2 + 3 H100^2 a^2 V_phiphi) dphi = -h' phi' /
+    2``. The field starts frozen.
     """
 
     phi = State()
@@ -303,7 +311,7 @@ class Quintessence(Species):
     ddphi = State()
 
     lam: ArrayLike = Parameter(0.0, column=True)
-    V0: ArrayLike = Parameter(directed=True)  # 1/Mpc^2, as grhov
+    V0: ArrayLike = Parameter(directed=True)  # in units of omega, as omega_de
 
     def V(self, V0, lam, phi):
         return V0 * math.exp(-lam * phi)
@@ -314,49 +322,59 @@ class Quintessence(Species):
     def V_phiphi(self, V, lam):
         return lam * lam * V
 
-    def grho(self, phidot, V, a):
-        a2 = a * a
-        return 0.5 * phidot * phidot + a2 * V
+    def kinetic(self, phidot, a):
+        return phidot * phidot / (6.0 * H100_SQ * a * a)
 
-    def gpres(self, phidot, V, a):
-        a2 = a * a
-        return 0.5 * phidot * phidot - a2 * V
+    @contributes("rho")
+    def rho(self, kinetic, V):
+        return kinetic + V
 
-    def dgrho(self, phidot, ddphi, a, V_phi, dphi):
-        a2 = a * a
-        return phidot * ddphi + a2 * V_phi * dphi
+    @contributes("pressure")
+    def pressure(self, kinetic, V):
+        return kinetic - V
 
-    def dgq(self, k, phidot, dphi):
-        return k * phidot * dphi
+    @contributes("delta_rho")
+    def delta_rho(self, phidot, ddphi, a, V_phi, dphi):
+        return phidot * ddphi / (3.0 * H100_SQ * a * a) + V_phi * dphi
 
+    @contributes("momentum")
+    def momentum(self, k, phidot, dphi, a):
+        return k * k * phidot * dphi / (3.0 * H100_SQ * a * a)
+
+    @derivative("phi")
     def d_phi(self, phidot):
         return phidot
 
-    def d_phidot(self, phidot, adotoa, a, V_phi):
-        a2 = a * a
-        return -2.0 * adotoa * phidot - a2 * V_phi
+    @derivative("phidot")
+    def d_phidot(self, phidot, aH, a, V_phi):
+        return -2.0 * aH * phidot - 3.0 * H100_SQ * a * a * V_phi
 
+    @derivative("dphi")
     def d_dphi(self, ddphi):
         return ddphi
 
-    def d_ddphi(self, ddphi, dphi, adotoa, k, a, V_phiphi, z, phidot):
-        a2 = a * a
-        return -2.0 * adotoa * ddphi - (k * k + a2 * V_phiphi) * dphi - k * z * phidot
+    @derivative("ddphi")
+    def d_ddphi(self, ddphi, dphi, aH, k, a, V_phiphi, h_prime, phidot):
+        return (
+            -2.0 * aH * ddphi
+            - (k * k + 3.0 * H100_SQ * a * a * V_phiphi) * dphi
+            - 0.5 * h_prime * phidot
+        )
 
 
 QCDM = LCDM.swap(CosmologicalConstant, Quintessence, name="QCDM")
 
 
 QCDM_COSMOLOGY = {
-    "Omegam": (0.02238280 + 0.1201075) / 0.6732117**2,
-    "Omegab": 0.02238280 / 0.6732117**2,
+    "Omega_m": (0.02238280 + 0.1201075) / 0.6732117**2,
+    "Omega_b": 0.02238280 / 0.6732117**2,
     "A_s": 2.100549e-9,
     "n_s": 0.9660499,
     "k_p": 0.05,
-    "H0": 67.32117,
-    "Tcmb": 2.7255,
-    "YHe": 0.2454006,
-    "Neff": 3.046,
+    "H_0": 67.32117,
+    "T_cmb": 2.7255,
+    "Y_He": 0.2454006,
+    "N_eff": 3.046,
 }
 """The LCDM cosmology the field's are made from (:func:`qcdm_parameters`)."""
 
@@ -367,34 +385,34 @@ LAM = 1.0
 def qcdm_parameters(lam=0.0, V0=None):
     """QCDM's own parameters: LCDM's, with the potential's height ``V0`` for the dark-energy density.
 
-    By default ``V0`` is that LCDM's ``grhov``, so a flat potential (``lam =
+    By default ``V0`` is that LCDM's ``omega_de``, so a flat potential (``lam =
     0``) is the same universe. No budget closes: a rolling field's Hubble
     constant comes out of the solve.
     """
 
     lcdm = LCDM.physical_parameters(QCDM_COSMOLOGY)
-    grhov = GRHO_PER_OMEGA * lcdm.pop("omega_de")
-    return {**lcdm, "lam": lam, "V0": grhov if V0 is None else V0}
+    omega_de = lcdm.pop("omega_de")
+    return {**lcdm, "lam": lam, "V0": omega_de if V0 is None else V0}
 
 
 # --- GPU perturbation solves against CLASS: the matter power spectrum and its derivatives.
 
 
 REFERENCE_COSMOLOGY = {
-    "Omegam": (0.02238280 + 0.1201075) / 0.6732117**2,
-    "Omegab": 0.02238280 / 0.6732117**2,
+    "Omega_m": (0.02238280 + 0.1201075) / 0.6732117**2,
+    "Omega_b": 0.02238280 / 0.6732117**2,
     "w_DE_0": -1.0,
     "w_DE_a": 0.0,
     "cs2_DE": 1.0,
-    "Omegak": 0.0,
+    "Omega_k": 0.0,
     "A_s": 2.100549e-9,
     "n_s": 0.9660499,
-    "H0": 67.32117,
-    "Tcmb": 2.7255,
-    "YHe": 0.2454006,
-    "Neff": 3.046,
-    "Nmnu": 0.0,
-    "mnu": 0.0,
+    "H_0": 67.32117,
+    "T_cmb": 2.7255,
+    "Y_He": 0.2454006,
+    "N_eff": 3.046,
+    "N_mnu": 0.0,
+    "m_nu": 0.0,
     "k_p": 0.05,
 }
 
@@ -419,13 +437,13 @@ def _perturbed_cosmologies(n):
         h = 0.6732117 * (1.0 + 0.004 * np.sin(np.pi * ph))
         param.update(
             {
-                "Omegam": (omega_b_h2 + omega_c_h2) / h**2,
-                "Omegab": omega_b_h2 / h**2,
-                "H0": 100.0 * h,
-                "YHe": REFERENCE_COSMOLOGY["YHe"]
+                "Omega_m": (omega_b_h2 + omega_c_h2) / h**2,
+                "Omega_b": omega_b_h2 / h**2,
+                "H_0": 100.0 * h,
+                "Y_He": REFERENCE_COSMOLOGY["Y_He"]
                 * (1.0 + 0.003 * np.cos(0.5 * np.pi * ph)),
-                "Tcmb": REFERENCE_COSMOLOGY["Tcmb"] * (1.0 + 0.0015 * ph),
-                "Neff": REFERENCE_COSMOLOGY["Neff"]
+                "T_cmb": REFERENCE_COSMOLOGY["T_cmb"] * (1.0 + 0.0015 * ph),
+                "N_eff": REFERENCE_COSMOLOGY["N_eff"]
                 * (1.0 + 0.002 * np.sin(2.0 * np.pi * ph)),
             }
         )
@@ -436,14 +454,14 @@ def _perturbed_cosmologies(n):
 def _class_base(param):
     """The CLASS settings of a flat, massless-neutrino ``param``, shared by every CLASS reference."""
 
-    h = param["H0"] / 100.0
+    h = param["H_0"] / 100.0
     return {
         "h": h,
-        "omega_b": param["Omegab"] * h**2,
-        "omega_cdm": (param["Omegam"] - param["Omegab"]) * h**2,
-        "T_cmb": param["Tcmb"],
-        "YHe": param["YHe"],
-        "N_ur": param["Neff"],
+        "omega_b": param["Omega_b"] * h**2,
+        "omega_cdm": (param["Omega_m"] - param["Omega_b"]) * h**2,
+        "T_cmb": param["T_cmb"],
+        "YHe": param["Y_He"],
+        "N_ur": param["N_eff"],
         "N_ncdm": 0,
         "Omega_k": 0.0,
     }
@@ -471,7 +489,7 @@ def _matter_power(k_values, batch, a=1.0, **options):
 
     cosmologies = [batch] if isinstance(batch, Model) else list(batch)
     options.setdefault("thermo_weight", 0.1)
-    keep = ("clxc", "clxb")
+    keep = ("delta_c", "delta_b")
     values = solve_eb(batch, k_values, [a], keep=keep, **options)
     today = dict(zip(keep, jnp.unstack(values[..., -1], axis=1)))
     params = {
@@ -484,7 +502,7 @@ def _matter_power(k_values, batch, a=1.0, **options):
 
 # The parameters of the densities, which the derivative tests below have
 # always covered. The others have a test each (test_more_parameters_*).
-DENSITY_PARAMETERS = ("Omegam", "Omegab", "H0", "Tcmb", "Neff")
+DENSITY_PARAMETERS = ("Omega_m", "Omega_b", "H_0", "T_cmb", "N_eff")
 
 
 SOLVE_EB_K = MATTER_POWER_K[::16][::-1]  # descending, to exercise the reordering
@@ -493,12 +511,12 @@ SOLVE_EB_K = MATTER_POWER_K[::16][::-1]  # descending, to exercise the reorderin
 # The parameters beyond the densities': (model, fiducial changes, P(k) step).
 # Both comparisons difference converged solves (rtol = atol = 1e-6): the
 # solve is not smooth in the parameters below ~1e-6 of a value, so the
-# differences' noise falls as 1 / step (measured for YHe, 2026-11-13).
+# differences' noise falls as 1 / step (measured for Y_He, 2026-11-13).
 MORE_PARAMETERS = {
     "w_DE_0": ("W0WACDM", {"w_DE_0": -0.9, "w_DE_a": 0.1}, 9.0e-3),
     "w_DE_a": ("W0WACDM", {"w_DE_0": -0.9, "w_DE_a": 0.1}, 4.0e-3),
-    "Omegak": ("LCDM", {"Omegak": 0.02}, 2.0e-3),
-    "mnu": ("LCDM_MNU", {"Nmnu": 1.0, "mnu": 0.1, "Neff": 2.0328}, 4.0e-3),
+    "Omega_k": ("LCDM", {"Omega_k": 0.02}, 2.0e-3),
+    "m_nu": ("LCDM_MNU", {"N_mnu": 1.0, "m_nu": 0.1, "N_eff": 2.0328}, 4.0e-3),
     # z_re moves sum P(k) by 1.4e-5 of itself per unit: a step of 0.05 sits
     # in the converged solve's noise (2026-11-16)
     "z_re": ("LCDM_REIO", {"z_re": 7.67}, 1.0),
@@ -537,6 +555,9 @@ def ty_errors(code: str, tmp_path) -> tuple[set[tuple[int, str]], str]:
             "check",
             "--python",
             sys.executable,
+            # the package under test, wherever it was imported from
+            "--extra-search-path",
+            str(Path(discoeb.__file__).parents[1]),
             "--output-format",
             "concise",
             str(user),
