@@ -779,21 +779,54 @@ The typical computation flow is:
 - `tests/sweep.py` (called from `tests/test_models.py`) sweeps a fixed-seed Latin hypercube of 32 cosmologies
   per model (LCDM, W0WACDM, LCDM_MNU) in one launch each: finite P(k), steps
   well under `max_steps`, P(k) against CLASS at gates set from measured errors,
-  and a self-convergence check against a 1000x tighter fp64-LU solve. A CPL
+  and a self-convergence check against a 1000x tighter fp64-LU solve (LCDM;
+  the other models against a 100x tighter solve on their own kernel). CLASS
+  is the reference for eight of a sweep's cosmologies, as for eight of the
+  128 in `test_matter_power_spectrum_matches_class`. A CPL
   `w(a)` crossing -1 hits `max_steps` and is silently wrong (strict `xfail`).
   The sweeps and the self-convergence tests are marked `slow`
-- The default run is the fast suite (2026-11-16): 120 tests, 4.5 minutes
-  from an empty kernel cache, about 30 s with it warm. A kernel costs 30 to
-  200 s to compile per (model, settings, keep names, plain or joint), so the
-  fast suite launches LCDM only, with five kernels: `P(k)` against CLASS,
-  its derivatives, under `jit`, RECFAST and reionization against CLASS, and
-  `solve_eb`'s kept quantities against the history. Marked `slow`, which
-  `pyproject.toml` deselects: every launch of another model (the sweeps,
-  `test_more_parameters_*`, the components added in the tests), the
-  `solve_eb`-level derivative gate (200 s), the comoving curvature, the block
-  step statistics and the scalar-field shooting. A new GPU test on a kernel
-  outside those five is `slow`. Run everything with `uv run pytest tests -m
-  "" -rs` (12 minutes warm)
+- A GPU run's time is its kernels (reorganised 2026-11-17). modax compiles
+  one per (model, settings, kept names, **number of save times**, sensitivity
+  columns, LU precision), 35 s plain and minutes with columns: the width of
+  the hook's output row, names times saves, is written into the kernel. So
+  the GPU tests share two keep sets from `tests/helpers.py`, each at its own
+  save times: `PK_KEEP` (`delta_c`, `delta_b`) today alone, which every
+  derivative test keeps, and `DIAG_KEEP` (thermal history, contrasts, `F_2`,
+  `N_15`, `R`, `alpha`, `aH`) on the 2000 scale factors of `DIAG_A`
+  (`DIAG_A[1:]` where the grid must start after `A_START`). A model with
+  states of its own appends them (`REIO_KEEP`, `OUTSIDE_KEEP`, `QCDM_KEEP`).
+  `_matter_power(..., a=, keep=)` computes `P(k)` from either. A derivative
+  in one parameter is a `jax.jvp` (the one-column kernel; `jax.grad`
+  integrates a column per moved directed input)
+- The default run is the fast suite: 126 tests, 14 on the GPU, all LCDM, on
+  6 kernels: `P(k)` plain, with one and with two sensitivity columns,
+  `DIAG_KEEP` plain, the history (`_solve_batch`), and `REIO_KEEP` of
+  `LCDM_REIO`. Its derivative tests take the `two_columns` fixture
+  (`conftest.py`), which caps a thread at two columns
+  (`helpers.cap_columns`), so five parameters run as three launches, the
+  last padded. Marked `slow`, which `pyproject.toml` deselects, 10 more
+  kernels: the five-column `P(k)` kernel of the default cap
+  (`test_matter_power_spectrum_derivatives[five-columns]`), the fp64-LU
+  history, plain and one-column `P(k)` of `W0WACDM` and `LCDM_MNU`, one
+  column of `LCDM_REIO`, `LCDM_OUTSIDE` (`SecondDarkMatter`, a named `Fluid`
+  and `CosmicTime` in one model) plain and with one column, and `QCDM`.
+  Run everything with `uv run pytest tests -m "" -rs`: 141 tests, 29 on the
+  GPU. Measured on an RTX 4070 SUPER: the fast GPU tests 1 min 43 s with
+  one kernel compiling, everything 4 min 22 s with one compiling and 6 min
+  42 s with several
+- `test_the_suite_stays_within_its_kernel_budget`, the last test of
+  `test_solver.py`, fails when a run built more kernels than `KERNEL_BUDGET`
+  (6 fast, 16 in all) and lists the test that first needed each
+  (`helpers.count_kernels` wraps modax's `_compile_kernel`, which runs once
+  a kernel and process whether numba compiles or loads from disk). A new
+  GPU test keeps `PK_KEEP` today or `DIAG_KEEP` on `DIAG_A`; one on a
+  kernel outside the fast six is `slow`, and raises the budget
+- What the reorganisation dropped: `test_more_parameters_solve_eb` (the
+  kept quantities' derivatives in `w_DE_0`, `w_DE_a`, `Omega_k`, `m_nu`;
+  their `P(k)` derivatives stay, and `z_re` has `test_reionization_derivative`),
+  the derivatives of `R` and `F_2` and at other times than today in
+  `test_solve_eb_derivatives`, and the five-column `jacfwd` of the second
+  dark matter (now a `jvp` along `omega_x` and `omega_c`)
 - `matter_temperature_rate` switches hard between its locked and full
   forms, and a solver step may straddle the switch. Its dense output then
   leaves `T_m` up to 8 percent off and `c_b^2` a factor of three from z =
@@ -805,12 +838,12 @@ The typical computation flow is:
   removed the glitch but the block then diverged (`x_e` off tenfold,
   `delta_c` 2 percent) in 1 trajectory in 20000 at `thermo_weight` = 0.1,
   in fp32 or fp64 math
-- One gate is noise-limited (measured 2026-11-14 by scaling H_0 by 1 +
-  O(1e-11)), so a change to any kernel's bits can flip it:
-  `test_more_parameters_solve_eb[w_DE_a]`'s `dclxb` (3e-4 to 5e-3 against
-  1e-3). DISCO-CMB's EE derivative gate (1.2e-3 to 2.2e-3 against 2e-3) and
+- Noise-limited gates flip under a change to any kernel's bits (measured
+  2026-11-14 by scaling H_0 by 1 + O(1e-11); the one here, `dclxb/dw_DE_a`
+  of `test_more_parameters_solve_eb`, went with that test on 2026-11-17).
+  DISCO-CMB's EE derivative gate (1.2e-3 to 2.2e-3 against 2e-3) and
   its reionization TE gate at `l = 30` (0.0195 to 0.0200 against 0.02) sit
-  as close. Rerun with a nudged H_0 before bisecting one of them
+  within noise of flipping. Rerun with a nudged H_0 before bisecting one of them
 
 ## Examples
 

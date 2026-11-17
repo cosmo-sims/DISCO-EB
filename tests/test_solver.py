@@ -5,22 +5,29 @@ import pytest
 from helpers import (
     COSMOLOGY,
     DENSITY_PARAMETERS,
+    DIAG_A,
+    DIAG_KEEP,
+    KERNELS_BUILT,
     LAM,
+    LCDM_OUTSIDE,
     LCDM_T,
     LCDM_X,
     LCDM_XY,
     MODELS,
-    MORE_PARAMETERS,
+    OMEGA_X,
+    OUTSIDE_KEEP,
+    PK_KEEP,
     QCDM,
     QCDM_COSMOLOGY,
+    QCDM_KEEP,
     SOLVE_EB_K,
-    X,
     _matter_power,
     _more_parameter_case,
     _perturbed_cosmologies,
     _split,
     by_name,
     cosmologies_of,
+    count_kernels,
     dense_core_pattern,
     diagonal,
     entries,
@@ -35,7 +42,6 @@ from helpers import (
 
 from discoeb.components._component import (
     Interaction,
-    contributes,
     derivative,
 )
 from discoeb.components.recombination import ReionizationDepth
@@ -257,9 +263,11 @@ def test_the_recombination_block_publishes_the_thermal_quantities():
 
 
 @pytest.mark.gpu
-@pytest.mark.slow
 def test_the_recombination_block_steps_on_its_own():
-    """The recombination block takes the same, fewer steps for every wave mode of a cosmology."""
+    """The recombination block takes the same, fewer steps for every wave mode of a cosmology.
+
+    On the history kernel ``test_solve_eb_keeps_what_the_history_holds`` builds.
+    """
     import numpy as np
     from helpers import _perturbed_cosmologies
 
@@ -316,34 +324,6 @@ def test_a_background_state_the_perturbations_read_is_published():
     assert model.published() == ("t", "tau", "opacity", "cs2")
 
 
-@pytest.mark.slow
-@pytest.mark.gpu
-def test_the_kernel_carries_the_state_to_today():
-    """The age of the universe from the background block, and LCDM's solve beside it."""
-
-    from discoeb import solve_eb
-
-    k = np.geomspace(1.0e-3, 0.3, 6)
-    a = np.array([1.0e-4, 1.0e-2, 1.0])
-    with_time = solve_eb(
-        cosmologies_of(LCDM_T, COSMOLOGY), k, a, keep=("t", "tau", "delta_c")
-    )
-    plain = solve_eb(cosmologies_of(LCDM, COSMOLOGY), k, a, keep=("tau", "delta_c"))
-    # t = int a dtau = int a / aH dln a, by the trapezoid rule on the host
-    grid = np.geomspace(1.0e-9, 1.0, 20000)
-    rate = np.asarray(on_the_host(LCDM, COSMOLOGY, "aH", a=grid))
-    age = np.trapezoid(grid / rate, np.log(grid))
-    conformal_age = np.trapezoid(1.0 / rate, np.log(grid))
-    t = np.asarray(with_time[0, 0])  # keep order: t, tau, delta_c
-    np.testing.assert_allclose(t[:, -1], age, rtol=1e-4)
-    assert 4000.0 < age < 4500.0  # 13.8 Gyr in Mpc
-    # and the conformal time, a state now, ends at the conformal age
-    np.testing.assert_allclose(with_time[0, 1, :, -1], conformal_age, rtol=1e-4)
-    np.testing.assert_allclose(
-        np.asarray(with_time[:, 2]), np.asarray(plain[:, 1]), rtol=1e-3
-    )
-
-
 # --- A scalar field from outside the package: background states, and a budget closed by shooting.
 
 
@@ -389,9 +369,8 @@ def test_a_held_key_raises_when_differentiated():
 # --- GPU perturbation solves against CLASS: the matter power spectrum and its derivatives.
 
 
-@pytest.mark.slow
 @pytest.mark.gpu
-def test_solve_eb_derivatives():
+def test_solve_eb_derivatives(two_columns):
     """The kept quantities are differentiable in the cosmological parameters.
 
     The derivative chains the densities' dependence on ``Omega_m``, ``Omega_b``,
@@ -402,12 +381,18 @@ def test_solve_eb_derivatives():
     against central differences of its own primal at fixed thermal history;
     the differences are the noisy side: the solve runs at rtol = atol = 1e-4,
     a step-acceptance flip between the two shifted solves moves a value by
-    ~1e-6 of its scale (5e-5 for the photon quadrupole, whose early-time
-    values are tiny), so the Jacobian is checked as the change it predicts
+    ~1e-6 of its scale, so the Jacobian is checked as the change it predicts
     over a 0.1 percent step against the measured change, in units of each
     quantity's scale, and the gradient of a scale-weighted sum over a 1
     percent step. The parameter-level derivative is then the chain rule
     through ``density_parameters``.
+
+    The two contrasts ``P(k)`` reads are kept today, in launches of two
+    columns: the kernels of the ``P(k)`` derivative tests, which are
+    compiled per kept name and save time. The hook's tangent is the same
+    code for any quantity and time. (Until 2026-11-17 this kept ``R`` and
+    the photon quadrupole too, at twelve scale factors, on three kernels of
+    its own.)
     """
 
     import jax
@@ -432,9 +417,9 @@ def test_solve_eb_derivatives():
         return jnp.stack(_directed_inputs(columns, LCDM), axis=1)
 
     densities = inputs_of(theta)
-    a = np.geomspace(1.0e-5, 1.0, 12)
-    names = ("R", "delta_c", "F_2")
-    noise = {"R": 5.0e-6, "delta_c": 5.0e-6, "F_2": 1.0e-4}
+    a = np.array([1.0])
+    names = PK_KEEP
+    noise = {"delta_c": 5.0e-6, "delta_b": 5.0e-6}
 
     # converted from Omega_m and H_0 as JAX values, as inputs_of converts them
     traced = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
@@ -475,21 +460,13 @@ def test_solve_eb_derivatives():
         ) / (2.0 * step)
         err = np.abs(jac[..., j] - finite) * step / scale
         for q, name in enumerate(names):
-            # The photon quadrupole only while the hierarchy carries it. Once
-            # the radiation streaming approximation is on, its state is
-            # frozen where the switch found it, and the switch tests k tau:
-            # at fixed scale factor a density moves the conformal time and
-            # the switch with it, which a difference sees and a sensitivity,
-            # blind to the discontinuity, cannot (5e-4 of the scale).
-            compared = err[0, q][:, a < 1.0e-3] if name == "F_2" else err[0, q]
-            worst = compared.max()
+            worst = err[0, q].max()
             assert worst < noise[name], (
                 f"d{name}/d{dn}: {worst:.3g} of the scale over a 1e-3 step"
             )
 
     weights = 1.0 / scale
 
-    @contributes("total")
     def total(d):
         return jnp.sum(kept(d) * weights)
 
@@ -530,7 +507,7 @@ def test_solve_eb_derivatives():
     )
     # grad integrates a column per moved input (six: T_cmb moves three) and
     # jacfwd one per direction (five), so they agree to rounding, not bit
-    # for bit (1.3e-10 measured).
+    # for bit (1.3e-10 measured in one launch each).
     np.testing.assert_allclose(
         grad_theta, np.einsum("cqkt,cqktp->p", weights, jac_theta), rtol=1e-8
     )
@@ -554,28 +531,22 @@ def test_solve_eb_derivatives():
             )(value)
 
 
-# Measured |sensitivity - central difference| / max |central difference|
-# (2026-11-13, RTX 4070 SUPER), largest over R and delta_b: w_DE_0 1.6e-4,
-# w_DE_a 3.4e-4, Omega_k 2.7e-4, m_nu 9.8e-4 (dR/dmnu). Of sum P(k): w_DE_0
-# 6.9e-5, w_DE_a 1.3e-6, Omega_k 1.5e-5, m_nu 7.2e-5. The gate is 1e-3, 2e-3
-# for m_nu's solve. Y_He and cs2_DE missed P(k) by 0.8 and 1 percent at every
-# step tried and stay held.
-MORE_SOLVE_GATES = {"m_nu": 2.0e-3}
-
-
-MORE_NAMES = ("R", "delta_b", "kappa")
+REIO_NAMES = ("R", "delta_b", "kappa", "kappa_reio")
 
 
 @pytest.mark.slow
 @pytest.mark.gpu
-@pytest.mark.parametrize("name", list(MORE_PARAMETERS))
-def test_more_parameters_solve_eb(name):
-    """``solve_eb``'s ``jax.jvp`` in each parameter beyond the densities' against central differences.
+def test_reionization_derivative():
+    """``solve_eb``'s ``jax.jvp`` in ``z_re`` against central differences.
 
     The differences come from converged solves (rtol = atol = 1e-6), the
     sensitivity from one at the default tolerance, as in
-    :func:`test_solve_eb_derivatives`. ``kappa``, the optical depth, carries
-    the thermal parameters and the reionization redshift directly.
+    :func:`test_solve_eb_derivatives`. ``kappa``, the optical depth, and
+    ``kappa_reio``, which is ``tau_reio`` today, carry the reionization
+    redshift directly. One of the kept quantities' derivatives in a
+    parameter beyond the densities': until 2026-11-17 ``w_DE_0``,
+    ``w_DE_a``, ``Omega_k`` and ``m_nu`` had this test too, on two kernels
+    a model, and they keep ``test_more_parameters_matter_power``.
     """
 
     import jax
@@ -583,12 +554,14 @@ def test_more_parameters_solve_eb(name):
 
     from discoeb.solver._solver import solve_eb
 
-    model, cosmology, step = _more_parameter_case(name)
-    a = np.geomspace(1.0e-5, 1.0, 12)
+    name = "z_re"
+    model, cosmology, step, keep = _more_parameter_case(name)
+    a = DIAG_A
+    kept = [keep.index(quantity) for quantity in REIO_NAMES]
 
     def values(p, **options):
         batch = cosmologies_of(model, {**cosmology, name: p})
-        return solve_eb(batch, SOLVE_EB_K, a, keep=MORE_NAMES, **options)
+        return solve_eb(batch, SOLVE_EB_K, a, keep=keep, **options)[:, kept]
 
     p0 = jnp.asarray(float(cosmology[name]))
     _, tangent = jax.jvp(values, (p0,), (jnp.ones_like(p0),))
@@ -600,10 +573,15 @@ def test_more_parameters_solve_eb(name):
     ) / (2.0 * step)
     assert np.isfinite(tangent).all()
     value = np.abs(np.asarray(values(p0)))
-    for q, quantity in enumerate(MORE_NAMES):
-        scale = np.abs(value[0, q]).max()
-        err = np.abs(tangent[0, q] - finite[0, q]).max()
-        signal = np.abs(finite[0, q]).max()
+    # While the step is under way a difference over a unit of z_re, itself
+    # twice the step's width, is not the derivative (15 percent off for
+    # kappa_reio), so the depth is compared once every step is over, z < 3.
+    settled = DIAG_A > 0.25
+    for q, quantity in enumerate(REIO_NAMES):
+        at = settled if quantity == "kappa_reio" else slice(None)
+        scale = np.abs(value[0, q][:, at]).max()
+        err = np.abs(tangent[0, q][:, at] - finite[0, q][:, at]).max()
+        signal = np.abs(finite[0, q][:, at]).max()
         print(
             f"d{quantity}/d{name}: {err / signal:.3g} of the largest difference, "
             f"which moves the quantity by {signal * step / scale:.3g} of its scale"
@@ -613,7 +591,7 @@ def test_more_parameters_solve_eb(name):
             # one as small.
             assert err * step < 1.0e-5 * scale, f"d{quantity}/d{name}"
             continue
-        assert err < MORE_SOLVE_GATES.get(name, 1.0e-3) * signal, (
+        assert err < 1.0e-3 * signal, (
             f"d{quantity}/d{name}: {err / signal:.3g} of its largest central difference"
         )
 
@@ -625,7 +603,8 @@ def test_more_parameters_solve_eb(name):
 # --- One component listed several times, each copy under a name of its own.
 
 
-OMEGA_FLUID = 0.08
+OMEGA_FLUID = 0.04
+"""The share of ``Omega_m`` the named fluid holds, beside ``OMEGA_X`` in the second dark matter."""
 
 
 def test_a_dictionary_names_no_model():
@@ -638,113 +617,114 @@ def test_a_dictionary_names_no_model():
     directed_inputs(cosmologies_of(LCDM, COSMOLOGY))
 
 
-@pytest.mark.slow
-@pytest.mark.gpu
-def test_splitting_the_dark_matter_into_a_named_fluid_leaves_the_solve_unchanged():
-    from discoeb import solve_eb
-
-    model = LCDM.add(X, name="LCDM+x")
-    k = np.geomspace(1.0e-3, 0.3, 8)
-    a = np.geomspace(1.0e-6, 1.0, 16)
-    lcdm = cosmologies_of(LCDM, COSMOLOGY)
-    with_fluid = cosmologies_of(
-        model,
-        {
-            **COSMOLOGY,
-            "Omega_m": COSMOLOGY["Omega_m"] - OMEGA_FLUID,
-            "x_Omega": OMEGA_FLUID,
-        },
-    )
-    names = ("delta_c", "R", "tau")
-    plain = by_name(solve_eb(lcdm, k, a, keep=names), names)
-    keep = (*names, "x_delta")
-    split = by_name(solve_eb(with_fluid, k, a, keep=keep), keep)
-    # the same expansion: the conformal time, a state, comes out the same
-    np.testing.assert_allclose(split["tau"], plain["tau"], rtol=1e-5)
-    np.testing.assert_allclose(split["x_delta"], split["delta_c"], rtol=1e-5)
-    for name in ("delta_c", "R"):
-        ours, theirs = split[name], plain[name]
-        assert np.abs(ours - theirs).max() < 1e-3 * np.abs(theirs).max(), name
-
-
-# --- A species with a parameter of its own, added without touching the package.
-
-
 SOLVE_K = np.geomspace(1.0e-3, 0.3, 8)
 
 
-SOLVE_A = np.geomspace(1.0e-6, 1.0, 16)
+SOLVE_A = DIAG_A
 
 
 @pytest.mark.slow
 @pytest.mark.gpu
-def test_splitting_the_dark_matter_leaves_the_solve_unchanged():
-    """Two pressureless fluids holding the CDM between them evolve as the CDM did.
+def test_components_from_outside_leave_the_solve_unchanged():
+    """A third of the CDM in a species of the tests' own and a third in a named fluid evolve as the CDM did.
 
-    The second fluid's contrast equals the CDM's in the same solve, the
-    contrast and the curvature perturbation agree with the plain LCDM solve
-    to the solver's tolerance, and so does the conformal time. The directed
-    input ``omega_x`` moves every kept quantity as ``omega_c`` does.
+    One model holds every kind of component a user adds
+    (:data:`helpers.LCDM_OUTSIDE`): ``SecondDarkMatter``, with a directed
+    parameter of its own, a named ``Fluid`` and the background state
+    ``CosmicTime``. Both fluids' contrasts equal the CDM's in the same solve,
+    the contrast, the curvature perturbation and the conformal time agree
+    with the plain LCDM solve to the solver's tolerance, the cosmic time ends
+    at the age of the universe, and the directed input ``omega_x`` moves
+    every kept quantity as ``omega_c`` does. (Three tests and seven kernels
+    until 2026-11-17, one model each.)
     """
 
     import jax
     import jax.numpy as jnp
 
     from discoeb import directed_inputs, solve_eb
-
-    names = ("delta_c", "R", "F_2", "tau")
-    lcdm = cosmologies_of(LCDM, COSMOLOGY)
-    plain = by_name(solve_eb(lcdm, SOLVE_K, SOLVE_A, keep=names), names)
-    batch = cosmologies_of(LCDM_X, _split(COSMOLOGY))
-    keep = (*names, "delta_x")
-    split = by_name(solve_eb(batch, SOLVE_K, SOLVE_A, keep=keep), keep)
-
-    np.testing.assert_allclose(split["tau"], plain["tau"], rtol=1e-5)
-    names = names[:-1]
-    # The same equations and initial state; the fp32 LU tells the columns apart.
-    np.testing.assert_allclose(split["delta_x"], split["delta_c"], rtol=1e-5)
-    # The initial states agree (the growing mode's om sums rho_matter, which
-    # the second fluid contributes to), so what is left is the solver's:
-    # the smooth quantities to 1e-3, the oscillating photon quadrupole,
-    # stepped differently by a system one state larger, to a few times that.
-    for name, gate in (("delta_c", 1e-3), ("R", 1e-3), ("F_2", 5e-3)):
-        a, b = split[name], plain[name]
-        assert np.abs(a - b).max() < gate * np.abs(b).max(), name
-
     from discoeb.solver._kernel import parameter_layout
 
-    directed = parameter_layout(LCDM_X).directed
-    x = directed_inputs(batch)
+    lcdm = cosmologies_of(LCDM, COSMOLOGY)
+    plain = by_name(solve_eb(lcdm, SOLVE_K, SOLVE_A, keep=DIAG_KEEP), DIAG_KEEP)
+    batch = cosmologies_of(
+        LCDM_OUTSIDE,
+        {
+            **_split(COSMOLOGY),
+            "Omega_m": COSMOLOGY["Omega_m"] - OMEGA_X - OMEGA_FLUID,
+            "y_Omega": OMEGA_FLUID,
+        },
+    )
+    keep = OUTSIDE_KEEP
+    split = by_name(solve_eb(batch, SOLVE_K, SOLVE_A, keep=keep), keep)
+
+    # The same expansion: the conformal time, a state, comes out the same.
+    # From a = 1e-6 on: the closed form it starts from counts the matter of
+    # ``rho_matter``, to which a ``Fluid`` does not contribute, so it starts
+    # 2e-6 Mpc apart, 2e-5 of itself at ``A_START``.
+    late = SOLVE_A >= 1.0e-6
+    np.testing.assert_allclose(
+        split["tau"][..., late], plain["tau"][..., late], rtol=1e-5
+    )
+    # The same equations and initial state; the fp32 LU tells the columns apart.
+    np.testing.assert_allclose(split["delta_x"], split["delta_c"], rtol=1e-5)
+    np.testing.assert_allclose(split["y_delta"], split["delta_c"], rtol=1e-5)
+    # The initial states agree (the growing mode's om sums rho_matter, which
+    # both fluids contribute to), so what is left is the solver's: the
+    # smooth quantities to 1e-3, the oscillating photon quadrupole, stepped
+    # differently by a larger system, to a few times that.
+    for name, gate in (("delta_c", 1e-3), ("R", 1e-3), ("F_2", 5e-3)):
+        ours, theirs = split[name], plain[name]
+        assert np.abs(ours - theirs).max() < gate * np.abs(theirs).max(), name
+
+    # t = int a dtau = int a / aH dln a, by the trapezoid rule on the host
+    grid = np.geomspace(1.0e-9, 1.0, 20000)
+    rate = np.asarray(on_the_host(LCDM, COSMOLOGY, "aH", a=grid))
+    age = np.trapezoid(grid / rate, np.log(grid))
+    conformal_age = np.trapezoid(1.0 / rate, np.log(grid))
+    assert 4000.0 < age < 4500.0  # 13.8 Gyr in Mpc
+    # the background block carries its states to today for every wave mode
+    np.testing.assert_allclose(split["t"][0, :, -1], age, rtol=1e-4)
+    np.testing.assert_allclose(split["tau"][0, :, -1], conformal_age, rtol=1e-4)
+
+    directed = parameter_layout(LCDM_OUTSIDE).directed
+    x = jnp.asarray(directed_inputs(batch))
     assert x.shape == (1, len(directed))
 
     def kept(inputs):
-        return solve_eb(batch, SOLVE_K, SOLVE_A, keep=names, inputs=inputs)
+        return solve_eb(batch, SOLVE_K, SOLVE_A, keep=keep, inputs=inputs)
 
-    jac = np.asarray(jax.jacfwd(kept)(jnp.asarray(x)))[..., 0, :]
-    assert np.isfinite(jac).all()
-    along_c = jac[..., directed.index("omega_c")]
-    along_x = jac[..., directed.index("omega_x")]
+    def along(name):
+        # one direction, so the model's one-column kernel
+        unit = jnp.zeros_like(x).at[0, directed.index(name)].set(1.0)
+        return np.asarray(jax.jvp(kept, (x,), (unit,))[1])
+
+    along_c, along_x = along("omega_c"), along("omega_x")
+    assert np.isfinite(along_c).all() and np.isfinite(along_x).all()
     scale = np.abs(along_c).max(axis=(-2, -1), keepdims=True)
-    assert np.abs(along_x - along_c).max() < 1e-3 * scale.max()
+    moved = scale[0, :, 0, 0] > 0.0
+    assert moved[[keep.index(name) for name in ("delta_c", "R", "F_2", "tau")]].all()
+    worst = (np.abs(along_x - along_c) / np.where(scale > 0.0, scale, 1.0)).max()
+    assert worst < 1e-3, worst
 
 
 # --- A scalar field from outside the package: background states, and no budget to close.
 
 
+FIELD_KEEP = {LCDM: DIAG_KEEP, QCDM: QCDM_KEEP}
+"""The names each model's solves keep in the scalar-field test: one kernel a model."""
+
+
 def _power(model, cosmology, k):
-    from discoeb import matter_power_spectrum, solve_eb
-
-    cosmology = cosmologies_of(model, cosmology)
-    keep = ("delta_c", "delta_b")
-    values = solve_eb(cosmology, k, [1.0], keep=keep, thermo_weight=0.1)
-    today = {n: v[0, :, -1] for n, v in by_name(values, keep).items()}
-    names = ("omega_c", "omega_b", "A_s", "n_s", "k_p")
     return np.asarray(
-        matter_power_spectrum(k, **today, **{n: getattr(cosmology, n) for n in names})
-    )
+        _matter_power(
+            k, cosmologies_of(model, cosmology), a=DIAG_A, keep=FIELD_KEEP[model]
+        )
+    )[0]
 
 
-GROWTH_A = np.geomspace(1.0e-5, 1.0, 2000)
+GROWTH_A = DIAG_A[DIAG_A >= 1.0e-5]
+"""The part of the shared save grid the growth factor is integrated over."""
 
 
 def _growth(model, cosmology):
@@ -761,7 +741,9 @@ def _growth(model, cosmology):
 
     cosmology = cosmologies_of(model, cosmology)
     a = GROWTH_A
-    rate = np.asarray(solve_eb(cosmology, [1.0e-2], a, keep=("aH",)))[0, 0, 0]
+    keep = FIELD_KEEP[model]
+    rate = np.asarray(solve_eb(cosmology, [1.0e-2], DIAG_A, keep=keep))
+    rate = rate[0, keep.index("aH"), 0, DIAG_A >= 1.0e-5]
     d = model_parameters(model, cosmology)
     source = 1.5 * H100_SQ * float(d["omega_c"] + d["omega_b"]) / a
     lna = np.log(a)
@@ -808,9 +790,10 @@ def test_the_solve_matches_lcdm_and_the_growth_in_the_fields_background():
     # out as the solver's two blocks are and the hook read the perturbation)
     from discoeb import solve_eb
 
+    field_states = [QCDM_KEEP.index(name) for name in ("phi", "phidot")]
     kept = np.asarray(
-        solve_eb(cosmologies_of(QCDM, rolling), k, [1.0], keep=("phi", "phidot"))
-    )[0, :, :, -1]
+        solve_eb(cosmologies_of(QCDM, rolling), k, DIAG_A, keep=QCDM_KEEP)
+    )[0, field_states, :, -1]
     np.testing.assert_allclose(kept, kept[:, :1] * np.ones(len(k)), rtol=1e-6)
     assert np.all(kept > 0.0)
     ratio = field / lcdm
@@ -824,7 +807,8 @@ def test_the_solve_matches_lcdm_and_the_growth_in_the_fields_background():
 # --- GPU perturbation solves against CLASS: the matter power spectrum and its derivatives.
 
 
-SOLVE_EB_A = np.geomspace(1.0e-6, 1.0, 48)
+SOLVE_EB_A = DIAG_A[1:]
+"""After the start, which ``solve_eb`` then adds and drops: the shared grid's 2000 saves."""
 
 
 @pytest.mark.gpu
@@ -845,7 +829,7 @@ def test_solve_eb_keeps_what_the_history_holds():
     from discoeb.solver._solver import solve_eb
 
     cosmologies = _perturbed_cosmologies(2)
-    names = ("R", "delta_c", "delta_b", "F_2", "N_15", "alpha", "aH")
+    names = DIAG_KEEP
     values = solve_eb(
         cosmologies_of(LCDM, cosmologies), SOLVE_EB_K, SOLVE_EB_A, keep=names
     )
@@ -904,7 +888,6 @@ def test_solve_eb_keeps_what_the_history_holds():
         np.testing.assert_allclose(pk, pk_batch[ci], rtol=1e-9)
 
 
-@pytest.mark.slow
 @pytest.mark.gpu
 def test_solve_eb_comoving_curvature_is_conserved_outside_the_horizon():
     """``R`` starts at unity and stays there until the mode enters the horizon.
@@ -919,12 +902,13 @@ def test_solve_eb_comoving_curvature_is_conserved_outside_the_horizon():
     from discoeb.solver._solver import solve_eb
 
     k = np.array([1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1])
-    a = np.geomspace(2.0e-6, 1.0, 64)
+    a = DIAG_A
     values = solve_eb(
-        cosmologies_of(LCDM, _perturbed_cosmologies(1)[0]), k, a, keep=("R", "tau")
+        cosmologies_of(LCDM, _perturbed_cosmologies(1)[0]), k, a, keep=DIAG_KEEP
     )
-    assert values.shape == (1, 2, len(k), len(a))
-    R, tau = np.asarray(values[0, 0]), np.asarray(values[0, 1])
+    assert values.shape == (1, len(DIAG_KEEP), len(k), len(a))
+    kept = by_name(values, DIAG_KEEP)
+    R, tau = kept["R"][0], kept["tau"][0]
     assert np.isfinite(R).all()
 
     assert abs(R[0, 0] - 1.0) < 1.0e-6  # k tau = 1e-4
@@ -934,3 +918,42 @@ def test_solve_eb_comoving_curvature_is_conserved_outside_the_horizon():
     ).max()
     # k = 0.1 Mpc^-1 entered the horizon long before today and R has decayed.
     assert abs(R[-1, -1]) < 0.5
+
+
+# --- The kernels a run builds.
+
+
+KERNEL_BUDGET = {"fast": 6, "all": 16}
+"""The kernels a run may build: the fast suite's, and every test's.
+
+Fast, all LCDM's: ``P(k)`` plain, with one and with two sensitivity columns,
+``DIAG_KEEP`` plain, the history, and ``REIO_KEEP`` of ``LCDM_REIO``. A
+kernel is compiled per number of save times too, so ``P(k)`` is always kept
+today alone and the other names on ``DIAG_A``. Slow
+adds ``P(k)`` with five columns, the fp64-LU history, plain and one-column
+``P(k)`` of ``W0WACDM`` and ``LCDM_MNU``, one column of ``LCDM_REIO``, plain
+and one column of ``LCDM_OUTSIDE``, and ``QCDM``."""
+
+
+@pytest.mark.gpu
+def test_the_suite_stays_within_its_kernel_budget(request):
+    """The run built no more kernels than its budget: a GPU test keeps the shared names.
+
+    The last test of the last file, so it counts every kernel the run built
+    (:func:`helpers.count_kernels`); alone, it counts none. A kernel is 35 s
+    to several minutes of compilation, and a test that keeps names of its
+    own, saves at a number of scale factors of its own, or differentiates
+    in a number of variables no other test does, builds one. Keep
+    ``PK_KEEP`` today or ``DIAG_KEEP`` on ``DIAG_A`` instead (``helpers.py``),
+    or raise the budget and say here what the kernel is for.
+    """
+
+    if not count_kernels():
+        pytest.skip("modax's kernel builder is not where the counter looks")
+    expression = request.config.getoption("markexpr") or ""
+    budget = KERNEL_BUDGET["fast" if "not slow" in expression else "all"]
+    built = "\n".join(f"  {i + 1}. {test}" for i, test in enumerate(KERNELS_BUILT))
+    assert len(KERNELS_BUILT) <= budget, (
+        f"{len(KERNELS_BUILT)} kernels built, the budget is {budget}. "
+        f"Each was first needed by:\n{built}"
+    )

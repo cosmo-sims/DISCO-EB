@@ -1,16 +1,24 @@
 """
 Helpers that define sweeps of the parameter space.
 
-Not a test file. ``models/test_lcdm.py`` and ``models/test_w0wacdm.py`` call
-the ``check_*`` functions for their own models; :func:`swept` solves each
-model's sweep once a session.
+Not a test file. ``test_models.py`` calls the ``check_*`` functions;
+:func:`swept` solves each model's sweep once a session. Every launch here
+keeps ``PK_KEEP``, so a model's sweep, its crossing and its self-convergence
+share one kernel.
 """
 
 import functools
 
 import numpy as np
 import pytest
-from helpers import REFERENCE_COSMOLOGY, _class_base, _matter_power, cosmologies_of
+from helpers import (
+    PK_KEEP,
+    REFERENCE_COSMOLOGY,
+    _class_base,
+    _matter_power,
+    class_subset,
+    cosmologies_of,
+)
 
 SWEEP_SEED = 20261113
 N_SWEEP = 32
@@ -73,21 +81,24 @@ def _matter_power_and_steps(model, cosmologies, **options):
     """``P(k)`` at :data:`SWEEP_K` through ``solve_eb``, and each trajectory's step count.
 
     The steps come from a second launch of the same trajectories with the
-    same settings, through the history solve, whose modax call returns them:
-    ``(n_k, n_cosmologies)`` loop steps, which stop at ``max_steps``.
+    same settings and the same hook, so on the same kernel, whose modax call
+    returns them: ``(n_k, n_cosmologies)`` loop steps, which stop at
+    ``max_steps``.
     """
 
     import jax
 
-    from discoeb.solver._kernel import _solve_batch
+    from discoeb.solver._kernel import _keep_hook, _solve_batch
 
     batch = cosmologies_of(model, cosmologies)
     pk = np.asarray(jax.block_until_ready(_matter_power(SWEEP_K, batch, **options)))
-    (_, stats), _, k_sorted = _solve_batch(
+    (_, _, stats), _, k_sorted = _solve_batch(
         model,
         batch,
         SWEEP_K,
         thermo_weight=MATTER_THERMO_WEIGHT,
+        save_hook=_keep_hook(model.resolved(), (), PK_KEEP),
+        save_history=False,
         return_stats=True,
         **options,
     )
@@ -197,16 +208,22 @@ cosmology's maximum, then the sweep's maximum):
 """
 
 
-def check_sweep_matches_class(name):
-    """The sweep's ``P(k)`` agrees with CLASS (default precision) to the measured gate."""
+def check_sweep_matches_class(name, most=8):
+    """``P(k)`` of ``most`` of the sweep's cosmologies agrees with CLASS (default precision) to the measured gate.
+
+    CLASS is the slow side, seconds a cosmology with a massive neutrino, so
+    it is the reference for an evenly spaced few. The gates were measured
+    over every cosmology.
+    """
 
     name, cosmologies, pk, _ = swept(name)
-    pk_class = np.stack([_class_pk(param, SWEEP_K) for param in cosmologies])
-    rel = np.abs(pk / pk_class - 1.0)
+    compared = class_subset(cosmologies, most)
+    pk_class = np.stack([_class_pk(cosmologies[i], SWEEP_K) for i in compared])
+    rel = np.abs(pk[compared] / pk_class - 1.0)
     i, j = np.unravel_index(np.argmax(rel), rel.shape)
     assert rel[i, j] < SWEEP_PK_GATES[name], (
         f"{name}: max relative error {rel[i, j]:.4g} at k={SWEEP_K[j]:.4g} Mpc^-1 "
-        f"for {cosmologies[i]}"
+        f"for {cosmologies[compared[i]]}"
     )
 
 
@@ -251,6 +268,13 @@ a CPL fluid that stays above -1, or one massive species of 0.06 eV."""
 
 TIGHT = {"rtol": 1.0e-7, "atol": 1.0e-9, "lu_precision": "fp64", "max_steps": 200_000}
 """Solver settings of the converged reference: 1000 times tighter than the defaults."""
+
+TIGHT_FP32 = {"rtol": 1.0e-6, "atol": 1.0e-8, "max_steps": 200_000}
+"""The converged reference on the default kernel: 100 times tighter, the
+default fp32 LU. The fp64-LU kernel is one more to compile per model, so
+LCDM alone has it (:data:`FP64_REFERENCE`)."""
+
+FP64_REFERENCE = ("lcdm",)
 
 
 def _converged_matter_power(model, cosmology):
@@ -301,12 +325,23 @@ was not confirmed."""
 
 
 def check_self_convergence(name):
-    """A default-tolerance ``P(k)`` agrees with a 1000 times tighter, fp64-LU solve."""
+    """A default-tolerance ``P(k)`` agrees with a converged solve.
+
+    For LCDM 1000 times tighter with the fp64 LU (:data:`TIGHT`), for the
+    other models 100 times tighter on their own kernel (:data:`TIGHT_FP32`).
+    """
 
     cosmology = CONVERGENCE_COSMOLOGIES[name]
     pk, _ = _matter_power_and_steps(_model(name), [cosmology])
-    converged, steps = _converged_matter_power(_model(name), cosmology)
-    assert steps.max() < TIGHT["max_steps"]
+    if name in FP64_REFERENCE:
+        converged, steps = _converged_matter_power(_model(name), cosmology)
+        assert steps.max() < TIGHT["max_steps"]
+    else:
+        converged, steps = _matter_power_and_steps(
+            _model(name), [cosmology], **TIGHT_FP32
+        )
+        converged = converged[0]
+        assert steps.max() < TIGHT_FP32["max_steps"]
     rel = np.abs(pk[0] / converged - 1.0)
     order = np.argsort(rel)
     j, second = int(order[-1]), int(order[-2])

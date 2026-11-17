@@ -7,6 +7,8 @@ import pytest
 from helpers import (
     BATCH_SIZE_CASES,
     COSMOLOGY,
+    DIAG_A,
+    DIAG_KEEP,
     HOST,
     LCDM_REIO,
     LCDM_X,
@@ -15,6 +17,7 @@ from helpers import (
     N_PARAM,
     PARAM_COLUMNS,
     REFERENCE_COSMOLOGY,
+    REIO_KEEP,
     ConstantThermalHistory,
     X,
     Y,
@@ -1375,14 +1378,8 @@ def test_thomson_scattering_writes_the_photon_and_baryon_derivatives():
 # --- The recombination history of the perturbation kernel against CLASS, and the time of its solve.
 
 
-THERMAL_KEEP = ("tau", "xe", "Tmat", "cs2", "opacity", "kappa")
-
-
 THERMAL_K = np.array([1.0e-3])
 """One wave mode per cosmology: the recombination block does not read the hierarchy."""
-
-
-N_A = 2000
 
 
 Z_MIN, Z_MAX = 10.0, 5000.0
@@ -1420,17 +1417,19 @@ kernel's last bit, and moves ``delta_c`` today by less than 3e-4. A smooth switc
 made the block diverge in 1 trajectory in 20000, so the switch stays hard."""
 
 
-def kernel_thermal_history(cosmologies, model=None, keep=THERMAL_KEEP, n_a: int = N_A):
+def kernel_thermal_history(cosmologies, model=None, keep=DIAG_KEEP):
     """``(a, history)`` of the kernel's recombination block on a logarithmic grid of the scale factor.
 
     ``a`` runs from :data:`discoeb.A_START` to 1, today for every cosmology.
     ``history[name]`` is ``(n_cosmologies, n_a)`` for each name of ``keep``.
+    The names and the grid (:data:`helpers.DIAG_A`) are those of the
+    model's other tests, which share the kernel.
     """
 
-    from discoeb import A_START, LCDM, solve_eb
+    from discoeb import LCDM, solve_eb
 
     batch = cosmologies_of(LCDM if model is None else model, cosmologies)
-    a = np.geomspace(A_START, 1.0, n_a)
+    a = DIAG_A
     values = solve_eb(batch, THERMAL_K, a, keep=keep)
     kept = np.asarray(values)[:, :, 0, :]  # one wave mode
     return a, {name: kept[:, i] for i, name in enumerate(keep)}
@@ -1564,34 +1563,46 @@ def _class_tau_reio(z_re):
         c.empty()
 
 
-def _late_history(z_re):
-    """``(a, visibility, late optical depth, tau_reio)`` after :data:`LATE`, from the kernel.
+def _late_histories(z_re):
+    """``(a, visibility, late optical depth, tau_reio)`` after :data:`LATE` for each ``z_re``, from one launch.
 
     Of LCDM with :class:`~discoeb.components.recombination.ReionizationDepth`,
     whose state ``kappa_reio`` is ``tau_reio`` today.
     """
 
     a, history = kernel_thermal_history(
-        [{**REFERENCE_COSMOLOGY, "z_re": z_re}],
+        [{**REFERENCE_COSMOLOGY, "z_re": z} for z in z_re],
         model=LCDM_REIO,
-        keep=(*THERMAL_KEEP, "kappa_reio"),
+        keep=REIO_KEEP,
     )
     late = a > LATE
-    kappa = history["kappa"][0]
-    visibility = history["opacity"][0] * np.exp(-(kappa[-1] - kappa))
-    return (
-        a[late],
-        visibility[late],
-        float(kappa[-1] - kappa[late][0]),
-        float(history["kappa_reio"][0][-1]),
-    )
+    found = []
+    for i in range(len(z_re)):
+        kappa = history["kappa"][i]
+        visibility = history["opacity"][i] * np.exp(-(kappa[-1] - kappa))
+        found.append(
+            (
+                a[late],
+                visibility[late],
+                float(kappa[-1] - kappa[late][0]),
+                float(history["kappa_reio"][i][-1]),
+            )
+        )
+    return found
 
 
 @pytest.mark.gpu
 def test_reionization_optical_depth():
-    """``kappa_reio`` today is CLASS's tau_reio at the same z_re, and the bump sits at z_re."""
+    """``kappa_reio`` today is CLASS's tau_reio at the same z_re, the bump sits at z_re, and there is none by default.
 
-    a, g, tau_late, tau_reio = _late_history(Z_RE)
+    Two cosmologies in one launch: reionized at :data:`Z_RE`, and at
+    ``z_re = 0``, the default, which adds no optical depth after
+    recombination.
+    """
+
+    (a, g, tau_late, tau_reio), (_, _, tau_late_none, tau_reio_none) = _late_histories(
+        [Z_RE, 0.0]
+    )
     tau_class = _class_tau_reio(Z_RE)
     assert abs(tau_reio - tau_class) < 1.0e-3, (tau_reio, tau_class)
     # the late optical depth is reionization's plus the recombination tail
@@ -1600,13 +1611,7 @@ def test_reionization_optical_depth():
     # the visibility peaks a little below z_re (the step is half way there)
     assert abs(z_bump - Z_RE) < 1.5, z_bump
 
-
-@pytest.mark.gpu
-def test_no_reionization_by_default():
-    """z_re = 0 (the default) adds no optical depth after recombination."""
-
-    _, _, tau_late, tau_reio = _late_history(0.0)
-    assert tau_late < 5.0e-4 and tau_reio == 0.0
+    assert tau_late_none < 5.0e-4 and tau_reio_none == 0.0
 
 
 # ============================================================================

@@ -295,6 +295,12 @@ class CosmicTime(Component):
 LCDM_T = LCDM.add(CosmicTime, name="LCDM+t")
 
 
+LCDM_OUTSIDE = LCDM.add(SecondDarkMatter, Y, CosmicTime, name="LCDM+x+y+t")
+"""Every kind of component a user adds, in one model and so one kernel: a
+species with a parameter of its own, a named copy of a built-in one and a
+background state."""
+
+
 # --- A scalar field from outside the package: background states, and a budget closed by shooting.
 
 
@@ -422,6 +428,107 @@ REFERENCE_COSMOLOGY = {
 MATTER_POWER_K = np.geomspace(1.0e-4, 1.0, 128, dtype=np.float64)
 
 
+# --- The kernels the GPU tests share.
+#
+# A kernel is compiled per (model, kept names, number of save times,
+# sensitivity columns, LU precision), 35 s to several minutes each, and that
+# is where a GPU run's time goes. The save times count because modax writes
+# the width of the hook's output row, names times saves, into the kernel. So
+# every GPU test keeps one of the two sets below (a model with states of its
+# own appends them), each at its own save times: PK_KEEP today alone, which
+# every derivative test keeps, and DIAG_KEEP on DIAG_A.
+# ``test_the_suite_stays_within_its_kernel_budget`` counts the kernels.
+
+PK_KEEP = ("delta_c", "delta_b")
+"""What ``P(k)`` reads, and the only names a derivative test keeps."""
+
+DIAG_KEEP = (
+    "tau",
+    "xe",
+    "Tmat",
+    "cs2",
+    "opacity",
+    "kappa",
+    *PK_KEEP,
+    "F_2",
+    "N_15",
+    "R",
+    "alpha",
+    "aH",
+)
+"""What every other GPU test reads of a solve: the thermal history, the
+contrasts, one multipole of each massless hierarchy and the metric's
+quantities."""
+
+DIAG_A = np.geomspace(discoeb.A_START, 1.0, 2000)
+"""The scale factors every solve that keeps :data:`DIAG_KEEP` saves at, from
+the start to today. A test that needs fewer reads a part of the result, and
+one whose grid must start after ``A_START`` passes ``DIAG_A[1:]``, to which
+``solve_eb`` adds the start: 2000 saves either way."""
+
+REIO_KEEP = (*DIAG_KEEP, "kappa_reio")
+"""``DIAG_KEEP`` of :data:`LCDM_REIO`, with ``tau_reio``."""
+
+OUTSIDE_KEEP = (*DIAG_KEEP, "delta_x", "y_delta", "t")
+"""``DIAG_KEEP`` of :data:`LCDM_OUTSIDE`, with the states it adds."""
+
+QCDM_KEEP = (*PK_KEEP, "aH", "phi", "phidot")
+"""What the scalar-field test reads of :data:`QCDM`."""
+
+KERNELS_BUILT: list[str] = []
+"""The test that built each kernel of this process (:func:`count_kernels`)."""
+
+
+def count_kernels():
+    """Record in :data:`KERNELS_BUILT` every kernel modax builds from here on.
+
+    modax builds a kernel once per process and set of options, whether numba
+    then compiles it or loads it from the disk cache, so the count does not
+    depend on the cache. Without modax's private ``_compile_kernel`` nothing
+    is counted and the budget test skips.
+    """
+
+    import os
+
+    try:
+        import modax._hierarchy as hierarchy
+
+        compile_kernel = hierarchy._compile_kernel
+    except (ImportError, AttributeError):
+        return False
+    if getattr(compile_kernel, "counting", False):
+        return True
+
+    def counting(*args, **kwargs):
+        KERNELS_BUILT.append(os.environ.get("PYTEST_CURRENT_TEST", "?").split(" ")[0])
+        return compile_kernel(*args, **kwargs)
+
+    counting.counting = True
+    hierarchy._compile_kernel = counting
+    return True
+
+
+def cap_columns(monkeypatch, columns, model=LCDM):
+    """Let a thread of ``model`` integrate at most ``columns`` sensitivity columns.
+
+    A derivative in more variables then runs as several launches of that
+    width, the last padded, on the ``columns``-wide kernel: the same code as
+    the default width (five for LCDM), whose kernel takes minutes to compile.
+    """
+
+    from discoeb.solver import _kernel
+
+    nvar = _kernel.joint_model(model).nvar
+    monkeypatch.setattr(_kernel, "MAX_SENSITIVITY_STATE", (columns + 1) * nvar)
+
+
+def class_subset(cosmologies, most=8):
+    """The indices of at most ``most`` evenly spaced cosmologies, the two ends among them."""
+
+    n = len(cosmologies)
+    return sorted(set(np.linspace(0, n - 1, min(n, most)).round().astype(int).tolist()))
+
+
 BATCH_SIZE_CASES = [pytest.param(1, id="N1"), pytest.param(128, id="N128")]
 
 
@@ -474,10 +581,13 @@ def by_name(values, keep):
     return dict(zip(keep, np.moveaxis(np.asarray(values), 1, 0)))
 
 
-def _matter_power(k_values, batch, a=1.0, **options):
+def _matter_power(k_values, batch, a=1.0, keep=PK_KEEP, **options):
     """``P(k)`` of a cosmology or a list of them as a user computes it: ``solve_eb``, then the spectrum.
 
-    At the scale factor ``a``, today by default.
+    At the scale factor ``a``, today by default, or at the last of the
+    scale factors ``a``. ``keep`` is the names the solve keeps,
+    :data:`PK_KEEP` among them: a model whose other tests keep more passes
+    theirs, and their save times, and shares their kernel.
     """
 
     import jax
@@ -491,9 +601,8 @@ def _matter_power(k_values, batch, a=1.0, **options):
 
     cosmologies = [batch] if isinstance(batch, Model) else list(batch)
     options.setdefault("thermo_weight", 0.1)
-    keep = ("delta_c", "delta_b")
-    values = solve_eb(batch, k_values, [a], keep=keep, **options)
-    today = dict(zip(keep, jnp.unstack(values[..., -1], axis=1)))
+    values = solve_eb(batch, k_values, np.atleast_1d(a), keep=keep, **options)
+    today = {name: values[:, keep.index(name), :, -1] for name in PK_KEEP}
     params = {
         key: jnp.stack([jnp.asarray(getattr(c, key)) for c in cosmologies])
         for key in ("omega_c", "omega_b", "A_s", "n_s", "k_p")
@@ -510,28 +619,42 @@ DENSITY_PARAMETERS = ("Omega_m", "Omega_b", "H_0", "T_cmb", "N_eff")
 SOLVE_EB_K = MATTER_POWER_K[::16][::-1]  # descending, to exercise the reordering
 
 
-# The parameters beyond the densities': (model, fiducial changes, P(k) step).
-# Both comparisons difference converged solves (rtol = atol = 1e-6): the
-# solve is not smooth in the parameters below ~1e-6 of a value, so the
-# differences' noise falls as 1 / step (measured for Y_He, 2026-11-13).
+# The parameters beyond the densities': (model, fiducial changes, P(k) step,
+# kept names). The comparison differences converged solves (rtol = atol =
+# 1e-6): the solve is not smooth in the parameters below ~1e-6 of a value,
+# so the differences' noise falls as 1 / step (measured for Y_He,
+# 2026-11-13). Omega_k is LCDM's own, on the kernels the fast suite builds;
+# the others need a model of their own and are slow.
 MORE_PARAMETERS = {
-    "w_DE_0": ("W0WACDM", {"w_DE_0": -0.9, "w_DE_a": 0.1}, 9.0e-3),
-    "w_DE_a": ("W0WACDM", {"w_DE_0": -0.9, "w_DE_a": 0.1}, 4.0e-3),
-    "Omega_k": ("LCDM", {"Omega_k": 0.02}, 2.0e-3),
-    "m_nu": ("LCDM_MNU", {"N_mnu": 1.0, "m_nu": 0.1, "N_eff": 2.0328}, 4.0e-3),
+    "w_DE_0": ("W0WACDM", {"w_DE_0": -0.9, "w_DE_a": 0.1}, 9.0e-3, PK_KEEP),
+    "w_DE_a": ("W0WACDM", {"w_DE_0": -0.9, "w_DE_a": 0.1}, 4.0e-3, PK_KEEP),
+    "Omega_k": ("LCDM", {"Omega_k": 0.02}, 2.0e-3, PK_KEEP),
+    "m_nu": (
+        "LCDM_MNU",
+        {"N_mnu": 1.0, "m_nu": 0.1, "N_eff": 2.0328},
+        4.0e-3,
+        PK_KEEP,
+    ),
     # z_re moves sum P(k) by 1.4e-5 of itself per unit: a step of 0.05 sits
     # in the converged solve's noise (2026-11-16)
-    "z_re": ("LCDM_REIO", {"z_re": 7.67}, 1.0),
+    "z_re": ("LCDM_REIO", {"z_re": 7.67}, 1.0, REIO_KEEP),
 }
+
+MORE_PARAMETER_CASES = [
+    pytest.param(name, marks=() if name == "Omega_k" else pytest.mark.slow)
+    for name in MORE_PARAMETERS
+]
 
 
 def _more_parameter_case(name):
+    """``(model, cosmology, step, keep)`` of one of :data:`MORE_PARAMETERS`."""
+
     import discoeb.models as models
 
-    model_name, changes, step = MORE_PARAMETERS[name]
+    model_name, changes, step, keep = MORE_PARAMETERS[name]
     cosmology = {**REFERENCE_COSMOLOGY, **changes}
     model = globals().get(model_name) or getattr(models, model_name)
-    return model, cosmology, step
+    return model, cosmology, step, keep
 
 
 def ty_executable() -> str | None:

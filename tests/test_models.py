@@ -555,14 +555,10 @@ SWEEPS = ("lcdm", "lcdm-m_nu", "w0wacdm")
 @pytest.mark.slow
 @pytest.mark.gpu
 @pytest.mark.parametrize("name", SWEEPS)
-def test_sweep_is_stable(name):
+def test_sweep(name):
+    """One launch over the sweep: stable for every cosmology, and CLASS's ``P(k)`` for eight of them."""
+
     check_sweep_is_stable(name)
-
-
-@pytest.mark.slow
-@pytest.mark.gpu
-@pytest.mark.parametrize("name", SWEEPS)
-def test_sweep_matches_class(name):
     check_sweep_matches_class(name)
 
 

@@ -15,7 +15,23 @@ import pytest
 jax.config.update("jax_enable_x64", True)
 
 # after x64 is on, so nothing of DISCO-EB is built in single precision
-from helpers import _cuda_available  # noqa: E402
+from helpers import _cuda_available, cap_columns, count_kernels  # noqa: E402
+
+# before any launch, for test_the_suite_stays_within_its_kernel_budget
+count_kernels()
+
+
+@pytest.fixture
+def two_columns(monkeypatch):
+    """Derivatives of LCDM in launches of two sensitivity columns.
+
+    The fast suite's derivative tests use it: they then share one
+    two-column kernel, and a derivative in five parameters covers the
+    chunking and the padding too. The five-column kernel of the default
+    cap takes minutes to compile and is left to the slow tests.
+    """
+
+    cap_columns(monkeypatch, 2)
 
 
 def pytest_configure(config):

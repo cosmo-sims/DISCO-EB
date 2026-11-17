@@ -5,13 +5,17 @@ import pytest
 from helpers import (
     BATCH_SIZE_CASES,
     DENSITY_PARAMETERS,
+    DIAG_A,
     MATTER_POWER_K,
-    MORE_PARAMETERS,
+    MORE_PARAMETER_CASES,
+    PK_KEEP,
     SOLVE_EB_K,
     _class_base,
     _matter_power,
     _more_parameter_case,
     _perturbed_cosmologies,
+    cap_columns,
+    class_subset,
     cosmologies_of,
     physical,
 )
@@ -83,7 +87,11 @@ def _class_linear_pk(param, k_values):
 @pytest.mark.gpu
 @pytest.mark.parametrize("n_cosmologies", BATCH_SIZE_CASES)
 def test_matter_power_spectrum_matches_class(n_cosmologies, benchmark):
-    """Check and time one GPU launch over nearby flat LCDM cosmologies."""
+    """Check and time one GPU launch over nearby flat LCDM cosmologies.
+
+    The launch is timed over the batch. CLASS, a second or so a cosmology on
+    the host, is the reference for eight of them, the two ends among them.
+    """
 
     import jax
 
@@ -101,13 +109,15 @@ def test_matter_power_spectrum_matches_class(n_cosmologies, benchmark):
         warmup_rounds=1,
         iterations=1,
     )
+    assert np.isfinite(pk_ours).all() and np.all(pk_ours > 0.0)
+    compared = class_subset(cosmologies)
     pk_class = np.stack(
-        [_class_linear_pk(param, MATTER_POWER_K) for param in cosmologies]
+        [_class_linear_pk(cosmologies[i], MATTER_POWER_K) for i in compared]
     )
-    rel = np.abs(pk_ours / pk_class - 1.0)
+    rel = np.abs(pk_ours[compared] / pk_class - 1.0)
     worst = np.unravel_index(np.argmax(rel), rel.shape)
     assert float(rel[worst]) < PK_GATE, (
-        f"max relative error {rel[worst]:.6g} for cosmology {worst[0]} "
+        f"max relative error {rel[worst]:.6g} for cosmology {compared[worst[0]]} "
         f"at k={MATTER_POWER_K[worst[1]]:.6g} Mpc^-1"
     )
 
@@ -133,8 +143,20 @@ DERIV_GATES = {"T_cmb": 5.0e-2}
 
 
 @pytest.mark.gpu
-def test_matter_power_spectrum_derivatives(benchmark):
+@pytest.mark.parametrize(
+    "columns",
+    [
+        pytest.param(2, id="two-columns"),
+        pytest.param(None, id="five-columns", marks=pytest.mark.slow),
+    ],
+)
+def test_matter_power_spectrum_derivatives(columns, benchmark, monkeypatch):
     """Time and check dP(k)/d(differentiable parameters) by forward sensitivity.
+
+    In launches of two columns, the last one padded, on the kernel the fast
+    suite's derivative tests share; and, slow, in one launch of the default
+    cap's five-column kernel, which is what a user's gradient in five
+    parameters runs on.
 
     The parameters enter the hierarchy, the recombination rates (through the
     expansion rate) and the matter weighting of ``delta_m``. The solve
@@ -151,6 +173,8 @@ def test_matter_power_spectrum_derivatives(benchmark):
 
     from discoeb.models import LCDM
 
+    if columns is not None:
+        cap_columns(monkeypatch, columns)
     DIFFERENTIABLE_PARAMETERS = DENSITY_PARAMETERS
     cosmology = _perturbed_cosmologies(1)[0]
     theta = jnp.asarray([cosmology[name] for name in DIFFERENTIABLE_PARAMETERS])
@@ -181,7 +205,7 @@ def test_matter_power_spectrum_derivatives(benchmark):
 
 
 @pytest.mark.gpu
-def test_split_derivatives_match_one_thread():
+def test_split_derivatives_match_one_thread(two_columns):
     """A thread per parameter gives the Jacobian the trajectory's own thread gives.
 
     Two distinct cosmologies and a Jacobian in each one's parameters, so a
@@ -190,7 +214,9 @@ def test_split_derivatives_match_one_thread():
     solve's own error, so the comparison runs at 1e-6, where they agree to
     1e-6. ``T_cmb``, whose sensitivity crosses the hard switch of the matter
     temperature's rate, agrees to 6e-6 or to 1e-4 depending on the kernel's
-    last bit, and has a gate of its own.
+    last bit, and has a gate of its own. The trajectory's own thread
+    carries two columns at a time here (``two_columns``), so the ten
+    variables take five launches.
     """
 
     import jax
@@ -226,7 +252,7 @@ def test_split_derivatives_match_one_thread():
 
 
 @pytest.mark.gpu
-def test_matter_power_spectrum_under_jit():
+def test_matter_power_spectrum_under_jit(two_columns):
     """``solve_eb`` and ``matter_power_spectrum`` trace under ``jit``, every key traced.
 
     One trace serves every cosmology of the same keys, the values agree with
@@ -249,7 +275,7 @@ def test_matter_power_spectrum_under_jit():
     def power(cosmology):
         traces.append(cosmology)
         batch = cosmologies_of(LCDM, [cosmology])
-        keep = ("delta_c", "delta_b")
+        keep = PK_KEEP
         values = solve_eb(batch, SOLVE_EB_K, [1.0], keep=keep, thermo_weight=0.1)
         today = dict(zip(keep, jnp.unstack(values[0, :, :, -1])))
         params = {
@@ -293,27 +319,31 @@ sensitivity is -47.43 at rtol 1e-6 and -47.44 at the default in both
 (2026-11-17)."""
 
 
-@pytest.mark.slow
 @pytest.mark.gpu
-@pytest.mark.parametrize("name", list(MORE_PARAMETERS))
+@pytest.mark.parametrize("name", MORE_PARAMETER_CASES)
 def test_more_parameters_matter_power(name):
-    """``jax.grad`` of ``sum P(k)`` in each parameter beyond the densities' against central differences.
+    """``jax.jvp`` of ``sum P(k)`` in each parameter beyond the densities' against central differences.
 
     The derivative of ``P(k)`` today, at fixed scale factor. Central
-    differences from converged solves.
+    differences from converged solves. One direction, so each model's
+    one-column kernel: ``jax.grad`` would integrate a column per directed
+    input the parameter moves and compile a kernel of that width.
     """
 
     import jax
     import jax.numpy as jnp
 
-    model, cosmology, step = _more_parameter_case(name)
+    model, cosmology, step, keep = _more_parameter_case(name)
+    # a model that keeps more than P(k)'s names keeps them on the shared grid
+    a = 1.0 if keep == PK_KEEP else DIAG_A
 
     def total_power(p, **options):
         batch = cosmologies_of(model, {**cosmology, name: p})
-        return jnp.sum(_matter_power(MATTER_POWER_K, batch, **options))
+        power = _matter_power(MATTER_POWER_K, batch, a=a, keep=keep, **options)
+        return jnp.sum(power)
 
     p0 = jnp.asarray(float(cosmology[name]))
-    grad = float(jax.grad(total_power)(p0))
+    grad = float(jax.jvp(total_power, (p0,), (jnp.ones_like(p0),))[1])
     # Converged differences: some of these parameters move P(k) by 1e-5 of
     # itself over the step, the noise of a default-tolerance solve.
     converged = dict(rtol=1.0e-6, atol=1.0e-6, max_steps=200_000)
