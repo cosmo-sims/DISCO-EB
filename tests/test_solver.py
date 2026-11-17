@@ -512,7 +512,7 @@ def test_solve_eb_derivatives():
 
     jac_theta = np.asarray(jax.jacfwd(of_parameters)(theta))
     d_densities = np.asarray(jax.jacfwd(lambda t: inputs_of(t)[0])(theta))
-    # The two are separate launches, one replica per parameter along
+    # The two are separate launches, one column per parameter along
     # d inputs / d theta against one per input, so they differ by the
     # solve's noise: checked like the central differences above, as the
     # change each predicts over a 0.1 percent step in units of the
@@ -528,8 +528,11 @@ def test_solve_eb_derivatives():
     grad_theta = np.asarray(
         jax.grad(lambda t: jnp.sum(of_parameters(t) * weights))(theta)
     )
+    # grad integrates a column per moved input (six: T_cmb moves three) and
+    # jacfwd one per direction (five), so they agree to rounding, not bit
+    # for bit (1.3e-10 measured).
     np.testing.assert_allclose(
-        grad_theta, np.einsum("cqkt,cqktp->p", weights, jac_theta), rtol=1e-10
+        grad_theta, np.einsum("cqkt,cqktp->p", weights, jac_theta), rtol=1e-8
     )
     assert np.all(grad_theta != 0.0)
 
