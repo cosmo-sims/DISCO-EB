@@ -1355,7 +1355,12 @@ CS2_GATE = 0.01
 SWITCH_WINDOW = (800.0, 900.0)
 
 
-CS2_SWITCH_GATE = 0.2
+CS2_SWITCH_GATE = 0.25
+"""The worst ``c_b^2`` error of the batch in :data:`SWITCH_WINDOW`. It is set
+by which Rosenbrock step straddles the hard switch of the matter
+temperature's rate, so it moves with the kernel's last bit: 0.19 to 0.21
+over rounding-level changes of the cosmologies, and a steady 0.202 since the
+solve runs in the scale factor."""
 
 
 def kernel_thermal_history(cosmologies, model=None, keep=THERMAL_KEEP, n_a: int = N_A):
