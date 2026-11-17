@@ -1132,7 +1132,7 @@ def test_the_streaming_approximation_is_a_component_a_model_may_drop():
 
     full = LCDM.swap(RadiationStreaming, NoRadiationStreaming, name="full")
     assert full.state_names() == LCDM.state_names()
-    assert "RSA" not in {n for cls in full.spec.components for n in cls.setting_names()}
+    assert "RSA" not in {n for cls in full.components for n in cls.setting_names()}
     with pytest.raises(NameError, match="rsa"):
         LCDM.remove(RadiationStreaming, name="nothing").build(
             ConstantThermalHistory()

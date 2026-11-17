@@ -308,7 +308,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      constants) and `RadiationStreaming` (CLASS's RSA). The free-streaming tail
      is one helper `stream(...)` shared by the three hierarchies
    - Rules a model keeps (2026-11-14): `ColdDarkMatter.fixes_gauge` states
-     the synchronous gauge's condition and `ModelSpec` raises without
+     the synchronous gauge's condition and a model class raises without
      such a species. `RadiationStreaming` names no species: each streaming
      one contributes to the sum `dgrho_streaming`, and
      `NoRadiationStreaming` (`rsa = 0`) replaces it for a theory whose
@@ -323,8 +323,8 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `tests/test_models.py`
 
 3. **models/_model.py, lcdm.py, w0wacdm.py** - Cosmological models built from those components
-   - Split on 2026-11-16: `_model.py` has the base classes (`Model`,
-     `ModelSpec`, `_batch_of`, `_spec_of`), `lcdm.py`
+   - Split on 2026-11-16: `_model.py` has the base class `Model`,
+     `_batch_of` and `_model_of`, `lcdm.py`
      `LCDM` and `LCDM_MNU`, `w0wacdm.py` `W0WACDM` and `W0WACDM_MNU`, and
      `models/__init__.py` exports them
    - Since 2026-11-15 a model is a class and a cosmology an instance of it:
@@ -332,37 +332,41 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `class LCDM_MNU(LCDM, MassiveNeutrinos, name="LCDM+mnu")`, then
      `LCDM(omega_b=0.0224, omega_c=0.120, omega_de=0.311, ...)`. The bases are the components in state
      order, a model among them standing for its own (`Model.__init_subclass__`
-     builds `cls.spec`); `Model` subclasses `Recombination`, so every model
+     sets `cls.name`, `cls.components` and `cls.settings`); `Model` subclasses `Recombination`, so every model
      has `z_re`. `Component` carries `dataclass_transform`, so ty and
      pyright read the constructor's keyword arguments off the annotated
      declarations of every base (`tests/test_models.py` runs ty on
      user code). At run time the same signature is `cls.__signature__`, and
      `__init__` raises `TypeError` for an unknown or missing key, then runs
-     `spec.check`. A cosmology is immutable (`replace(**changes)`,
+     `cls.validate`. A cosmology is immutable (`replace(**changes)`,
      `__replace__`), a JAX pytree of its keys (unflattened without a check),
      and `to_dict()`. `from_dict(params)` is the lenient path a dictionary
-     for another model takes (`spec.check_keys`). Class keywords are settings
+     for another model takes (`validate_keys`). Class keywords are settings
      (`class Coarse(LCDM, LMAX_G=10)`) and `name=`. `swap`, `add`, `remove`
      and `with_settings` derive classes at run time (memoised in `_DERIVED`,
      `with_settings` a subclass); a type checker sees only class statements.
      The class docstring gets a generated numpy "Parameters" section
-     (`_documented`). Classmethods `parameters`, `parameter_keys`,
-     `state_names`, `sparsity`, `setting`, `has`, `build` forward to the spec
-   - `ModelSpec(name, components, settings)` (the old `CosmologyModel`): the
-     component classes in state order and setting overrides; frozen and
-     hashable, the solver's cache key. `replace(old, new, name=)`,
-     `add(*components, name=)`, `remove(...)` and `with_settings(**kw)`
-     derive specs. `build(thermal_history=None, extra=())` instantiates the component
-     `Equations` (the old `component.Model`); `state_names()`, `sparsity()`, `setting(name)`,
-     `parameters(extra=())` (the components' and `Recombination`'s
-     declarations), `parameter_keys()` and `check(cosmology)`: a key another
+     (`_documented`)
+   - The model class is also what the solver reads (2026-11-17; until then
+     a frozen `ModelSpec(name, components, settings)` on `cls.spec`, the
+     old `CosmologyModel`). Classmethods: `build(thermal_history=None,
+     extra=(), ...)` instantiates the component `Equations` (the old
+     `component.Model`); `state_names()`, `sparsity()`, `setting(name)`,
+     `has`, `instances`, `parameters(extra=())` (the components' and
+     `Recombination`'s declarations), `parameter_keys()`,
+     `differentiable_parameters()` and `validate(cosmology)`: a key another
      component declares but none of this model's must keep its default
      (`w_DE_0 != -1` needs `DarkEnergy`, `Nmnu > 0` `MassiveNeutrinos`), then
      each component's `check` hook runs (`DarkEnergy` rejects `w = -1`),
-     traced values skipped. `resolved()` makes every
-     setting explicit at the classes' current values: the kernel caches on
-     the resolved spec, so rebinding a setting recompiles. Internal code
-     takes specs; public functions taking a model accept either (`_spec_of`)
+     traced values skipped. It is not `check`, nor `check_keys` but
+     `validate_keys`, since a model inherits its components' `check` hooks;
+     the spec's `replace(old, new)` is `swap`, `replace` being the
+     cosmology's. `resolved()` makes every setting explicit at the classes'
+     current values and returns one class per (name, components, settings),
+     memoised in `_RESOLVED`: the model itself if its settings are already
+     explicit, else a subclass of the first model asked. The kernel caches
+     on it, so rebinding a setting recompiles and equal models share a
+     kernel. Public functions taking a model check it with `_model_of`
    - The models: `LCDM` (flat unless `Omegak`), `LCDM_MNU`, `W0WACDM` (its
      bases written out with `DarkEnergy` for `CosmologicalConstant`),
      `W0WACDM_MNU`. Massive neutrinos come after `ThomsonScattering`; no sum
@@ -373,7 +377,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      model's `Hz` (RECFAST's Hubble-time estimate `2 / (3 H0 (1+z)^1.5)` in
      the matter-temperature switch became `2 / (3 H)`).
      `Model.from_density_parameters(Omegam=, Omegab=, H0=, Omegak=0, ...)`
-     converts and finds `omega_de` (`ModelSpec.physical_parameters`, also
+     converts and finds `omega_de` (`Model.physical_parameters`, also
      the dictionary-level form `helpers.cosmologies_of` uses: one secant
      step on `hubble_constant()^2`, exact since it is linear in a density;
      any other component's `x_Omega` becomes `x_omega`). Plain JAX
@@ -382,7 +386,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `omega_de` differently in the last bit, which moves a step-acceptance
      and `P(k)` by 1e-5: compare a jitted solve against an eager one of the
      same converted parameters (`test_matter_power_spectrum_under_jit`).
-     `Model.H0` (`ModelSpec.hubble_constant`) is `adotoa(a=1)`; a model
+     `Model.H0` (`Model.hubble_constant`) is `adotoa(a=1)`; a model
      whose rate reads a state (`Equations.reads_state("adotoa")`: a scalar
      field) raises, has no `from_density_parameters`, and gets its Hubble
      constant from a solve (`adotoa` kept at `a = 1`). So a scalar field's
@@ -393,7 +397,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      from their class, and `build_keep_hook` and `_columns` take the model
      or its layout as a required argument
    - `_batch_of(cosmologies)` turns one cosmology or a sequence of one
-     model's into the pair `(spec, dicts)` the solver reads; mixed models raise `TypeError`. The dicts' values are
+     model's into the pair `(model, dicts)` the solver reads; mixed models raise `TypeError`. The dicts' values are
      as given, so JAX values stay differentiable. There is no
      `PerturbationLayout` any more (removed 2026-11-12): indices come from
      `model.state_names()` or the joint model's `index`
@@ -423,7 +427,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    `(n_cosmo,)` by key, values traced or not. With `held` a key declared
    `solved=False` gets `stop_gradient`, and a key the solve reads but the
    model does not differentiate (outside
-   `ModelSpec.differentiable_parameters()`: `Nmnu`, `YHe`, `cs2_DE`) passes
+   `Model.differentiable_parameters()`: `Nmnu`, `YHe`, `cs2_DE`) passes
    through `_not_differentiable`, a `custom_jvp` whose rule raises, so a
    derivative is never a silent zero. `_is_concrete` lives in
    `models/_model.py`. A cosmology still holds the traced keys of other
@@ -458,7 +462,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      (`LCDM.add(ReionizationDepth, name=...)`, `helpers.LCDM_REIO`): in
      every model's block it cost a solve 4 to 7 percent (2026-11-17), so
      only a model with it reads `tau_reio` or differentiates `z_re`
-     (`ModelSpec.differentiable_parameters` drops `z_re` otherwise, and the
+     (`Model.differentiable_parameters` drops `z_re` otherwise, and the
      derivative raises). Same parametrization as CLASS `reio_camb`:
      `kappa_reio` today against its `tau_reio` at the same `z_reio`
      (`tests/test_components.py`). A sensitivity launch
@@ -628,7 +632,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
     any more (2026-11-17; it took `z`, `vb` and `tau0` for it).
     `examples/flat_lcdm_power_spectrum.ipynb` is the entry point
 
-11. **Jacobian sparsity** (`ModelSpec.sparsity`; its test is
+11. **Jacobian sparsity** (`Model.sparsity`; its test is
     `tests/test_models.py`, modax's side of it
     `tests/test_solver.py`)
    - `model.sparsity()` is `model.build().sparsity()`:
@@ -704,7 +708,7 @@ The typical computation flow is:
   arguments (`omega_b`, `omega_c`, `omega_de`, `Tcmb`, `YHe`, `Neff`, `A_s`,
   `n_s`, ...). Tests hold dictionaries in `Omegam`, `Omegab` and `H0` and go
   through `helpers.cosmologies_of(model, params)`, which converts them
-  (`ModelSpec.physical_parameters`) and is `from_dict` over one or a list;
+  (`Model.physical_parameters`) and is `from_dict` over one or a list;
   `helpers.physical(model, params)` gives the converted dictionary
 
 **Neutrino Treatment:**
@@ -715,7 +719,7 @@ The typical computation flow is:
 **Stiff ODE Integration:**
 - Einstein-Boltzmann equations are stiff; modax's Rodas5P kernel integrates them
   with an Enzyme-derived Jacobian and a sparse direct solver (see
-  `ModelSpec.sparsity`)
+  `Model.sparsity`)
 - The recombination system is not stiff but has piecewise switches; Rodas5P
   spends fewer steps on them than Tsit5
 

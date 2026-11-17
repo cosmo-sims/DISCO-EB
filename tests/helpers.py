@@ -74,21 +74,21 @@ def cosmologies_of(model, params):
     Through :meth:`Model.from_dict <discoeb.models.Model.from_dict>`, so a
     dictionary written for another model passes while its other keys keep
     their defaults. One in ``Omegam``, ``Omegab`` and ``H0`` is converted
-    first (:meth:`ModelSpec.physical_parameters
-    <discoeb.models.ModelSpec.physical_parameters>`).
+    first (:meth:`Model.physical_parameters
+    <discoeb.models.Model.physical_parameters>`).
     """
 
     if not isinstance(params, dict):
         return [cosmologies_of(model, p) for p in params]
     if "Omegam" in params:
-        params = model.spec.physical_parameters(params)
+        params = model.physical_parameters(params)
     return model.from_dict(params)
 
 
 def physical(model, params) -> dict:
     """A dictionary in ``Omegam``, ``Omegab`` and ``H0`` in the model's own parameters."""
 
-    return model.spec.physical_parameters(params)
+    return model.physical_parameters(params)
 
 
 def packed(model, cosmology, k):
@@ -110,7 +110,7 @@ def model_parameters(model, cosmology) -> dict:
 
     if isinstance(cosmology, dict):
         cosmology = cosmologies_of(model, cosmology)
-    return density_parameters(cosmology.to_dict(), xp=np, model=model.spec)
+    return density_parameters(cosmology.to_dict(), xp=np, model=model)
 
 
 def on_the_host(model, cosmology, *quantities, **base):
@@ -121,7 +121,7 @@ def on_the_host(model, cosmology, *quantities, **base):
     from discoeb.models._model import _host_equations
 
     values = model_parameters(model, cosmology)
-    return _host_equations(model.spec).evaluate(*quantities, math=jnp, **base, **values)
+    return _host_equations(model).evaluate(*quantities, math=jnp, **base, **values)
 
 
 def state_index(model) -> dict[str, int]:
@@ -372,7 +372,7 @@ def qcdm_parameters(lam=0.0, V0=None):
     constant comes out of the solve.
     """
 
-    lcdm = LCDM.spec.physical_parameters(QCDM_COSMOLOGY)
+    lcdm = LCDM.physical_parameters(QCDM_COSMOLOGY)
     grhov = GRHO_PER_OMEGA * lcdm.pop("omega_de")
     return {**lcdm, "lam": lam, "V0": grhov if V0 is None else V0}
 

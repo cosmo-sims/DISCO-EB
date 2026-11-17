@@ -7,7 +7,7 @@
 .. autofunction:: discoeb.solve_eb
 
 .. autoclass:: discoeb.Model
-   :members: from_density_parameters, H0, from_dict, to_dict, replace, parameter_keys, state_names, setting, swap, add, remove, with_settings
+   :members: from_density_parameters, H0, from_dict, to_dict, replace, parameter_keys, state_names, sparsity, setting, validate, physical_parameters, hubble_constant, resolved, swap, add, remove, with_settings
 
 .. autoclass:: discoeb.LCDM
    :no-members:
@@ -20,9 +20,6 @@
 
 .. autoclass:: discoeb.W0WACDM_MNU
    :no-members:
-
-.. autoclass:: discoeb.ModelSpec
-   :members: replace, add, remove, with_settings, setting, check, physical_parameters, hubble_constant, state_names, sparsity
 
 .. autofunction:: discoeb.matter_power_spectrum
 

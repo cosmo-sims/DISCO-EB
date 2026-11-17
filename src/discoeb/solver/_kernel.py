@@ -20,7 +20,7 @@ import numpy as np
 
 from ..components._component import Equations, _compile, derive_parameters
 from ..components.recombination import THERMO_ERROR_WEIGHT, Recombination
-from ..models._model import Model, ModelSpec, _batch_of, _spec_of
+from ..models._model import Model, _batch_of, _model_of
 
 A_START = 2.0e-7
 """The scale factor where every trajectory starts, deep in radiation
@@ -83,14 +83,14 @@ class ParameterLayout:
         return tuple(self.columns[name] for name in self.directed)
 
 
-def parameter_layout(model: type[Model] | ModelSpec, extra=()) -> ParameterLayout:
+def parameter_layout(model: type[Model], extra=()) -> ParameterLayout:
     """Return the row layout of ``model`` with the component classes ``extra`` appended (cached)."""
 
-    return _parameter_layout(_spec_of(model).resolved(), tuple(extra))
+    return _parameter_layout(_model_of(model).resolved(), tuple(extra))
 
 
 @functools.lru_cache(maxsize=None)
-def _parameter_layout(model: ModelSpec, extra) -> ParameterLayout:
+def _parameter_layout(model: type[Model], extra) -> ParameterLayout:
     parameters = model.parameters(extra)
     directed = [n for n, p in parameters.items() if p.directed]
     directed.sort(
@@ -115,12 +115,12 @@ CUDA_MAX_REGISTERS = int(os.environ.get("DISCO_CUDA_MAX_REGISTERS", "168"))
 """Per-thread register cap for that kernel: fewer registers, more resident warps."""
 
 
-def joint_model(model: type[Model] | ModelSpec, extra=()) -> Equations:
+def joint_model(model: type[Model], extra=()) -> Equations:
     """Return the components of ``model`` with :class:`~discoeb.components.recombination.Recombination` appended.
 
     The recombination states come after the perturbations', so the
-    perturbation state keeps the indices of :meth:`ModelSpec.state_names
-    <discoeb.models.ModelSpec.state_names>`. The five thermal states
+    perturbation state keeps the indices of :meth:`Model.state_names
+    <discoeb.models.Model.state_names>`. The five thermal states
     (the conformal time, ``x_H``, ``x_He``, ``T_m`` and the optical depths)
     are the last columns of every history, at ``model.index["tau"]`` and so
     on. ``extra`` lists component classes to append after them (the
@@ -133,13 +133,13 @@ def joint_model(model: type[Model] | ModelSpec, extra=()) -> Equations:
     tolerance integrated 13 times less exactly (2026-11-17).
     """
 
-    return _joint_model(_spec_of(model), tuple(extra))
+    return _joint_model(_model_of(model), tuple(extra))
 
 
 @functools.lru_cache(maxsize=None)
-def _joint_model(spec: ModelSpec, extra) -> Equations:
+def _joint_model(cosmology_model: type[Model], extra) -> Equations:
     def build(last=()):
-        return spec.build(
+        return cosmology_model.build(
             extra=[Recombination(), *(cls() for cls in extra)],
             time="a",
             clock="adot",
@@ -160,7 +160,7 @@ def _joint_model(spec: ModelSpec, extra) -> Equations:
     return model
 
 
-def density_parameters(param, model: ModelSpec, xp=jnp) -> dict:
+def density_parameters(param, model: type[Model], xp=jnp) -> dict:
     """The parameters of ``model`` for a parameter dictionary, keyed as the components name them.
 
     The keys pass through, and every derived parameter comes from its
@@ -198,7 +198,7 @@ def _restrict(pattern: np.ndarray, indices) -> np.ndarray:
     return np.array(sorted(kept), dtype=np.int64).reshape(-1, 2)
 
 
-def joint_kernel(model: type[Model] | ModelSpec, extra=()):
+def joint_kernel(model: type[Model], extra=()):
     """Return ``(joint model, hierarchy)`` of ``model``, cached per resolved model and ``extra``.
 
     The hierarchy is a modax :class:`~modax.Hierarchy` of two blocks, which
@@ -217,11 +217,11 @@ def joint_kernel(model: type[Model] | ModelSpec, extra=()):
     step. The state keeps the joint model's order.
     """
 
-    return _joint_kernel(_spec_of(model).resolved(), tuple(extra))
+    return _joint_kernel(_model_of(model).resolved(), tuple(extra))
 
 
 @functools.lru_cache(maxsize=None)
-def _joint_kernel(cosmology_model: ModelSpec, extra):
+def _joint_kernel(cosmology_model: type[Model], extra):
     from modax import Block, Hierarchy
 
     model = joint_model(cosmology_model, extra)
@@ -269,7 +269,7 @@ class _PreparedSolve(NamedTuple):
     """
 
     cosmologies: tuple
-    cosmology_model: ModelSpec
+    cosmology_model: type[Model]
     model: Equations
     layout: ParameterLayout
     ode_fn: object  # the modax Hierarchy
@@ -280,7 +280,7 @@ class _PreparedSolve(NamedTuple):
 
 
 def _prepare_solve(
-    model: ModelSpec, cosmologies, k_values, extra=(), columns=None
+    model: type[Model], cosmologies, k_values, extra=(), columns=None
 ) -> _PreparedSolve:
     """Return a batch packed for launch at ``k_values``: parameter rows and initial states.
 
@@ -289,8 +289,8 @@ def _prepare_solve(
     numbers: they set the launch's shape and order. ``columns`` are the
     cosmologies' :func:`_columns` if already at hand. Every
     cosmology must suit
-    the model (:meth:`ModelSpec.check
-    <discoeb.models.ModelSpec.check>`), checked when its values are
+    the model (:meth:`Model.validate
+    <discoeb.models.Model.validate>`), checked when its values are
     numbers. The kernel compiles once per model, and :func:`_pack` once per
     model, wave-mode grid and batch size.
 
@@ -298,9 +298,9 @@ def _prepare_solve(
     columns from its own inputs.
     """
 
-    resolved = _spec_of(model).resolved()
+    resolved = _model_of(model).resolved()
     for cosmology in cosmologies:
-        resolved.check(cosmology)
+        resolved.validate(cosmology)
     joint, hierarchy = joint_kernel(resolved, extra)
     k = np.asarray(k_values, dtype=np.float64).reshape(-1)
     order = np.argsort(k, kind="stable")
@@ -323,7 +323,7 @@ def _prepare_solve(
 
 
 @functools.partial(jax.jit, static_argnums=(0, 1, 2))
-def _pack(model: ModelSpec, extra, k_sorted, columns):
+def _pack(model: type[Model], extra, k_sorted, columns):
     """Return ``(params, y0)`` of a batch's columns, on the device.
 
     The rows come from :func:`_rows` and the initial state from the joint
@@ -365,7 +365,7 @@ def _not_differentiable_jvp(name, primals, tangents):
     )
 
 
-def _columns(cosmologies, model: type[Model] | ModelSpec, held: bool = True) -> dict:
+def _columns(cosmologies, model: type[Model], held: bool = True) -> dict:
     """Return a batch's parameters as JAX columns ``(n_cosmologies,)`` by key.
 
     ``cosmologies`` are the batch's parameter dictionaries
@@ -373,18 +373,18 @@ def _columns(cosmologies, model: type[Model] | ModelSpec, held: bool = True) -> 
     values, traced or not. With ``held``, the columns are the variables of
     a derivative. A key the solve never reads (``solved=False``) then
     carries no tangent, and a key it reads but the model does not
-    differentiate (:meth:`ModelSpec.differentiable_parameters
-    <discoeb.models.ModelSpec.differentiable_parameters>`) raises if
+    differentiate (:meth:`Model.differentiable_parameters
+    <discoeb.models.Model.differentiable_parameters>`) raises if
     differentiated, where its derivative would come back as a silent zero.
     So does a traced key of another model that a cosmology holds
     (:meth:`Model.from_dict <discoeb.models.Model.from_dict>`), which the
     kernel never reads.
     """
 
-    spec = _spec_of(model)
-    declared = spec.parameters()
-    differentiable = spec.differentiable_parameters()
-    keys = spec.parameter_keys()
+    model = _model_of(model)
+    declared = model.parameters()
+    differentiable = model.differentiable_parameters()
+    keys = model.parameter_keys()
     foreign = sorted({key for c in cosmologies for key in c} - set(keys))
     columns = {}
     for key in (*keys, *foreign):
@@ -456,7 +456,7 @@ def _named_error_weights(weights, joint: Equations, k_launch):
     Each weight is a number or a function of the trajectories' wave numbers
     (``k_launch``, launch order) that returns one per trajectory. Unnamed states
     keep weight one. The names are the state elements of the joint model
-    (:meth:`~discoeb.models.ModelSpec.state_names`, and the background's), so
+    (:meth:`~discoeb.models.Model.state_names`, and the background's), so
     a caller never needs the state's index order or the launch's trajectory
     order.
     """
@@ -522,7 +522,7 @@ def _launch(
 
 
 def _solve_batch(
-    model: ModelSpec,
+    model: type[Model],
     cosmologies,
     k_values,
     a_save=None,
@@ -566,7 +566,7 @@ def build_keep_hook(model, names, layout: ParameterLayout):
 
     A name is a state element or a quantity the joint model provides. State
     elements (``clxc``, ``theta_2``, ``psi_0_1``: the
-    :meth:`~discoeb.models.ModelSpec.state_names`, or ``tau``, ``thermo_0`` ...
+    :meth:`~discoeb.models.Model.state_names`, or ``tau``, ``thermo_0`` ...
     ``kappa`` of the recombination block) come straight from the state. Provided
     quantities (``R``, ``sigma``, ``phi`` with the line-of-sight sources
     appended, ``opacity`` or ``cs2`` from the thermal states) come from
@@ -610,7 +610,7 @@ def build_keep_hook(model, names, layout: ParameterLayout):
 
 
 @functools.lru_cache(maxsize=None)
-def _keep_hook(model: ModelSpec, extra, names):
+def _keep_hook(model: type[Model], extra, names):
     """Return the compiled hook for a resolved model, extra components and names (cached)."""
 
     return build_keep_hook(

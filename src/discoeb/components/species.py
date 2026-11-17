@@ -249,7 +249,7 @@ class RadiationStreaming(Component):
 class NoRadiationStreaming(Component):
     """The full hierarchies at all times: what :class:`RadiationStreaming` provides, switched off.
 
-    ``LCDM.replace(RadiationStreaming, NoRadiationStreaming, name=...)`` is
+    ``LCDM.swap(RadiationStreaming, NoRadiationStreaming, name=...)`` is
     a model without the approximation, for a theory of gravity whose
     constraints the streaming solution does not know. The constants fold
     away when the kernel compiles.

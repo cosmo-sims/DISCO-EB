@@ -92,15 +92,15 @@ def test_each_component_marks_its_differentiable_keys():
     from discoeb.models import LCDM_MNU, W0WACDM, W0WACDM_MNU
 
     lcdm = {"omega_b", "omega_c", "omega_de", "Tcmb", "Neff", "omega_k"}
-    assert set(LCDM.spec.differentiable_parameters()) == lcdm
-    assert set(LCDM_MNU.spec.differentiable_parameters()) == lcdm | {"mnu"}
+    assert set(LCDM.differentiable_parameters()) == lcdm
+    assert set(LCDM_MNU.differentiable_parameters()) == lcdm | {"mnu"}
     dark_energy = lcdm | {"w_DE_0", "w_DE_a"}
-    assert set(W0WACDM.spec.differentiable_parameters()) == dark_energy
-    assert set(W0WACDM_MNU.spec.differentiable_parameters()) == dark_energy | {"mnu"}
+    assert set(W0WACDM.differentiable_parameters()) == dark_energy
+    assert set(W0WACDM_MNU.differentiable_parameters()) == dark_energy | {"mnu"}
     # z_re only where ReionizationDepth resolves its derivative
-    assert set(LCDM_REIO.spec.differentiable_parameters()) == lcdm | {"z_re"}
+    assert set(LCDM_REIO.differentiable_parameters()) == lcdm | {"z_re"}
     # a component from outside marks none unless it says so
-    assert set(LCDM_X.spec.differentiable_parameters()) == lcdm
+    assert set(LCDM_X.differentiable_parameters()) == lcdm
     assert "Differentiable through solve_eb." in LCDM.__doc__.split("omega_c :")[1]
     assert "Differentiable" not in LCDM.__doc__.split("YHe :")[1].split("\n")[1]
     with pytest.raises(TypeError, match="only a key"):
@@ -111,29 +111,26 @@ def test_models_derive_from_each_other():
     from discoeb.components.species import CosmologicalConstant
     from discoeb.models import LCDM, LCDM_MNU, W0WACDM, Model
 
-    assert W0WACDM.spec.components.index(DarkEnergy) == LCDM.spec.components.index(
+    assert W0WACDM.components.index(DarkEnergy) == LCDM.components.index(
         CosmologicalConstant
     )
     # a model among the bases stands for its components
-    assert LCDM_MNU.spec.components == (*LCDM.spec.components, MassiveNeutrinos)
-    assert issubclass(LCDM_MNU, LCDM) and LCDM_MNU.spec.name == "LCDM+mnu"
+    assert LCDM_MNU.components == (*LCDM.components, MassiveNeutrinos)
+    assert issubclass(LCDM_MNU, LCDM) and LCDM_MNU.name == "LCDM+mnu"
     assert LCDM.with_settings(LMAX_G=20).setting("LMAX_G") == 20
     assert LCDM.with_settings(LMAX_G=20) is LCDM.with_settings(LMAX_G=20)
     assert LCDM.with_settings(LMAX_G=20) != LCDM and LCDM.with_settings() is LCDM
     with pytest.raises(ValueError, match="NQMAX"):
         LCDM.with_settings(NQMAX=4)  # LCDM has no massive neutrinos
     # the run-time derivations are the class statements' equivalents
-    assert LCDM.add(MassiveNeutrinos, name="LCDM+mnu").spec == LCDM_MNU.spec
+    assert LCDM.add(MassiveNeutrinos, name="LCDM+mnu").resolved() is LCDM_MNU.resolved()
     swapped = LCDM.swap(CosmologicalConstant, DarkEnergy, name="w0waCDM")
-    assert swapped.spec == W0WACDM.spec and issubclass(swapped, Model)
+    assert swapped.resolved() is W0WACDM.resolved() and issubclass(swapped, Model)
 
     class Coarse(LCDM, LMAX_G=10):
         """A class keyword sets a setting."""
 
-    assert (
-        Coarse.setting("LMAX_G") == 10
-        and Coarse.spec.components == LCDM.spec.components
-    )
+    assert Coarse.setting("LMAX_G") == 10 and Coarse.components == LCDM.components
 
 
 BASE_COSMOLOGY = dict(
@@ -320,7 +317,7 @@ def test_a_solve_takes_cosmologies_of_one_model():
 
     planck = LCDM(**BASE_COSMOLOGY)
     model, dicts = _batch_of([planck, planck.replace(omega_c=0.13)])
-    assert model == LCDM.spec and len(dicts) == 2
+    assert model is LCDM and len(dicts) == 2
     assert dicts[1]["omega_c"] == 0.13
     assert len(_batch_of(planck)[1]) == 1
     with pytest.raises(TypeError, match="share a model"):

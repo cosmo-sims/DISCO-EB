@@ -1,4 +1,4 @@
-"""The base classes of cosmological models.
+"""The base class of cosmological models.
 
 A model is constructed by inheriting from base components in state order. An
 instance of a model is constructed by passing values for its parameters.
@@ -16,7 +16,6 @@ from __future__ import annotations
 import functools
 import inspect
 import math
-from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 import jax
@@ -34,386 +33,7 @@ from ..components._component import (
 from ..components.gravity import GRHOM_PER_H0SQ
 from ..components.recombination import Recombination, ReionizationDepth
 
-__all__ = ["Model", "ModelSpec"]
-
-
-@dataclass(frozen=True)
-class ModelSpec:
-    """
-    A specification of a cosmological model. It is a value, hashable
-    and compared by its fields, so the solver caches its compiled kernel on
-    it, and :meth:`resolved` makes every setting explicit for that. A
-    cosmology's parameters, as a dictionary, are a point in its parameter
-    space, and :meth:`check` rejects one the model cannot represent.
-
-    :meth:`replace`, :meth:`add`, :meth:`remove` and :meth:`with_settings`
-    derive specifications as :meth:`Model.swap`, :meth:`Model.add`,
-    :meth:`Model.remove` and :meth:`Model.with_settings` derive models.
-
-    ``settings`` overrides component settings by name (``LMAX_G``,
-    ``NQMAX``, ...). A setting it leaves out takes the component's own value,
-    which ``DISCO_<NAME>`` in the environment or rebinding the class
-    attribute (``Photons.LMAX_G = 20``) sets.
-    """
-
-    name: str
-    components: tuple[type[Component], ...]
-    settings: tuple[tuple[str, object], ...] = field(default=())
-
-    def __post_init__(self):
-        object.__setattr__(self, "components", tuple(self.components))
-        object.__setattr__(self, "settings", tuple(sorted(dict(self.settings).items())))
-        if len(set(self.components)) != len(self.components):
-            raise ValueError(f"{self.name} lists a component twice")
-        known = {n for cls in self.components for n in cls.setting_names()}
-        unknown = sorted(dict(self.settings).keys() - known)
-        if unknown:
-            raise ValueError(
-                f"{self.name} has no component with settings {unknown}; "
-                f"its settings are {sorted(known)}"
-            )
-        self.parameters()  # raises if two components declare one name differently
-        if not any(cls.fixes_gauge for cls in self.components):
-            raise ValueError(
-                f"{self.name} has no species whose rest frame fixes the "
-                "synchronous gauge: keep ColdDarkMatter, at whatever density"
-            )
-
-    def __repr__(self) -> str:
-        return f"ModelSpec({self.name!r})"
-
-    # --- deriving models ------------------------------------------------------
-
-    def replace(
-        self, old: type[Component], new: type[Component], *, name: str
-    ) -> ModelSpec:
-        """Return this model with ``new`` in place of ``old``, at its position."""
-
-        if old not in self.components:
-            raise ValueError(f"{self.name} has no {old.__name__}")
-        components = tuple(new if c is old else c for c in self.components)
-        return ModelSpec(name, components, self._settings_for(components))
-
-    def add(self, *components: type[Component], name: str) -> ModelSpec:
-        """Return this model with ``components`` appended."""
-
-        return ModelSpec(name, self.components + components, self.settings)
-
-    def remove(self, *components: type[Component], name: str) -> ModelSpec:
-        """Return this model without ``components``."""
-
-        missing = [c.__name__ for c in components if c not in self.components]
-        if missing:
-            raise ValueError(f"{self.name} has no {missing}")
-        kept = tuple(c for c in self.components if c not in components)
-        return ModelSpec(name, kept, self._settings_for(kept))
-
-    def with_settings(self, **settings) -> ModelSpec:
-        """Return this model with the given component settings (``LMAX_G=20``)."""
-
-        merged = {**dict(self.settings), **settings}
-        return ModelSpec(self.name, self.components, tuple(merged.items()))
-
-    def _settings_for(self, components) -> tuple[tuple[str, object], ...]:
-        known = {n for cls in components for n in cls.setting_names()}
-        return tuple((n, v) for n, v in self.settings if n in known)
-
-    # --- reading the model ----------------------------------------------------
-
-    def has(self, component: type[Component]) -> bool:
-        """Whether the model includes ``component`` or a subclass of it."""
-
-        return any(issubclass(c, component) for c in self.components)
-
-    def setting(self, name: str):
-        """Return a setting's value: the model's override or the component's own."""
-
-        overrides = dict(self.settings)
-        if name in overrides:
-            return overrides[name]
-        for cls in self.components:
-            if name in cls.setting_names():
-                return getattr(cls, name)
-        raise KeyError(f"{self.name} has no setting {name!r}")
-
-    def resolved(self) -> ModelSpec:
-        """Return this model with every setting explicit, at the components' current values.
-
-        The solver caches its kernels on the resolved model, so rebinding a
-        component's setting before a solve compiles a new kernel.
-        """
-
-        names = {n for cls in self.components for n in cls.setting_names()}
-        values = tuple((n, self.setting(n)) for n in sorted(names))
-        return ModelSpec(self.name, self.components, values)
-
-    def instances(self) -> list[Component]:
-        """Return the components instantiated with the model's settings."""
-
-        overrides = dict(self.settings)
-        return [
-            cls(**{n: overrides[n] for n in cls.setting_names() if n in overrides})
-            for cls in self.components
-        ]
-
-    def build(
-        self,
-        thermal_history: Component | None = None,
-        extra=(),
-        time: str = "tau",
-        clock: str | None = None,
-        last=(),
-    ) -> Equations:
-        """Return the component :class:`~discoeb.components._component.Equations` of this cosmological model.
-
-        ``thermal_history`` provides ``a``, ``opacity``, ``cs2``, ``rhonu`` and
-        ``pnu`` as functions of ``tau``. In the solve it is the recombination
-        block of :func:`discoeb.solver._kernel.joint_kernel`, in a test anything.
-        Without it the model still gives the state layout, the initial
-        conditions and the sparsity pattern. ``extra`` lists component
-        instances to append (the line-of-sight sources of DISCO-CMB).
-        """
-
-        components = self.instances()
-        if thermal_history is not None:
-            components.insert(0, thermal_history)
-        components.extend(extra)
-        return Equations(components, time=time, clock=clock, last=last)
-
-    def parameters(self, extra=()) -> dict[str, ParameterDeclaration]:
-        """Return the parameters the model's components declare, by name.
-
-        They include those of the recombination block every solve appends
-        (:func:`discoeb.solver._kernel.joint_model`) and of the component classes
-        ``extra``. The keys among them make up the cosmology dictionary
-        (:meth:`parameter_keys`), the columns the kernel's parameter row
-        (:func:`discoeb.solver._kernel.parameter_layout`).
-        """
-
-        return declared_parameters((*self.components, Recombination, *extra))
-
-    def parameter_keys(self) -> dict[str, object]:
-        """Return the cosmology-dictionary keys of :meth:`parameters` and their defaults.
-
-        :data:`~discoeb.components._component.REQUIRED` marks a key every cosmology gives.
-        """
-
-        return {n: p.default for n, p in self.parameters().items() if p.is_key}
-
-    def differentiable_parameters(self) -> tuple[str, ...]:
-        """Return the keys a solve of this model differentiates, in declaration order.
-
-        Those declared ``Parameter(differentiable=True)``, except ``z_re``
-        without :class:`~discoeb.components.recombination.ReionizationDepth`,
-        whose state makes the steps resolve the reionization step's
-        derivative.
-        """
-
-        return tuple(
-            n
-            for n, p in self.parameters().items()
-            if p.is_key
-            and p.differentiable
-            and (n != "z_re" or self.has(ReionizationDepth))
-        )
-
-    def state_names(self) -> tuple[str, ...]:
-        """Return the perturbation state's element names in index order."""
-
-        return _state_names(self.resolved())
-
-    def sparsity(self):
-        """Return the ``(nnz, 2)`` index array of the perturbation Jacobian's nonzeros.
-
-        modax's Rodas5P kernel uses the pattern twice. It colours the column
-        intersection graph, so a Jacobian costs ``n_colours + 1`` Enzyme
-        sweeps rather than ``nvar + 1``. And it orders the pattern,
-        factorises it symbolically and compiles a sparse LU and a pair of
-        sparse triangular solves for that exact structure.
-        :meth:`Equations.sparsity <discoeb.components._component.Equations.sparsity>` traces the
-        pattern through the equations, so the tridiagonal free-streaming
-        tails and the Einstein constraints that tie the metric, the fluids
-        and the lowest multipoles together come straight from the code that
-        writes them. The pattern is exact: the superset a colouring needs and
-        no more. For flat LCDM at the default truncations it has 165
-        entries, 11 colours and 198 slots of ``L + U`` after AMD's fill-in
-        (``tests/test_eb_sparsity.py``).
-
-        The kernel factorises ``I/(h gamma) - J``. modax keeps a slot for every
-        diagonal and resolves ``slot(i, i)`` through that table even where
-        ``J`` has no entry (an undamped free-streaming multipole has none).
-        This needs modax at or after commit 9f54d12 (2026-11-01).
-        """
-
-        return self.build().sparsity()
-
-    def check(self, cosmology) -> None:
-        """Raise ``ValueError`` if ``cosmology`` sets parameters this model ignores.
-
-        ``cosmology`` is a parameter dictionary or a cosmology. A key that another
-        component declares but none of this model's must keep its declared
-        default: a model without the dark-energy fluid needs ``w_DE_0 = -1``
-        and ``w_DE_a = 0``, one without massive neutrinos ``Nmnu = 0``. Then
-        each component's ``check`` hook runs on the keys it names
-        (:meth:`DarkEnergy.check <discoeb.components.species.DarkEnergy.check>` needs
-        ``w != -1``). A traced value, under ``jit``, has nothing to compare
-        yet and is skipped.
-        """
-
-        values = _cosmology_dictionary(cosmology)
-        self.check_keys(values)
-        keys = self.parameter_keys()
-        filled = {**{k: v for k, v in keys.items() if v is not REQUIRED}, **values}
-        for cls in (*self.components, Recombination):
-            hook = getattr(cls, "check", None)
-            if hook is None:
-                continue
-            names = [cls._renames.get(n, n) for n in inspect.signature(hook).parameters]
-            if any(n not in filled for n in names):
-                continue  # a required key left out fails where it is read
-            args = [filled[n] for n in names]
-            if not all(map(_is_concrete, args)):
-                continue  # traced under jit: nothing to compare yet
-            try:
-                hook(*args)
-            except ValueError as e:
-                raise ValueError(f"{self.name}: {e}") from None
-
-    def hubble_constant(self, cosmology):
-        """Return ``H0`` in km/s/Mpc: the model's expansion rate today, ``adotoa(a = 1)``.
-
-        The densities are physical, so ``H0`` follows from them. A model
-        whose expansion rate reads a state of its own (a scalar field) has
-        it only from a solve, as ``adotoa`` today, and raises ``TypeError``.
-        """
-
-        if _expansion_reads_state(self):
-            raise TypeError(
-                f"{self.name}: the expansion rate reads a state of the model, "
-                "so its value today needs a solve: keep 'adotoa' today"
-            )
-        values = _cosmology_dictionary(cosmology)
-        module = math if all(map(_is_number, values.values())) else jnp
-        adotoa = _host_equations(self).evaluate(
-            "adotoa",
-            math=module,
-            a=1.0,
-            **derive_parameters(self.parameters(), values, math=module),
-        )
-        return adotoa * math.sqrt(3.0 / GRHOM_PER_H0SQ)
-
-    def physical_parameters(self, params) -> dict:
-        """Return a dictionary in ``Omegam``, ``Omegab``, ``H0`` as one in the model's own parameters.
-
-        ``omega_b = Omegab h^2``, ``omega_c = (Omegam - Omegab) h^2``,
-        ``omega_k = Omegak h^2`` (``Omegak`` defaults to 0), any other
-        component's ``x_omega = x_Omega h^2``, and ``omega_de`` the
-        dark-energy density
-        that makes the model expand at ``H0`` today. The expansion rate
-        squared is linear in a density, so one secant step from two
-        evaluations finds it exactly. Every other key passes through. Plain
-        JAX arithmetic, so a derivative in ``H0`` or ``Omegam`` goes through it.
-        """
-
-        given = dict(params)
-        keys = self.parameter_keys()
-        if "omega_de" not in keys:
-            raise TypeError(
-                f"{self.name} has no dark-energy density to close the budget "
-                "with; give its own parameters"
-            )
-        if "omega_de" in given:
-            raise TypeError("give omega_de or H0, not both")
-        try:
-            Omegam, Omegab, H0 = (given.pop(k) for k in ("Omegam", "Omegab", "H0"))
-        except KeyError as e:
-            raise TypeError(f"from density parameters: missing {e}") from None
-        h2 = (H0 / 100.0) ** 2
-        native = {
-            "omega_b": Omegab * h2,
-            "omega_c": (Omegam - Omegab) * h2,
-            "omega_k": given.pop("Omegak", 0.0) * h2,
-        }
-        for key in list(given):
-            physical = key.replace("Omega", "omega")
-            if physical != key and declarations_of(physical):
-                native[physical] = given.pop(key) * h2
-        native = {**given, **native}
-
-        def miss(omega_de):
-            return self.hubble_constant({**native, "omega_de": omega_de}) ** 2 - H0**2
-
-        none, all_of_it = miss(0.0 * h2), miss(h2)
-        native["omega_de"] = -none * h2 / (all_of_it - none)
-        return native
-
-    def check_keys(self, cosmology) -> None:
-        """Raise ``ValueError`` if ``cosmology`` sets a parameter of a component this model lacks.
-
-        The first half of :meth:`check`: a key that another component
-        declares and none of this model's must keep its declared default, or
-        the solve would ignore it without a word.
-        """
-
-        values = _cosmology_dictionary(cosmology)
-        parameters = self.parameters()
-        for key, value in values.items():
-            if key in parameters or not _is_concrete(value):
-                continue
-            owners = [(cls, p) for cls, p in declarations_of(key) if p.is_key]
-            if not owners:
-                continue  # a key no component declares
-            default = owners[0][1].default
-            if default is REQUIRED or float(value) != default:
-                names = ", ".join(sorted({cls.__name__ for cls, _ in owners}))
-                raise ValueError(
-                    f"{self.name} has no component with the parameter {key} "
-                    f"(set to {value}, default {default}); use a model with {names}"
-                )
-
-
-@functools.lru_cache(maxsize=None)
-def _host_equations(model: ModelSpec) -> Equations:
-    """The model's equations for evaluating its providers on the host."""
-
-    return model.build()
-
-
-@functools.lru_cache(maxsize=None)
-def _expansion_reads_state(model: ModelSpec) -> bool:
-    return _host_equations(model).reads_state("adotoa")
-
-
-def _is_concrete(value) -> bool:
-    """Whether ``value`` is a number now, not a JAX tracer of ``jit`` or a derivative."""
-
-    return not isinstance(value, jax.core.Tracer)
-
-
-def _is_number(value) -> bool:
-    """Whether ``value`` is a plain number, not a JAX or numpy array."""
-
-    return isinstance(value, (int, float))
-
-
-def _cosmology_dictionary(cosmology) -> dict:
-    """Return the parameters of a cosmology or of a parameter dictionary."""
-
-    if isinstance(cosmology, dict):
-        return dict(cosmology)
-    return cosmology.to_dict()
-
-
-_STATE_NAMES: dict = {}
-
-
-def _state_names(model: ModelSpec) -> tuple[str, ...]:
-    if model not in _STATE_NAMES:
-        _STATE_NAMES[model] = tuple(model.build().state)
-    return _STATE_NAMES[model]
-
-
-# --- models as classes ------------------------------------------------------
+__all__ = ["Model"]
 
 
 class Model(Recombination):
@@ -434,8 +54,11 @@ class Model(Recombination):
     :class:`~discoeb.components.recombination.Recombination`.
 
     Class keywords set component settings, ``class Coarse(LCDM, LMAX_G=10)``,
-    and ``name=`` the name errors and the kernel cache use. ``LCDM.spec`` is
-    the :class:`ModelSpec` the solver reads.
+    and ``name=`` the name errors use. A setting a model leaves out takes the
+    component's own value, which ``DISCO_<NAME>`` in the environment or
+    rebinding the class attribute (``Photons.LMAX_G = 20``) sets. The solver
+    caches its kernel on :meth:`resolved`, the model with every setting
+    explicit.
 
     A cosmology is an immutable JAX pytree whose leaves are its
     parameters, so ``jax.jit`` traces them and ``jax.grad`` returns a
@@ -444,8 +67,12 @@ class Model(Recombination):
     gradient in chosen parameters: ``grad(lambda om: f(planck.replace(omega_c=om)))``.
     """
 
-    spec: ClassVar[ModelSpec]
-    """The components and settings the solver reads, on which it caches the kernel."""
+    name: ClassVar[str]
+    """The model's name, ``name=`` or the class's."""
+    components: ClassVar[tuple[type[Component], ...]]
+    """The component classes, in state order."""
+    settings: ClassVar[tuple[tuple[str, object], ...]]
+    """The settings the model overrides, ``(name, value)`` sorted by name."""
     _keys: ClassVar[dict[str, Any]] = {}
     _held: dict[str, Any] = {}
     """Traced keys of other components :meth:`from_dict` was given, held for the solve."""
@@ -458,16 +85,27 @@ class Model(Recombination):
             if base is Model or not issubclass(base, Component):
                 continue
             if issubclass(base, Model):
-                components += base.spec.components
-                inherited.update(base.spec.settings)
+                components += base.components
+                inherited.update(base.settings)
             else:
                 components.append(base)
-        cls.spec = ModelSpec(
-            name or cls.__name__,
-            tuple(dict.fromkeys(components)),
-            tuple({**inherited, **settings}.items()),
-        )
-        cls._keys = cls.spec.parameter_keys()
+        cls.name = name or cls.__name__
+        cls.components = tuple(dict.fromkeys(components))
+        cls.settings = tuple(sorted({**inherited, **settings}.items()))
+        known = {n for c in cls.components for n in c.setting_names()}
+        unknown = sorted(dict(cls.settings).keys() - known)
+        if unknown:
+            raise ValueError(
+                f"{cls.name} has no component with settings {unknown}; "
+                f"its settings are {sorted(known)}"
+            )
+        if not any(c.fixes_gauge for c in cls.components):
+            raise ValueError(
+                f"{cls.name} has no species whose rest frame fixes the "
+                "synchronous gauge: keep ColdDarkMatter, at whatever density"
+            )
+        # raises if two components declare one name differently
+        cls._keys = cls.parameter_keys()
         cls.__signature__ = inspect.Signature(
             [
                 inspect.Parameter(
@@ -482,6 +120,8 @@ class Model(Recombination):
         jax.tree_util.register_pytree_node(
             cls, _flatten, functools.partial(_unflatten, cls)
         )
+
+    # --- a cosmology -----------------------------------------------------------
 
     def __init__(self, *args, **values):
         cls = type(self)
@@ -506,7 +146,7 @@ class Model(Recombination):
         if missing:
             raise TypeError(f"{cls.__name__} needs the parameters {missing}")
         filled = {key: values.get(key, default) for key, default in cls._keys.items()}
-        cls.spec.check(filled)
+        cls.validate(filled)
         _set(self, filled)
 
     @classmethod
@@ -516,14 +156,14 @@ class Model(Recombination):
         Unlike ``cls(**params)``, it accepts keys this model does not have
         while they keep their declared default (``w_DE_0 = -1`` for a model
         without dark energy), and ignores keys no component declares
-        (:meth:`ModelSpec.check_keys`). For a dictionary written for another
+        (:meth:`validate_keys`). For a dictionary written for another
         model. Under ``jit`` or a derivative such a key's value is traced
         and can't be checked, so the cosmology holds it for the solve, which
         raises if anything differentiates it. The model reads none of it,
         and a zero derivative would pass for an answer.
         """
 
-        cls.spec.check_keys(params)
+        cls.validate_keys(params)
         cosmology = cls(**{key: params[key] for key in cls._keys if key in params})
         held = {
             key: value
@@ -542,7 +182,7 @@ class Model(Recombination):
         The model's own parameters are physical densities. This converts,
         ``omega_b = Omegab h^2`` and ``omega_c = (Omegam - Omegab) h^2``, and
         sets ``omega_de`` so that the model expands at ``H0`` (km/s/Mpc)
-        today (:meth:`ModelSpec.physical_parameters`). ``others`` are the
+        today (:meth:`physical_parameters`). ``others`` are the
         model's remaining parameters (``Tcmb``, ``A_s``, ...). JAX values
         stay differentiable, so this is how to take a derivative in ``H0``
         or ``Omegam``. A model with no ``omega_de`` (a scalar field) has no
@@ -550,7 +190,7 @@ class Model(Recombination):
         """
 
         return cls(
-            **cls.spec.physical_parameters(
+            **cls.physical_parameters(
                 {"Omegam": Omegam, "Omegab": Omegab, "H0": H0, "Omegak": Omegak}
                 | others
             )
@@ -558,9 +198,9 @@ class Model(Recombination):
 
     @property
     def H0(self):
-        """The Hubble constant in km/s/Mpc, which the densities sum to (:meth:`ModelSpec.hubble_constant`)."""
+        """The Hubble constant in km/s/Mpc, which the densities sum to (:meth:`hubble_constant`)."""
 
-        return type(self).spec.hubble_constant(self.to_dict())
+        return type(self).hubble_constant(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
         """Return the parameters by name, every one of the model's."""
@@ -583,49 +223,278 @@ class Model(Recombination):
         values = ", ".join(f"{k}={v!r}" for k, v in self.to_dict().items())
         return f"{type(self).__name__}({values})"
 
-    # --- the model -----------------------------------------------------------
-
-    @classmethod
-    def parameters(cls, extra=()) -> dict[str, ParameterDeclaration]:
-        """Return the parameters the model declares, by name (:meth:`ModelSpec.parameters`)."""
-
-        return cls.spec.parameters(extra)
-
-    @classmethod
-    def parameter_keys(cls) -> dict[str, Any]:
-        """Return the constructor's parameters and their defaults, :data:`REQUIRED` if none."""
-
-        return dict(cls._keys)
-
-    @classmethod
-    def state_names(cls) -> tuple[str, ...]:
-        """Return the perturbation state's element names in index order."""
-
-        return cls.spec.state_names()
-
-    @classmethod
-    def sparsity(cls):
-        """Return the perturbation Jacobian's pattern (:meth:`ModelSpec.sparsity`)."""
-
-        return cls.spec.sparsity()
-
-    @classmethod
-    def setting(cls, name: str):
-        """Return a setting's value: the model's override or the component's own."""
-
-        return cls.spec.setting(name)
+    # --- reading the model -----------------------------------------------------
 
     @classmethod
     def has(cls, component: type[Component]) -> bool:
         """Whether the model includes ``component`` or a subclass of it."""
 
-        return cls.spec.has(component)
+        return any(issubclass(c, component) for c in cls.components)
 
     @classmethod
-    def build(cls, thermal_history: Component | None = None, extra=()) -> Equations:
-        """Return the model's :class:`~discoeb.components._component.Equations` (:meth:`ModelSpec.build`)."""
+    def setting(cls, name: str):
+        """Return a setting's value: the model's override or the component's own."""
 
-        return cls.spec.build(thermal_history, extra)
+        overrides = dict(cls.settings)
+        if name in overrides:
+            return overrides[name]
+        for component in cls.components:
+            if name in component.setting_names():
+                return getattr(component, name)
+        raise KeyError(f"{cls.name} has no setting {name!r}")
+
+    @classmethod
+    def resolved(cls) -> type[Model]:
+        """Return this model with every setting explicit, at the components' current values.
+
+        Models of one name, components and settings resolve to the same
+        class, the first such model asked or a subclass of it, so the solver
+        caches its kernels on it. Rebinding a component's setting before a
+        solve resolves to another class and compiles a new kernel.
+        """
+
+        names = sorted({n for c in cls.components for n in c.setting_names()})
+        values = {n: cls.setting(n) for n in names}
+        key = (cls.name, cls.components, tuple(values.items()))
+        if key not in _RESOLVED:
+            explicit = dict(cls.settings) == values
+            _RESOLVED[key] = cls if explicit else _derived(cls.name, (cls,), values)
+        return _RESOLVED[key]
+
+    @classmethod
+    def instances(cls) -> list[Component]:
+        """Return the components instantiated with the model's settings."""
+
+        overrides = dict(cls.settings)
+        return [
+            c(**{n: overrides[n] for n in c.setting_names() if n in overrides})
+            for c in cls.components
+        ]
+
+    @classmethod
+    def build(
+        cls,
+        thermal_history: Component | None = None,
+        extra=(),
+        time: str = "tau",
+        clock: str | None = None,
+        last=(),
+    ) -> Equations:
+        """Return the component :class:`~discoeb.components._component.Equations` of this cosmological model.
+
+        ``thermal_history`` provides ``a``, ``opacity``, ``cs2``, ``rhonu`` and
+        ``pnu`` as functions of ``tau``. In the solve it is the recombination
+        block of :func:`discoeb.solver._kernel.joint_kernel`, in a test anything.
+        Without it the model still gives the state layout, the initial
+        conditions and the sparsity pattern. ``extra`` lists component
+        instances to append (the line-of-sight sources of DISCO-CMB).
+        """
+
+        components = cls.instances()
+        if thermal_history is not None:
+            components.insert(0, thermal_history)
+        components.extend(extra)
+        return Equations(components, time=time, clock=clock, last=last)
+
+    @classmethod
+    def parameters(cls, extra=()) -> dict[str, ParameterDeclaration]:
+        """Return the parameters the model's components declare, by name.
+
+        They include those of the recombination block every solve appends
+        (:func:`discoeb.solver._kernel.joint_model`) and of the component classes
+        ``extra``. The keys among them make up the cosmology dictionary
+        (:meth:`parameter_keys`), the columns the kernel's parameter row
+        (:func:`discoeb.solver._kernel.parameter_layout`).
+        """
+
+        return declared_parameters((*cls.components, Recombination, *extra))
+
+    @classmethod
+    def parameter_keys(cls) -> dict[str, Any]:
+        """Return the constructor's parameters and their defaults, :data:`REQUIRED` if none."""
+
+        return {n: p.default for n, p in cls.parameters().items() if p.is_key}
+
+    @classmethod
+    def differentiable_parameters(cls) -> tuple[str, ...]:
+        """Return the keys a solve of this model differentiates, in declaration order.
+
+        Those declared ``Parameter(differentiable=True)``, except ``z_re``
+        without :class:`~discoeb.components.recombination.ReionizationDepth`,
+        whose state makes the steps resolve the reionization step's
+        derivative.
+        """
+
+        return tuple(
+            n
+            for n, p in cls.parameters().items()
+            if p.is_key
+            and p.differentiable
+            and (n != "z_re" or cls.has(ReionizationDepth))
+        )
+
+    @classmethod
+    def state_names(cls) -> tuple[str, ...]:
+        """Return the perturbation state's element names in index order."""
+
+        return _state_names(cls.resolved())
+
+    @classmethod
+    def sparsity(cls):
+        """Return the ``(nnz, 2)`` index array of the perturbation Jacobian's nonzeros.
+
+        modax's Rodas5P kernel uses the pattern twice. It colours the column
+        intersection graph, so a Jacobian costs ``n_colours + 1`` Enzyme
+        sweeps rather than ``nvar + 1``. And it orders the pattern,
+        factorises it symbolically and compiles a sparse LU and a pair of
+        sparse triangular solves for that exact structure.
+        :meth:`Equations.sparsity <discoeb.components._component.Equations.sparsity>` traces the
+        pattern through the equations, so the tridiagonal free-streaming
+        tails and the Einstein constraints that tie the metric, the fluids
+        and the lowest multipoles together come straight from the code that
+        writes them. The pattern is exact: the superset a colouring needs and
+        no more. For flat LCDM at the default truncations it has 165
+        entries, 11 colours and 198 slots of ``L + U`` after AMD's fill-in
+        (``tests/test_eb_sparsity.py``).
+
+        The kernel factorises ``I/(h gamma) - J``. modax keeps a slot for every
+        diagonal and resolves ``slot(i, i)`` through that table even where
+        ``J`` has no entry (an undamped free-streaming multipole has none).
+        This needs modax at or after commit 9f54d12 (2026-11-01).
+        """
+
+        return cls.build().sparsity()
+
+    @classmethod
+    def validate(cls, cosmology) -> None:
+        """Raise ``ValueError`` if ``cosmology`` sets parameters this model ignores.
+
+        ``cosmology`` is a parameter dictionary or a cosmology. A key that another
+        component declares but none of this model's must keep its declared
+        default: a model without the dark-energy fluid needs ``w_DE_0 = -1``
+        and ``w_DE_a = 0``, one without massive neutrinos ``Nmnu = 0``. Then
+        each component's ``check`` hook runs on the keys it names
+        (:meth:`DarkEnergy.check <discoeb.components.species.DarkEnergy.check>` needs
+        ``w != -1``). A traced value, under ``jit``, has nothing to compare
+        yet and is skipped. Not ``check``: a model inherits its components'
+        ``check`` hooks.
+        """
+
+        values = _cosmology_dictionary(cosmology)
+        cls.validate_keys(values)
+        keys = cls.parameter_keys()
+        filled = {**{k: v for k, v in keys.items() if v is not REQUIRED}, **values}
+        for component in (*cls.components, Recombination):
+            hook = getattr(component, "check", None)
+            if hook is None:
+                continue
+            names = [
+                component._renames.get(n, n) for n in inspect.signature(hook).parameters
+            ]
+            if any(n not in filled for n in names):
+                continue  # a required key left out fails where it is read
+            args = [filled[n] for n in names]
+            if not all(map(_is_concrete, args)):
+                continue  # traced under jit: nothing to compare yet
+            try:
+                hook(*args)
+            except ValueError as e:
+                raise ValueError(f"{cls.name}: {e}") from None
+
+    @classmethod
+    def validate_keys(cls, cosmology) -> None:
+        """Raise ``ValueError`` if ``cosmology`` sets a parameter of a component this model lacks.
+
+        The first half of :meth:`validate`: a key that another component
+        declares and none of this model's must keep its declared default, or
+        the solve would ignore it without a word.
+        """
+
+        values = _cosmology_dictionary(cosmology)
+        parameters = cls.parameters()
+        for key, value in values.items():
+            if key in parameters or not _is_concrete(value):
+                continue
+            owners = [(c, p) for c, p in declarations_of(key) if p.is_key]
+            if not owners:
+                continue  # a key no component declares
+            default = owners[0][1].default
+            if default is REQUIRED or float(value) != default:
+                names = ", ".join(sorted({c.__name__ for c, _ in owners}))
+                raise ValueError(
+                    f"{cls.name} has no component with the parameter {key} "
+                    f"(set to {value}, default {default}); use a model with {names}"
+                )
+
+    @classmethod
+    def hubble_constant(cls, cosmology):
+        """Return ``H0`` in km/s/Mpc: the model's expansion rate today, ``adotoa(a = 1)``.
+
+        The densities are physical, so ``H0`` follows from them. A model
+        whose expansion rate reads a state of its own (a scalar field) has
+        it only from a solve, as ``adotoa`` today, and raises ``TypeError``.
+        """
+
+        if _expansion_reads_state(cls):
+            raise TypeError(
+                f"{cls.name}: the expansion rate reads a state of the model, "
+                "so its value today needs a solve: keep 'adotoa' today"
+            )
+        values = _cosmology_dictionary(cosmology)
+        module = math if all(map(_is_number, values.values())) else jnp
+        adotoa = _host_equations(cls).evaluate(
+            "adotoa",
+            math=module,
+            a=1.0,
+            **derive_parameters(cls.parameters(), values, math=module),
+        )
+        return adotoa * math.sqrt(3.0 / GRHOM_PER_H0SQ)
+
+    @classmethod
+    def physical_parameters(cls, params) -> dict:
+        """Return a dictionary in ``Omegam``, ``Omegab``, ``H0`` as one in the model's own parameters.
+
+        ``omega_b = Omegab h^2``, ``omega_c = (Omegam - Omegab) h^2``,
+        ``omega_k = Omegak h^2`` (``Omegak`` defaults to 0), any other
+        component's ``x_omega = x_Omega h^2``, and ``omega_de`` the
+        dark-energy density
+        that makes the model expand at ``H0`` today. The expansion rate
+        squared is linear in a density, so one secant step from two
+        evaluations finds it exactly. Every other key passes through. Plain
+        JAX arithmetic, so a derivative in ``H0`` or ``Omegam`` goes through it.
+        """
+
+        given = dict(params)
+        keys = cls.parameter_keys()
+        if "omega_de" not in keys:
+            raise TypeError(
+                f"{cls.name} has no dark-energy density to close the budget "
+                "with; give its own parameters"
+            )
+        if "omega_de" in given:
+            raise TypeError("give omega_de or H0, not both")
+        try:
+            Omegam, Omegab, H0 = (given.pop(k) for k in ("Omegam", "Omegab", "H0"))
+        except KeyError as e:
+            raise TypeError(f"from density parameters: missing {e}") from None
+        h2 = (H0 / 100.0) ** 2
+        native = {
+            "omega_b": Omegab * h2,
+            "omega_c": (Omegam - Omegab) * h2,
+            "omega_k": given.pop("Omegak", 0.0) * h2,
+        }
+        for key in list(given):
+            physical = key.replace("Omega", "omega")
+            if physical != key and declarations_of(physical):
+                native[physical] = given.pop(key) * h2
+        native = {**given, **native}
+
+        def miss(omega_de):
+            return cls.hubble_constant({**native, "omega_de": omega_de}) ** 2 - H0**2
+
+        none, all_of_it = miss(0.0 * h2), miss(h2)
+        native["omega_de"] = -none * h2 / (all_of_it - none)
+        return native
 
     # --- models derived at run time --------------------------------------------
 
@@ -641,15 +510,20 @@ class Model(Recombination):
     ) -> type[Model]:
         """Return a model with ``new`` in place of ``old``, at its position."""
 
-        spec = cls.spec.replace(old, new, name=name)
-        return _derived(name, (Model, *spec.components), dict(spec.settings))
+        if old not in cls.components:
+            raise ValueError(f"{cls.name} has no {old.__name__}")
+        components = tuple(new if c is old else c for c in cls.components)
+        return _derived(name, (Model, *components), cls._settings_for(components))
 
     @classmethod
     def remove(cls, *components: type[Component], name: str) -> type[Model]:
         """Return a model without ``components``."""
 
-        spec = cls.spec.remove(*components, name=name)
-        return _derived(name, (Model, *spec.components), dict(spec.settings))
+        missing = [c.__name__ for c in components if c not in cls.components]
+        if missing:
+            raise ValueError(f"{cls.name} has no {missing}")
+        kept = tuple(c for c in cls.components if c not in components)
+        return _derived(name, (Model, *kept), cls._settings_for(kept))
 
     @classmethod
     def with_settings(cls, **settings) -> type[Model]:
@@ -657,11 +531,19 @@ class Model(Recombination):
 
         if not settings:
             return cls
-        return _derived(cls.spec.name, (cls,), settings)
+        return _derived(cls.name, (cls,), settings)
+
+    @classmethod
+    def _settings_for(cls, components) -> dict[str, object]:
+        known = {n for c in components for n in c.setting_names()}
+        return {n: v for n, v in cls.settings if n in known}
 
 
 _DERIVED: dict[tuple, type[Model]] = {}
 """The models derived at run time, one class per name, bases and settings."""
+
+_RESOLVED: dict[tuple, type[Model]] = {}
+"""The resolved models, one class per name, components and settings."""
 
 
 def _derived(name: str, bases: tuple, settings: dict) -> type[Model]:
@@ -671,6 +553,43 @@ def _derived(name: str, bases: tuple, settings: dict) -> type[Model]:
             name, bases, {"__module__": __name__}, name=name, **settings
         )
     return _DERIVED[key]
+
+
+@functools.lru_cache(maxsize=None)
+def _host_equations(model: type[Model]) -> Equations:
+    """The model's equations for evaluating its providers on the host."""
+
+    return model.build()
+
+
+@functools.lru_cache(maxsize=None)
+def _expansion_reads_state(model: type[Model]) -> bool:
+    return _host_equations(model).reads_state("adotoa")
+
+
+@functools.lru_cache(maxsize=None)
+def _state_names(model: type[Model]) -> tuple[str, ...]:
+    return tuple(model.build().state)
+
+
+def _is_concrete(value) -> bool:
+    """Whether ``value`` is a number now, not a JAX tracer of ``jit`` or a derivative."""
+
+    return not isinstance(value, jax.core.Tracer)
+
+
+def _is_number(value) -> bool:
+    """Whether ``value`` is a plain number, not a JAX or numpy array."""
+
+    return isinstance(value, (int, float))
+
+
+def _cosmology_dictionary(cosmology) -> dict:
+    """Return the parameters of a cosmology or of a parameter dictionary."""
+
+    if isinstance(cosmology, dict):
+        return dict(cosmology)
+    return cosmology.to_dict()
 
 
 def _set(cosmology: Model, values: dict) -> None:
@@ -699,10 +618,9 @@ def _documented(cls: type[Model]) -> str:
     """The class's own docstring with its constructor's parameters listed after it."""
 
     own = inspect.cleandoc(vars(cls).get("__doc__") or "")
-    keys = cls.spec.parameter_keys()
-    differentiable = cls.spec.differentiable_parameters()
+    differentiable = cls.differentiable_parameters()
     lines = ["Parameters", "----------"]
-    for key, default in keys.items():
+    for key, default in cls._keys.items():
         line = "Required." if default is REQUIRED else f"Default {default!r}."
         if key in differentiable:
             line += " Differentiable through solve_eb."
@@ -713,12 +631,11 @@ def _documented(cls: type[Model]) -> str:
 # --- what a solve takes ---------------------------------------------------------
 
 
-def _batch_of(cosmologies) -> tuple[ModelSpec, tuple[dict, ...]]:
-    """Return one cosmology or a sequence of one model's as ``(spec, dicts)``.
+def _batch_of(cosmologies) -> tuple[type[Model], tuple[dict, ...]]:
+    """Return one cosmology or a sequence of one model's as ``(model, dicts)``.
 
-    ``spec`` is the model's :class:`ModelSpec`, on which the compiled kernel
-    is cached, and ``dicts`` the cosmologies' parameter dictionaries (their
-    values numbers, JAX arrays or tracers).
+    ``model`` is their class and ``dicts`` the cosmologies' parameter
+    dictionaries (their values numbers, JAX arrays or tracers).
     """
 
     batch = (cosmologies,) if isinstance(cosmologies, Model) else tuple(cosmologies)
@@ -733,14 +650,12 @@ def _batch_of(cosmologies) -> tuple[ModelSpec, tuple[dict, ...]]:
             "the cosmologies of one solve share a model, whose kernel it compiles: "
             f"got {', '.join(c.__name__ for c in classes)}"
         )
-    return classes[0].spec, tuple({**c._held, **c.to_dict()} for c in batch)
+    return classes[0], tuple({**c._held, **c.to_dict()} for c in batch)
 
 
-def _spec_of(model) -> ModelSpec:
-    """Return a model class's :class:`ModelSpec`, or a spec as it is."""
+def _model_of(model) -> type[Model]:
+    """Return ``model`` if it is a model class such as ``LCDM``, else raise ``TypeError``."""
 
-    if isinstance(model, type) and issubclass(model, Model):
-        return model.spec
-    if isinstance(model, ModelSpec):
+    if isinstance(model, type) and issubclass(model, Model) and model is not Model:
         return model
     raise TypeError(f"expected a model such as LCDM, not {model!r}")

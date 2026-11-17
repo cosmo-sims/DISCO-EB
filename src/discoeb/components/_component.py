@@ -514,7 +514,7 @@ class Component:
     A component may define a ``check`` classmethod whose parameters name the
     cosmology keys it validates (``check(cls, w_DE_0, w_DE_a)``), raising
     ``ValueError`` for values it cannot represent.
-    :meth:`ModelSpec.check <discoeb.models.ModelSpec.check>` calls
+    :meth:`Model.validate <discoeb.models.Model.validate>` calls
     it with their values, unless one of them is traced. ``check`` is never a
     provider.
     """

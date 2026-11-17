@@ -11,7 +11,6 @@ from .models import (
     W0WACDM,
     W0WACDM_MNU,
     Model,
-    ModelSpec,
 )
 from .observables import matter_power_spectrum
 from .solver import (
@@ -31,7 +30,6 @@ from .solver import (
 __all__ = [
     "Component",
     "Model",
-    "ModelSpec",
     "DIRECTED_NAMES",
     "A_START",
     "PERTURB_ATOL",

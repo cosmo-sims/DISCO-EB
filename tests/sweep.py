@@ -83,7 +83,7 @@ def _matter_power_and_steps(model, cosmologies, **options):
     batch = cosmologies_of(model, cosmologies)
     pk = np.asarray(jax.block_until_ready(_matter_power(SWEEP_K, batch, **options)))
     (_, stats), _, k_sorted = _solve_batch(
-        model.spec,
+        model,
         batch,
         SWEEP_K,
         thermo_weight=MATTER_THERMO_WEIGHT,

@@ -14,7 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..components.recombination import THERMO_ERROR_WEIGHT
-from ..models._model import Model, ModelSpec, _batch_of, _is_concrete, _spec_of
+from ..models._model import Model, _batch_of, _is_concrete, _model_of
 from ._kernel import (
     A_START,
     N_COMMON_DIRECTED,
@@ -228,12 +228,12 @@ def _inputs_of(model, extra, given, variables) -> jax.Array:
     return jnp.concatenate([variables["inputs"], implied[:, given:]], axis=1)
 
 
-def differentiable_parameters(model: type[Model] | ModelSpec) -> tuple[str, ...]:
+def differentiable_parameters(model: type[Model]) -> tuple[str, ...]:
     """Return the cosmology keys :func:`solve_eb` differentiates for ``model``.
 
     Each component marks its own: ``Parameter(differentiable=True)``
-    (:meth:`ModelSpec.differentiable_parameters
-    <discoeb.models.ModelSpec.differentiable_parameters>`). For the built-in
+    (:meth:`Model.differentiable_parameters
+    <discoeb.models.Model.differentiable_parameters>`). For the built-in
     components these are ``omega_b``, ``omega_c``, ``omega_de``, ``Tcmb``,
     ``Neff`` and ``omega_k``, ``mnu`` with
     :class:`~discoeb.components.species.MassiveNeutrinos`, ``w_DE_0`` and
@@ -249,7 +249,7 @@ def differentiable_parameters(model: type[Model] | ModelSpec) -> tuple[str, ...]
     0.8 and 1 percent. The solve never reads ``A_s``, ``n_s`` and ``k_p``.
     """
 
-    return _spec_of(model).differentiable_parameters()
+    return _model_of(model).differentiable_parameters()
 
 
 def directed_inputs(cosmologies) -> jax.Array:
@@ -270,7 +270,7 @@ def directed_inputs(cosmologies) -> jax.Array:
     return _directed_inputs(columns, model)
 
 
-def state_names(model: type[Model] | ModelSpec) -> tuple[str, ...]:
+def state_names(model: type[Model]) -> tuple[str, ...]:
     """Return the perturbation state names of ``model``, for ``keep`` and ``error_weights``."""
 
-    return _spec_of(model).state_names()
+    return _model_of(model).state_names()
