@@ -283,8 +283,8 @@ def _prepare_solve(
 ) -> _PreparedSolve:
     """Return a batch packed for launch at ``k_values``: parameter rows and initial states.
 
-    ``cosmologies`` is a cosmology, a sequence of one model's or their
-    :class:`~discoeb.models._model.CosmologyBatch`; their values may be traced under ``jit``. ``k_values`` must be
+    ``cosmologies`` are the batch's parameter dictionaries
+    (:func:`~discoeb.models._model._batch_of`); their values may be traced under ``jit``. ``k_values`` must be
     numbers: they set the launch's shape and order. ``columns`` are the
     cosmologies' :func:`_columns` if already at hand. Every
     cosmology must suit
@@ -298,7 +298,6 @@ def _prepare_solve(
     """
 
     resolved = _spec_of(model).resolved()
-    cosmologies = _batch_of(cosmologies).cosmologies
     for cosmology in cosmologies:
         resolved.check(cosmology)
     joint, hierarchy = joint_kernel(resolved, extra)
@@ -542,7 +541,7 @@ def _solve_batch(
     order over the ascending ``k_sorted``.
     """
 
-    prepared = _prepare_solve(model, cosmologies, k_values)
+    prepared = _prepare_solve(model, _batch_of(cosmologies)[1], k_values)
     if a_save is None:
         t_span = jnp.asarray([A_START, 1.0])
     else:

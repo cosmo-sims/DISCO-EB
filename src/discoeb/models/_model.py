@@ -716,27 +716,14 @@ def _documented(cls: type[Model]) -> str:
 # --- what a solve takes ---------------------------------------------------------
 
 
-@dataclass(frozen=True, eq=False)
-class CosmologyBatch:
-    """Cosmologies of one model as the solver reads them: the spec and parameter dictionaries.
+def _batch_of(cosmologies) -> tuple[ModelSpec, tuple[dict, ...]]:
+    """Return one cosmology or a sequence of one model's as ``(spec, dicts)``.
 
-    ``model`` is the :class:`ModelSpec`, on which the compiled kernel is
-    cached, and ``cosmologies`` a tuple of parameter dictionaries (their
-    values JAX arrays or tracers).
+    ``spec`` is the model's :class:`ModelSpec`, on which the compiled kernel
+    is cached, and ``dicts`` the cosmologies' parameter dictionaries (their
+    values numbers, JAX arrays or tracers).
     """
 
-    model: ModelSpec
-    cosmologies: tuple
-
-    def __len__(self) -> int:
-        return len(self.cosmologies)
-
-
-def _batch_of(cosmologies) -> CosmologyBatch:
-    """Return one cosmology or a sequence of cosmologies of one model as a :class:`CosmologyBatch`."""
-
-    if isinstance(cosmologies, CosmologyBatch):
-        return cosmologies
     batch = (cosmologies,) if isinstance(cosmologies, Model) else tuple(cosmologies)
     if not batch or not all(isinstance(c, Model) for c in batch):
         raise TypeError(
@@ -749,9 +736,7 @@ def _batch_of(cosmologies) -> CosmologyBatch:
             "the cosmologies of one solve share a model, whose kernel it compiles: "
             f"got {', '.join(c.__name__ for c in classes)}"
         )
-    return CosmologyBatch(
-        classes[0].spec, tuple({**c._held, **c.to_dict()} for c in batch)
-    )
+    return classes[0].spec, tuple({**c._held, **c.to_dict()} for c in batch)
 
 
 def _spec_of(model) -> ModelSpec:

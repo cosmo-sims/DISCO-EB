@@ -143,9 +143,8 @@ def solve_eb(
     so at fixed redshift, and at fixed initial state.
     """
 
-    batch = _batch_of(cosmologies)
-    model = batch.model
-    n_cosmo = len(batch)
+    model, dicts = _batch_of(cosmologies)
+    n_cosmo = len(dicts)
     names = tuple(model.state_names() if keep is None else keep)
     if len(set(names)) != len(names):
         raise ValueError(f"keep names a quantity twice: {names}")
@@ -168,8 +167,8 @@ def solve_eb(
         drop_first = True  # traced values must lie after A_START
     a_grid = jnp.concatenate((jnp.asarray([A_START]), a)) if drop_first else a
 
-    columns = _columns(batch.cosmologies, model)
-    prepared = _prepare_solve(model, batch, k_values, extra, columns)
+    columns = _columns(dicts, model)
+    prepared = _prepare_solve(model, dicts, k_values, extra, columns)
     # The variables of the derivative. JAX arithmetic maps them to the
     # directed inputs (_directed_inputs), and the rule of _kept_values
     # integrates one sensitivity column per variable actually differentiated.
@@ -266,9 +265,9 @@ def directed_inputs(cosmologies) -> jax.Array:
     under ``jit``.
     """
 
-    batch = _batch_of(cosmologies)
-    columns = _columns(batch.cosmologies, batch.model, held=False)
-    return _directed_inputs(columns, batch.model)
+    model, dicts = _batch_of(cosmologies)
+    columns = _columns(dicts, model, held=False)
+    return _directed_inputs(columns, model)
 
 
 def state_names(model: type[Model] | ModelSpec) -> tuple[str, ...]:

@@ -324,7 +324,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
 
 3. **models/_model.py, lcdm.py, w0wacdm.py** - Cosmological models built from those components
    - Split on 2026-11-16: `_model.py` has the base classes (`Model`,
-     `ModelSpec`, `CosmologyBatch`, `_batch_of`, `_spec_of`), `lcdm.py`
+     `ModelSpec`, `_batch_of`, `_spec_of`), `lcdm.py`
      `LCDM` and `LCDM_MNU`, `w0wacdm.py` `W0WACDM` and `W0WACDM_MNU`, and
      `models/__init__.py` exports them
    - Since 2026-11-15 a model is a class and a cosmology an instance of it:
@@ -393,8 +393,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      from their class, and `build_keep_hook` and `_columns` take the model
      or its layout as a required argument
    - `_batch_of(cosmologies)` turns one cosmology or a sequence of one
-     model's into the internal `CosmologyBatch(spec, dicts)`
-     the solver reads; mixed models raise `TypeError`. The dicts' values are
+     model's into the pair `(spec, dicts)` the solver reads; mixed models raise `TypeError`. The dicts' values are
      as given, so JAX values stay differentiable. There is no
      `PerturbationLayout` any more (removed 2026-11-12): indices come from
      `model.state_names()` or the joint model's `index`

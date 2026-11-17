@@ -368,8 +368,8 @@ def test_a_held_key_raises_when_differentiated():
 
     def column(key):
         def of(value):
-            batch = _batch_of(reference.replace(**{key: value}))
-            return _columns(batch.cosmologies, batch.model)[key][0]
+            model, dicts = _batch_of(reference.replace(**{key: value}))
+            return _columns(dicts, model)[key][0]
 
         return jax.grad(of)(getattr(reference, key))
 
@@ -430,8 +430,8 @@ def test_solve_eb_derivatives():
 
     def inputs_of(theta):
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
-        batch = _batch_of(LCDM.from_dict(physical(LCDM, param)))
-        columns = _columns(batch.cosmologies, batch.model)
+        model, dicts = _batch_of(LCDM.from_dict(physical(LCDM, param)))
+        columns = _columns(dicts, model)
         return _directed_inputs(columns, LCDM)
 
     densities = inputs_of(theta)
@@ -442,7 +442,9 @@ def test_solve_eb_derivatives():
     # converted from Omegam and H0 as JAX values, as inputs_of converts them
     traced = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
     plain = solve_eb(cosmologies_of(LCDM, traced), SOLVE_EB_K, a, keep=names)
-    prepared = _prepare_solve(LCDM, (cosmologies_of(LCDM, cosmology),), SOLVE_EB_K)
+    prepared = _prepare_solve(
+        LCDM, _batch_of(cosmologies_of(LCDM, cosmology))[1], SOLVE_EB_K
+    )
     kept = _kept_values(prepared, np.concatenate(([A_START], a)), names, ())
     base = np.asarray(kept(densities))
     # The same launch, from densities formed in JAX rather than as floats.

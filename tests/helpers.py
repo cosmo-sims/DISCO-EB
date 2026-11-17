@@ -97,11 +97,9 @@ def packed(model, cosmology, k):
     from discoeb.models._model import _batch_of
     from discoeb.solver._kernel import _columns, _pack
 
-    batch = _batch_of(cosmology)
-    columns = _columns(batch.cosmologies, batch.model, held=False)
-    params, y0 = _pack(
-        batch.model.resolved(), (), tuple(np.asarray(k).tolist()), columns
-    )
+    model, dicts = _batch_of(cosmology)
+    columns = _columns(dicts, model, held=False)
+    params, y0 = _pack(model.resolved(), (), tuple(np.asarray(k).tolist()), columns)
     return np.asarray(params), np.asarray(y0)
 
 

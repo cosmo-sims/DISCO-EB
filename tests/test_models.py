@@ -180,7 +180,7 @@ def test_a_model_rejects_a_cosmology_it_cannot_represent():
 
     held = jax.jit(lambda w: LCDM.from_dict({**BASE_COSMOLOGY, "w_DE_0": w}))(-1.0)
     assert "w_DE_0" not in held.to_dict() and "w_DE_0" in held._held
-    assert _batch_of(held).cosmologies[0]["w_DE_0"] == -1.0
+    assert _batch_of(held)[1][0]["w_DE_0"] == -1.0
 
 
 def test_a_cosmology_is_an_immutable_pytree_of_its_parameters():
@@ -319,10 +319,10 @@ def test_a_solve_takes_cosmologies_of_one_model():
     from discoeb.models._model import _batch_of
 
     planck = LCDM(**BASE_COSMOLOGY)
-    batch = _batch_of([planck, planck.replace(omega_c=0.13)])
-    assert batch.model == LCDM.spec and len(batch) == 2
-    assert batch.cosmologies[1]["omega_c"] == 0.13
-    assert len(_batch_of(planck)) == 1
+    model, dicts = _batch_of([planck, planck.replace(omega_c=0.13)])
+    assert model == LCDM.spec and len(dicts) == 2
+    assert dicts[1]["omega_c"] == 0.13
+    assert len(_batch_of(planck)[1]) == 1
     with pytest.raises(TypeError, match="share a model"):
         _batch_of([planck, W0WACDM(**BASE_COSMOLOGY, w_DE_0=-0.9)])
     with pytest.raises(TypeError, match="non-empty"):
