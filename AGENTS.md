@@ -21,11 +21,14 @@ DISCO-EB is a differentiable linear Einstein-Boltzmann solver for cosmology impl
 # build; a plain `uv sync` removes it again.
 uv sync --extra cuda13  # or --extra cuda12
 
+# Host-only tests, in parallel over the cores (JAX stays on the CPU)
+uv run pytest tests -m "not gpu" -n auto
+
 # Run the tests (they need a GPU). -rs lists skips: without `classy` (dev
 # group) the CLASS comparisons skip after their benchmark round, which reads
 # like a pass in -q output.
 uv run pytest tests -rs
-uv run pytest "tests/observables/test_power_spectrum.py::test_matter_power_spectrum_matches_class[N128]" -v
+uv run pytest "tests/test_observables.py::test_matter_power_spectrum_matches_class[N128]" -v
 
 # The entry point, a notebook: P(k) of 128 flat LCDM cosmologies about Planck
 # 2018, built, solved and timed in one jitted function. This reruns it and
@@ -251,7 +254,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      a named component cannot read a foreign quantity that shares one of its
      own names. Settings are shared. `species.Fluid` (constant `w`, `cs2`)
      is meant to be used this way: `Fluid.named` in `tests/helpers.py`
-   - Host-only tests: `tests/components/test_component.py`; a species with a
+   - Host-only tests: `tests/test_components.py`; a species with a
      parameter of its own, added from the tests alone: `SecondDarkMatter` in
      `tests/helpers.py`
 
@@ -290,7 +293,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      provide. A model missing one fails at build, like any unprovided
      quantity (no special check since 2026-11-16). Another theory is `LCDM.swap(Background, Other, name=)` or
      `swap(Metric, Other, name=)`; `from_density_parameters` follows since
-     it solves the model's own `adotoa(a=1)` (`tests/components/test_gravity.py`). A scalar state's rate is a
+     it solves the model's own `adotoa(a=1)` (`tests/test_components.py`). A scalar state's rate is a
      quantity `d_<state>` any provider or hook may read (`_collect` adds it
      to the contributions; the driver then computes it once)
    - `species.py`: `ColdDarkMatter`, `Baryons`, `Photons` (settings `LMAX_G`,
@@ -313,8 +316,8 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `DISCO_LMAX_POL`, `DISCO_LMAX_NR`, `DISCO_LMAX_NU` (default 15, minimum 3)
      and `DISCO_NQMAX` (default 3), read when `species` is imported, or a
      model's `with_settings(LMAX_G=...)`, or rebind `Photons.LMAX_G`
-   - Host-only tests: `tests/components/test_species.py`,
-     `tests/models/test_model.py`
+   - Host-only tests: `tests/test_components.py`,
+     `tests/test_models.py`
 
 3. **models/_model.py, lcdm.py, w0wacdm.py** - Cosmological models built from those components
    - Split on 2026-11-16: `_model.py` has the base classes (`Model`,
@@ -329,7 +332,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      builds `cls.spec`); `Model` subclasses `Recombination`, so every model
      has `z_re`. `Component` carries `dataclass_transform`, so ty and
      pyright read the constructor's keyword arguments off the annotated
-     declarations of every base (`tests/models/test_model.py` runs ty on
+     declarations of every base (`tests/test_models.py` runs ty on
      user code). At run time the same signature is `cls.__signature__`, and
      `__init__` raises `TypeError` for an unknown or missing key, then runs
      `spec.check`. A cosmology is immutable (`replace(**changes)`,
@@ -404,7 +407,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      the conformal time there is `Recombination`'s `_tau_initial`, `(2
      sqrt(1+e) / (sqrt(1+e) + 1)) / adotoa` with `e` the matter-to-radiation
      ratio, exact for radiation plus matter (1e-6 against the integral,
-     massive neutrinos included: `tests/components/test_recombination.py`)
+     massive neutrinos included: `tests/test_components.py`)
    - a model's own background states at the start: their `State(initial=)`
    - the scalar-field shooting: gone with the closure
    - `background_history`, `density_coefficients`, `conformal_ages`,
@@ -437,7 +440,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      states as the background (see `Equations.stages` below)
    - The stand-alone RECFAST solve in `ln a` (`thermodynamics_recfast.py`,
      `thermal_history_batch`, `evolve_background`) was removed on 2026-11-11:
-     it served only tests. `tests/components/test_recombination.py` reads the kernel's block
+     it served only tests. `tests/test_components.py` reads the kernel's block
      through `solve_eb(..., keep=("tau", "xe", "Tmat", "cs2", "opacity",
      "kappa"))` at one wave mode (`kernel_thermal_history`): `x_e` within
      0.36 percent of CLASS recfast, `T_m` 0.04, `c_b^2` 0.4 (9.7 in the
@@ -456,7 +459,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      (`ModelSpec.differentiable_parameters` drops `z_re` otherwise, and the
      derivative raises). Same parametrization as CLASS `reio_camb`:
      `kappa_reio` today against its `tau_reio` at the same `z_reio`
-     (`tests/components/test_recombination.py`). A sensitivity launch
+     (`tests/test_components.py`). A sensitivity launch
      weights `kappa_reio` by `REIO_ERROR_WEIGHT` = 1e4: at the block's
      weight the steps across the 0.5-wide step resolve `tau_reio` but not
      its `z_re` derivative (6 percent off; `dP/dz_re` 3), and the weight
@@ -498,7 +501,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      state the perturbations read directly (a scalar field). So a component
      with a state such as `d_t(a) = a` lands in the background block, and
      `thermal_indices(model)` lists every background state
-     (`tests/solver/test_kernel.py`)
+     (`tests/test_solver.py`)
    - The GPU right-hand side is the model's components plus `Recombination`,
      built by `component.Equations.build`: a driver with the tuple-return
      signature modax and Enzyme need, calling one device function per
@@ -606,8 +609,8 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
     `examples/flat_lcdm_power_spectrum.ipynb` is the entry point
 
 11. **Jacobian sparsity** (`ModelSpec.sparsity`; its test is
-    `tests/models/test_model.py`, modax's side of it
-    `tests/solver/test_kernel.py`)
+    `tests/test_models.py`, modax's side of it
+    `tests/test_solver.py`)
    - `model.sparsity()` is `model.build().sparsity()`:
      the exact pattern, traced through the providers (see `component.py`
      above). `test_the_pattern_is_the_jacobians` checks it against a
@@ -697,11 +700,20 @@ The typical computation flow is:
   spends fewer steps on them than Tsit5
 
 **Testing Philosophy:**
-- `tests/` mirrors `src/discoeb/` (2026-11-16): one test file per source
-  file, in the same folder, named after it without the underscore
-  (`tests/solver/test_kernel.py` for `solver/_kernel.py`, `tests/test_init.py`
-  for `__init__.py`). A new test goes in the file of the module it tests; no
-  test file stands for a feature. What several files share lives in
+- `tests/` has one file per source folder (2026-11-17; one per source
+  file from 2026-11-16 until then): `test_components.py`, `test_models.py`,
+  `test_observables.py`, `test_solver.py`, and `test_init.py` for the
+  package's `__init__.py`. Each has a section per module, under a banner
+  comment, and a new test goes in the section of the module it tests.
+  `test_components.py` defines toy components named like the package's
+  (`Background`, `ColdDarkMatter`, `Photons`), so its later sections reach
+  the real ones as `gravity.Background`, `species.Photons`.
+  Host tests run in parallel: `uv run pytest tests -m "not gpu" -n auto`
+  (pytest-xdist). A run that excludes the `gpu` tests keeps JAX on the CPU
+  (`conftest.pytest_configure`), so it holds no device memory and may run
+  beside a GPU run. With `-n` and the `gpu` tests included, `--dist
+  loadgroup` (in `addopts`) keeps every `gpu` test on one worker, since two
+  processes on one GPU return garbage. What several files share lives in
   `tests/helpers.py` (host stand-ins, `MODELS`, the components added from
   outside: `SecondDarkMatter`, `Quintessence`, `CosmicTime`, the named
   fluids) and `tests/sweep.py`, imported by name (`pythonpath`). A test that
@@ -710,8 +722,7 @@ The typical computation flow is:
 - Regression testing with `pytest-regressions` to track accuracy changes
 - Benchmark testing with `pytest-benchmark` to track performance
 - CLASS reference spectra are computed on the fly by the tests (classy)
-- `tests/sweep.py` (called from `tests/models/test_lcdm.py` and
-  `test_w0wacdm.py`) sweeps a fixed-seed Latin hypercube of 32 cosmologies
+- `tests/sweep.py` (called from `tests/test_models.py`) sweeps a fixed-seed Latin hypercube of 32 cosmologies
   per model (LCDM, W0WACDM, LCDM_MNU) in one launch each: finite P(k), steps
   well under `max_steps`, P(k) against CLASS at gates set from measured errors,
   and a self-convergence check against a 1000x tighter fp64-LU solve. A CPL

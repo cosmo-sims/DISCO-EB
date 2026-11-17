@@ -1,4 +1,4 @@
-"""The matter power spectrum (``power_spectrum``) against CLASS, its derivatives, under ``jit``."""
+"""Tests of ``discoeb.observables``."""
 
 import numpy as np
 import pytest
@@ -15,6 +15,10 @@ from helpers import (
     cosmologies_of,
     physical,
 )
+
+# ============================================================================
+# power_spectrum: The matter power spectrum (``power_spectrum``) against CLASS, its derivatives, under ``jit``
+# ============================================================================
 
 
 def test_matter_power_spectrum_takes_one_cosmology_and_vmaps_over_a_batch():
