@@ -982,7 +982,15 @@ def test_the_pressure_sums_over_the_species_and_gives_the_comoving_curvature():
     )
     p = np.zeros(N_PARAM)
     omega_g, omega_ur, omega_c, omega_b, omega_de = 2.5e-5, 1.7e-5, 0.12, 0.022, 0.31
-    p[:5] = [omega_g, omega_ur, omega_c, omega_b, omega_de]
+    densities = dict(
+        omega_g=omega_g,
+        omega_ur=omega_ur,
+        omega_c=omega_c,
+        omega_b=omega_b,
+        omega_de=omega_de,
+    )
+    for name, value in densities.items():
+        p[PARAM_COLUMNS[name]] = value
     p[PARAM_COLUMNS["k"]] = 0.05
     p[PARAM_COLUMNS["w_DE_0"]] = -1.0
     y = np.zeros(model.nvar)
@@ -1277,7 +1285,7 @@ def test_a_built_in_species_takes_a_name_too():
 
     second = species.ColdDarkMatter.named("warm")
     parameters = dict(second.declared_parameters())
-    assert parameters["warm_omega_c"].directed
+    assert parameters["warm_omega_c"].column
     assert LCDM.add(second, name="two").state_names()[-1] == "warm_delta_c"
 
 

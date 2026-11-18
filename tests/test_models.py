@@ -70,7 +70,9 @@ def test_the_rhs_builds_and_is_finite(name):
     model, rhs = build_rhs(cosmology_model)
     rng = np.random.default_rng(0)
     p = np.zeros(N_PARAM)
-    p[:5] = [2.5e-5, 1.7e-5, 0.12, 0.022, 0.31]
+    densities = ("omega_g", "omega_ur", "omega_c", "omega_b", "omega_de")
+    for density, value in zip(densities, (2.5e-5, 1.7e-5, 0.12, 0.022, 0.31)):
+        p[PARAM_COLUMNS[density]] = value
     p[PARAM_COLUMNS["k"]] = 0.05
     p[PARAM_COLUMNS["w_DE_0"]], p[PARAM_COLUMNS["cs2_DE"]] = -0.9, 1.0
     (
@@ -81,30 +83,6 @@ def test_the_rhs_builds_and_is_finite(name):
     y = rng.standard_normal(model.nvar)
     dy = np.asarray(rhs(tuple(y), 100.0, tuple(p)))
     assert dy.shape == (model.nvar,) and np.isfinite(dy).all()
-
-
-def test_each_component_marks_its_differentiable_keys():
-    """A key is differentiable where its declaration says so, and only there."""
-
-    from helpers import LCDM_REIO, LCDM_X
-
-    from discoeb.components._component import ParameterDeclaration
-    from discoeb.models import LCDM_MNU, W0WACDM, W0WACDM_MNU
-
-    lcdm = {"omega_b", "omega_c", "omega_de", "T_cmb", "N_eff", "omega_k"}
-    assert set(LCDM.differentiable_parameters()) == lcdm
-    assert set(LCDM_MNU.differentiable_parameters()) == lcdm | {"m_nu"}
-    dark_energy = lcdm | {"w_DE_0", "w_DE_a"}
-    assert set(W0WACDM.differentiable_parameters()) == dark_energy
-    assert set(W0WACDM_MNU.differentiable_parameters()) == dark_energy | {"m_nu"}
-    # z_re only where ReionizationDepth resolves its derivative
-    assert set(LCDM_REIO.differentiable_parameters()) == lcdm | {"z_re"}
-    # a component from outside marks none unless it says so
-    assert set(LCDM_X.differentiable_parameters()) == lcdm
-    assert "Differentiable through solve_eb." in LCDM.__doc__.split("omega_c :")[1]
-    assert "Differentiable" not in LCDM.__doc__.split("Y_He :")[1].split("\n")[1]
-    with pytest.raises(TypeError, match="only a key"):
-        ParameterDeclaration(value=lambda omega_c: omega_c, differentiable=True)
 
 
 def test_models_derive_from_each_other():

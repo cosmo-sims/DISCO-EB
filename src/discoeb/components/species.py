@@ -45,8 +45,7 @@ def _needs_octupole(**lmax):
 
 
 # --- matter -------------------------------------------------------------------------
-# Each density today, ``omega_i``, is a directed parameter, a leading column
-# of the parameter row that a derivative may move.
+# Each density today, ``omega_i``, is a column of the parameter row.
 
 
 class ColdDarkMatter(Species):
@@ -61,7 +60,7 @@ class ColdDarkMatter(Species):
     # adiabatic mode: 3/4 of the photon density contrast
     delta_c = State(initial=lambda F: 0.75 * F[0])
 
-    omega_c: ArrayLike = Parameter(directed=True, differentiable=True)  # Omega_c h^2
+    omega_c: ArrayLike = Parameter(column=True)  # Omega_c h^2
 
     def rho_c(self, omega_c, a):
         inv_a = 1.0 / a
@@ -91,9 +90,8 @@ class Baryons(Species):
     theta_b = State(initial=lambda F, k: 0.75 * k * F[1])
 
     # The recombination rates read omega_b and the helium fraction Y_He too.
-    omega_b: ArrayLike = Parameter(directed=True, differentiable=True)  # Omega_b h^2
-    # not differentiable: dP/dYHe misses central differences by 0.8 percent
-    Y_He: ArrayLike = Parameter(directed=True)
+    omega_b: ArrayLike = Parameter(column=True)  # Omega_b h^2
+    Y_He: ArrayLike = Parameter(column=True)
 
     def rho_b(self, omega_b, a):
         inv_a = 1.0 / a
@@ -147,7 +145,7 @@ class Fluid(Species):
     delta = State(initial=lambda w, delta_c: (1.0 + w) * delta_c)
     theta = State()
 
-    omega: ArrayLike = Parameter(0.0, directed=True)
+    omega: ArrayLike = Parameter(0.0, column=True)
     w: ArrayLike = Parameter(0.0, column=True)
     cs2: ArrayLike = Parameter(0.0, column=True)
 
@@ -328,11 +326,9 @@ class Photons(Species):
     F = State(lambda self: self.LMAX_G + 1, initial=_F_initial)
     E = State(lambda self: self.LMAX_POL - 1)
 
-    T_cmb: ArrayLike = Parameter(
-        directed=True, differentiable=True
-    )  # K, read by the recombination rates too
+    T_cmb: ArrayLike = Parameter(column=True)  # K, the recombination rates' too
     omega_g: ArrayLike = Derived(
-        lambda T_cmb: OMEGA_G_PER_TCMB4 * T_cmb**4, directed=True
+        lambda T_cmb: OMEGA_G_PER_TCMB4 * T_cmb**4, column=True
     )
 
     def __init__(self, **settings):
@@ -437,9 +433,9 @@ class MasslessNeutrinos(Species):
 
     N = State(lambda self: self.LMAX_NR + 1, initial=_N_initial)
 
-    N_eff: ArrayLike = Parameter(differentiable=True)
+    N_eff: ArrayLike = Parameter()
     omega_ur: ArrayLike = Derived(
-        lambda N_eff, T_cmb: N_eff * (OMEGA_NU_PER_TCMB4 * T_cmb**4), directed=True
+        lambda N_eff, T_cmb: N_eff * (OMEGA_NU_PER_TCMB4 * T_cmb**4), column=True
     )
 
     def __init__(self, **settings):
@@ -517,13 +513,13 @@ class MassiveNeutrinos(Species):
 
     psi = State(lambda self: (self.NQMAX, self.LMAX_NU + 1), initial=_psi_initial)
 
-    N_mnu: ArrayLike = Parameter(0.0)  # flavours, a count: not differentiable
-    m_nu: ArrayLike = Parameter(0.0, differentiable=True)  # eV, each
+    N_mnu: ArrayLike = Parameter(0.0)  # flavours
+    m_nu: ArrayLike = Parameter(0.0)  # eV, each
     omega_nu_flavour: ArrayLike = Derived(
-        lambda T_cmb: OMEGA_NU_PER_TCMB4 * T_cmb**4, directed=True
+        lambda T_cmb: OMEGA_NU_PER_TCMB4 * T_cmb**4, column=True
     )
     n_mnu: ArrayLike = Derived(lambda N_mnu: N_mnu, column=True)
-    amnu: ArrayLike = Derived(lambda m_nu, T_cmb: m_nu * C2OK / T_cmb, directed=True)
+    amnu: ArrayLike = Derived(lambda m_nu, T_cmb: m_nu * C2OK / T_cmb, column=True)
 
     def __init__(self, **settings):
         super().__init__(**settings)
@@ -614,7 +610,7 @@ class _DarkEnergyDensity(Species):
     a model expand at a given ``H_0``.
     """
 
-    omega_de: ArrayLike = Parameter(directed=True, differentiable=True)
+    omega_de: ArrayLike = Parameter(column=True)
 
     @contributes("rho")
     def rho_dark_energy(self, rho_de):
@@ -653,10 +649,9 @@ class DarkEnergy(_DarkEnergyDensity):
     delta_de = State(initial=lambda w_DE_0, delta_c: (1.0 + w_DE_0) * delta_c)
     theta_de = State()
 
-    w_DE_0: ArrayLike = Parameter(-1.0, directed=True, differentiable=True)
-    w_DE_a: ArrayLike = Parameter(0.0, directed=True, differentiable=True)
-    # not differentiable: dP/dcs2_DE misses central differences by 1 percent
-    cs2_DE: ArrayLike = Parameter(1.0, directed=True)
+    w_DE_0: ArrayLike = Parameter(-1.0, column=True)
+    w_DE_a: ArrayLike = Parameter(0.0, column=True)
+    cs2_DE: ArrayLike = Parameter(1.0, column=True)
 
     @classmethod
     def check(cls, w_DE_0, w_DE_a):

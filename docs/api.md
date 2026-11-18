@@ -25,10 +25,5 @@
 
 .. autofunction:: discoeb.state_names
 
-.. autofunction:: discoeb.directed_inputs
-
-.. autofunction:: discoeb.differentiable_parameters
-
-.. autodata:: discoeb.DIRECTED_NAMES
-   :no-value:
+.. autofunction:: discoeb.solve_inputs
 ```

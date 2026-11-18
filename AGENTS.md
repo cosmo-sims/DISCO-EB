@@ -118,11 +118,13 @@ it (`tests/test_init.py`). The contract is `solve_eb(cosmologies, k,
 a, keep=names, extra=components)`, the cosmologies instances of one model
 class (`[LCDM(omega_b=..., ...), ...]`): named quantities evaluated in the kernel at the
 saved scale factors, the CMB's sources being a `LineOfSightSources` component passed as
-`extra`; error weights by state name; differentiable in
-`differentiable_parameters(model)` or in the model's directed inputs passed as `inputs=`: all of them, as
-`directed_inputs` gives them, or the seven `DIRECTED_NAMES` every built-in
-model leads with (`N_COMMON_DIRECTED`: the five densities, `Y_He`, `T_cmb`),
-which DISCO-CMB's `cl_power_spectrum_jax` passes. There is no default model
+`extra`; error weights by state name; differentiable in every parameter of
+the cosmologies, forward mode only (`jax.jvp`, `jax.jacfwd`; modax raises on
+`jax.grad`), or in columns of the parameter row passed as
+`inputs={name: values}`, which `solve_inputs(cosmologies)` returns for a
+cosmology (until 2026-11-18 an array of "directed inputs" in a fixed order,
+`directed_inputs` and `DIRECTED_NAMES`; DISCO-CMB's `cl_power_spectrum_jax`
+passes the five densities, `Y_He` and `T_cmb`). There is no default model
 (removed 2026-11-16): every function takes cosmologies of a model or names
 the model, and a bare dictionary raises `TypeError`. **Nothing is integrated before the solve** (2026-11-17; before,
 `solver/_background.py` ran a quadrature for `tau0`, `ln a` at the start
@@ -223,31 +225,21 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      annotated since 2026-11-15: `omega_c: ArrayLike = Parameter()` a key, a
      constructor argument of every model with the component (with a default
      it may be left out), `w_DE_0: ArrayLike = Parameter(-1.0, column=True)`
-     a key the kernel reads as a row column, `Parameter(differentiable=True)`
-     a key `solve_eb` may differentiate (2026-11-17; before, a global
-     `DIFFERENTIABLE_PARAMETERS` tuple listed them, so a component from
-     outside could never add one), `A_s: ArrayLike =
-     Parameter(solved=False)` a key the solve never reads, whose tangent
-     `solve_eb` drops instead of raising (the primordial spectrum's;
-     before, a global `UNUSED_BY_THE_SOLVE` tuple), `omega_g: ArrayLike =
-     Derived(lambda T_cmb: ..., directed=True)` a kernel
+     a key the kernel reads as a row column, `omega_g: ArrayLike =
+     Derived(lambda T_cmb: ..., column=True)` a kernel
      input derived on the host by name from other parameters. `Parameter`
      and `Derived` are `dataclass_transform` field specifiers returning a
      `ParameterDeclaration`: `Derived`'s `init: Literal[False]` default keeps
      it out of the signature a type checker sees, and `__set_name__` raises
      on an unannotated declaration, which no type checker would see.
-     `directed=True` makes it one of the leading row columns a
-     derivative may move (until 2026-11-17 it made columns `x_nominal`
-     and `dir_x` and a generated provider `x = x_nominal + eps * dir_x`;
-     modax's directional mode does that itself for every column now).
-     No parameter closes a budget any more (2026-11-17, `closes_budget`
-     removed): every density is given, physically (`omega = Omega h^2`),
-     and `Model.from_density_parameters` does the closure's algebra for
-     whoever wants `H_0` as an input. Two components of one model may share
-     a name only through the same declaration (`omega_de` on the
-     `_DarkEnergyDensity` base of both dark energies). A component's `check` classmethod names the
-     keys it validates (`DarkEnergy.check(cls, w_DE_0, w_DE_a)`).
-     `declared_parameters(classes)`, `derive_parameters(...)`
+     `column` is the only flag (2026-11-18). Before, `directed=True`
+     marked the columns a derivative could move, each a params leaf of its
+     own so that modax's column method gave it a column only when it moved,
+     `differentiable=True` the keys `solve_eb` let through (the rest
+     raised) and `solved=False` the keys whose tangent it dropped. modax is
+     directional only now: a derivative costs one column per direction
+     whatever it moves, so the row goes in as one array with its tangent
+     and every key is differentiable.
    - `Component.named("x")` (2026-11-14) is a cached subclass whose states,
      parameters and quantities carry the prefix `x_` (`_renames`), so a
      model may list one component several times: `LCDM.add(Fluid.named("dr"),
@@ -284,7 +276,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      under the change of variables for all four models, `P(k)` at rtol
      1e-7 to 2.5e-6, the step counts are equal and a 128-cosmology batch
      takes 261 ms (263 before). `discoeb.H100` is exported: DISCO-CMB
-     turns the directed densities into rates with it. A provider must take `1.0 / a` and `1.0 /
+     turns the densities into rates with it. A provider must take `1.0 / a` and `1.0 /
      (k * k)` in exactly those forms: LLVM merges equal divisions only,
      and with `1.0 / (a * a)` and `/ (k * k * curved)` written out the
      batch ran 2.5 percent slower
@@ -377,8 +369,8 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      extra=(), ...)` instantiates the component `Equations` (the old
      `component.Model`); `state_names()`, `sparsity()`, `setting(name)`,
      `has`, `instances`, `parameters(extra=())` (the components' and
-     `Recombination`'s declarations), `parameter_keys()`,
-     `differentiable_parameters()` and `validate(cosmology)`: a key another
+     `Recombination`'s declarations), `parameter_keys()`
+     and `validate(cosmology)`: a key another
      component declares but none of this model's must keep its default
      (`w_DE_0 != -1` needs `DarkEnergy`, `N_mnu > 0` `MassiveNeutrinos`), then
      each component's `check` hook runs (`DarkEnergy` rejects `w = -1`),
@@ -417,7 +409,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `V0` is a parameter and nothing shoots (`Quintessence`,
      `qcdm_parameters` in `tests/helpers.py`)
    - No model is a default (`DEFAULT_MODEL`, `W0WACDM_MNU`, removed
-     2026-11-16): `directed_inputs` takes cosmologies, the model coming
+     2026-11-16): `solve_inputs` takes cosmologies, the model coming
      from their class, and `build_keep_hook` and `_columns` take the model
      or its layout as a required argument
    - `_batch_of(cosmologies)` turns one cosmology or a sequence of one
@@ -446,19 +438,15 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      beside the Gauss-Laguerre rule
 
 5. **models/_cosmology.py** is gone (2026-11-17). `_columns(cosmologies,
-   model, held=True)` lives in `solver/_kernel.py`: it stacks a batch's
-   dictionaries (`_batch_of`'s, every key present) into JAX columns
-   `(n_cosmo,)` by key, values traced or not. With `held` a key declared
-   `solved=False` gets `stop_gradient`, and a key the solve reads but the
-   model does not differentiate (outside
-   `Model.differentiable_parameters()`: `N_mnu`, `Y_He`, `cs2_DE`) passes
-   through `_not_differentiable`, a `custom_jvp` whose rule raises, so a
-   derivative is never a silent zero. `_is_concrete` lives in
+   model)` lives in `solver/_kernel.py`: it stacks a batch's dictionaries
+   (`_batch_of`'s) into JAX columns `(n_cosmo,)` by key of the model, values
+   traced or not, tangents and all. `_is_concrete` lives in
    `models/_model.py`. A cosmology still holds the traced keys of other
-   models `from_dict` was given (`_held`, in the batch's dictionaries
-   beside its own): `_columns` gives each a column the kernel never reads,
-   so that differentiating one raises (dropping them was tried on
-   2026-11-17 and returned a silent zero for `m_nu` on LCDM)
+   models `from_dict` was given (`_held`). `_columns` leaves them out, so
+   their derivative is zero, as is that of a key the solve never reads
+   (`A_s`, `n_s`, `k_p`). Until 2026-11-18 a held key and a key outside
+   `Model.differentiable_parameters()` (`N_mnu`, `Y_He`, `cs2_DE`) passed
+   through `_not_differentiable`, a `custom_jvp` whose rule raised.
 
 6. **components/recombination.py** - Recombination history, inside the joint kernel
    - The conformal time `tau`, RECFAST's `(x_H, x_He, T_m)` and the optical
@@ -477,17 +465,17 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      tight-coupling switch window near z = 850)
    - The rates' transcendentals run in fp32 by default (`FP32_MATH`,
      `DISCO_THERMO_FP32_MATH`); `a` and the reionization opacity stay fp64
-   - Reionization: a cosmology's `z_re` (default 0, none), a directed
-     parameter, centres CAMB's tanh step in `x_e` (H and HeII together, width
+   - Reionization: a cosmology's `z_re` (default 0, none) centres CAMB's tanh step in `x_e` (H and HeII together, width
      0.5 in `(1+z)^1.5`; HeIII at z = 3.5). `tau_reio` is an output, the state
      `kappa_reio` today (2026-11-16; before, `tau_reio` was the input
      and `z_re` a solver column bisected on the background). That state is
      the component `ReionizationDepth`, which a model adds
      (`LCDM.add(ReionizationDepth, name=...)`, `helpers.LCDM_REIO`): in
      every model's block it cost a solve 4 to 7 percent (2026-11-17), so
-     only a model with it reads `tau_reio` or differentiates `z_re`
-     (`Model.differentiable_parameters` drops `z_re` otherwise, and the
-     derivative raises). Same parametrization as CLASS `reio_camb`:
+     only a model with it reads `tau_reio`, and only with it are the
+     steps fine enough across the reionization step for the `z_re`
+     derivative (other models return one too since 2026-11-18, unresolved).
+     Same parametrization as CLASS `reio_camb`:
      `kappa_reio` today against its `tau_reio` at the same `z_reio`
      (`tests/test_components.py`). A sensitivity launch
      weights `kappa_reio` by `REIO_ERROR_WEIGHT` = 1e4: at the block's
@@ -557,12 +545,10 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      self-convergence 5.7e-5 (5.7e-5), 267 ms (270), one cosmology 186 ms
      (188); `PERTURB_FIRST_STEP` = `A_START`
    - The parameter row is generated: `parameter_layout(model, extra)` (cached
-     per resolved model) is `(the directed parameters,
-     SOLVER_COLUMNS = k,
-     the other column parameters)`, the directed
-     ones in `DIRECTED_NAMES` order, then component order. `omega_k`, `w_DE_*`, `cs2_DE`,
-     `omega_nu_flavour` and `amnu` are directed (2026-11-13), `z_re` too
-     (2026-11-16, last: `Recombination` comes last); `H_0` and `Omega_b`
+     per resolved model) is `(SOLVER_COLUMNS = k, the column parameters)`
+     in component and declaration order (2026-11-18; before, the "directed"
+     parameters led the row in `DIRECTED_NAMES` order), `z_re` last since
+     `Recombination` comes last; `H_0` and `Omega_b`
      left with the physical densities (2026-11-17); `amnu` is one
      declaration `MassiveNeutrinos` and `Recombination` share. `_rows` and the
      initial state iterate over the declarations. Host tests that build any
@@ -576,11 +562,10 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
 8. **solver/_sensitivities.py** is gone (2026-11-17). Until then
    `_kept_values` wrapped the hooked launch in a `jax.custom_jvp` of its
    own. modax now does all of it, so `solve_eb` calls `_launch` directly
-   with the directed inputs as params leaves, one `(N, 1)` leaf per input
-   and the rest of the row as one more (JAX tracks symbolic zeros per
-   leaf, so an input that does not move gets no column in reverse mode),
-   and holds the rows, the initial state and the save times fixed with
-   `stop_gradient`. `_launch` passes modax a `Derivatives` (modax branch
+   with the parameter rows as one array and holds only the save times
+   fixed with `stop_gradient` (2026-11-18; before, each directed input was
+   a leaf of its own and the rest of the row and the initial state were
+   held fixed, which the column method needed to keep the columns few). `_launch` passes modax a `Derivatives` (modax branch
    `feat/derivative-options`) that applies only to differentiated
    launches: fp64 LU, no register cap, `kappa_reio` weighted by
    `REIO_ERROR_WEIGHT`, at most `MAX_SENSITIVITY_STATE // nvar - 1`
@@ -589,18 +574,17 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    `solve_eb(..., split_derivatives=True)`, `replicas=True`. What each
    transform costs, in modax's terms:
    - `jax.jvp`: one column along the tangent
-   - `jax.jacfwd`: one column per direction while the directions are
-     fewer than the directed inputs that move, else one column per such
-     input contracted with every direction. Over a batch every
-     cosmology's parameter is a direction, so the inputs win: the
-     densities' five (`omega_b`, `omega_c`, `omega_de`, `T_cmb`, `N_eff`)
-     move six inputs, since `T_cmb` moves `omega_g`, `omega_ur` and
-     `T_cmb`. The custom rule paid five
-   - `jax.grad`: one column per directed input that moves, through the
-     transposable column form, or unit directions when they exceed the cap
-   - under `jit` every transform pays as `jax.grad` does: JAX stages the
-     rule before it knows whether it will transpose it, so modax takes
-     the directional launch for eager forward mode only
+   - `jax.jacfwd`: one column per direction, however many columns of the
+     row a direction moves (`T_cmb` moves `omega_g`, `omega_ur` and
+     `T_cmb`). Over a batch every cosmology's parameter is a direction for
+     every trajectory, so take `jax.vmap(jax.jacfwd(f))` of one
+     cosmology's function. modax raises when the directions exceed the
+     inputs that move, here the row and the state, so a small batch's
+     `jacfwd` runs, redundantly (`test_split_derivatives_match_one_thread`)
+   - reverse mode (`jax.grad`, `jax.vjp`, `jax.jacrev`, `jax.linearize`)
+     raises `NotImplementedError` in modax (2026-11-18). `jax.jacfwd` of a
+     scalar costs a column per parameter, and `has_aux=True` returns the
+     value from the same launch
    - more columns than the cap run as several launches of one width, the
      last padded with zero directions, so one kernel serves them
    A thread's local memory, which the driver reserves for every resident
@@ -611,8 +595,12 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    agree to 1e-7 at rtol 1e-6 and to 1e-3 at the default 1e-4
    (`test_split_derivatives_match_one_thread`). The launch runs with
    `sens_error_control=False`; the joint primal agrees with the plain
-   fp32-LU one to ~1e-6 of scale. At *fixed scale factor*, and at fixed
-   initial state. (A `tau_reio` input with the implicit function theorem
+   fp32-LU one to ~1e-6 of scale. At *fixed scale factor*. The initial
+   state carries its tangent (2026-11-18): it starts the sensitivity
+   column, at no cost, where the column method paid `nvar` columns for
+   it. Held fixed, it left `dP/dT_cmb` 3.7 percent off central
+   differences, long put down to the recombination block; with it, 2.3e-4.
+   `inputs=` overrides move the row only, not the initial state. (A `tau_reio` input with the implicit function theorem
    on a host bisection for `z_re` missed central differences of `P(k)` by
    1.8 percent on 2026-11-13; `z_re` is now the input and differentiates
    directly.)
@@ -627,24 +615,25 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    tests). `a` runs from `A_START` on, strictly increasing, and 1 is today
    for every cosmology. Traces
    under `jit` with every cosmology key traced (only k and the names
-   static). The values are differentiable in `differentiable_parameters(model)`,
-   the keys declared `Parameter(differentiable=True)` (`omega_b`, `omega_c`,
-   `omega_de`, `T_cmb`, `N_eff`, `omega_k`, and `m_nu`, `w_DE_0`, `w_DE_a`,
-   `z_re` where the model has the component): plain JAX from them to the directed inputs
-   (`_directed_inputs`), then modax's sensitivities. `jax.jvp`, `jacfwd`, `grad` all cost one joint launch,
-   with or without `jit` (`test_matter_power_spectrum_under_jit`). `test_solve_eb_derivatives` gates the densities-level rule
-   against central differences, `test_more_parameters_*` each added
+   static). The values are differentiable in every key: plain JAX from them
+   to the parameter row and the initial state (`_pack`), then modax's
+   sensitivities. `jax.jvp` and `jacfwd` each cost one joint launch,
+   with or without `jit` (`test_matter_power_spectrum_under_jit`). `test_solve_eb_derivatives` gates the derivative in each row column and in each
+   parameter against central differences, `test_more_parameters_*` each added
    parameter's `solve_eb` values and `P(k)`. The solve is not smooth in the
    parameters below ~1e-6 of a value even at rtol 1e-7, so central
    differences carry noise falling as 1 / step: for `Y_He` the apparent
    bias in `solve_eb` values went 0.2, 0.01, 0.002 at steps 2.5e-4, 2.5e-3,
-   1e-2 (fp32 or fp64 rate math alike). The 0.5 to 2 percent thermal bias
-   recorded before for `Y_He`, `T_cmb`, `Omega_b` was measured at small steps
-   and may be mostly that noise (`T_cmb` and `Omega_b` not re-measured).
-   `dP/dYHe` and `dP/dcs2_DE` stay 0.8 and 1 percent off at every step
-   tried, so those two are held. `dP/dz_re` needs a step of 1 in `z_re`:
+   1e-2 (fp32 or fp64 rate math alike). The 0.8 and 1 percent `dP/dYHe` and
+   `dP/dcs2_DE` were held for until 2026-11-18 were that noise and
+   truncation: `dP/dYHe` is 8.2e-3 off at a 1 percent step and 2.2e-4 at 5
+   percent, `dP/dcs2_DE` 8e-4 at 1 percent and 1.1e-2 at 30. `dP/dT_cmb`
+   2.3e-4, `dP/dN_eff` 4e-5, `dP/dOmega_b` 8e-5 at 1 percent steps
+   (2026-11-18, sum P, converged differences). `z_re` without
+   `ReionizationDepth` gives -51.8 at the default tolerance and -48.1 at
+   1e-6, where the model with it gives -47.4 at both. `dP/dz_re` needs a step of 1 in `z_re`:
    it moves sum P by 1.4e-5 of itself per unit, so a step of 0.05 is noise. Also
-   `directed_inputs`, `state_names(model)`. The history of every state is
+   `solve_inputs`, `state_names(model)`. The history of every state is
    `_kernel._solve_batch` (tests only; `solve_perturbation_history_batch`,
    `make_params` and `make_initial_states` were removed 2026-11-17: the
    tests read rows and initial states off `_pack`, `helpers.packed`)
@@ -727,7 +716,7 @@ The typical computation flow is:
 **JAX-First Design:**
 - All code is JAX-compatible (no NumPy unless wrapped)
 - Extensive use of `jax.numpy` instead of `numpy`
-- Compatible with `jax.jit`, `jax.grad`, `jax.vmap` for performance and autodiff
+- Compatible with `jax.jit`, `jax.jvp`, `jax.jacfwd`, `jax.vmap` (the solve is forward mode only)
 - 64-bit precision: importing `discoeb` enables `jax_enable_x64` and turns
   off JAX's GPU preallocation (`_jax_config.py`, imported first)
 
@@ -799,9 +788,8 @@ The typical computation flow is:
   (`DIAG_A[1:]` where the grid must start after `A_START`). A model with
   states of its own appends them (`REIO_KEEP`, `OUTSIDE_KEEP`, `QCDM_KEEP`).
   `_matter_power(..., a=, keep=)` computes `P(k)` from either. A derivative
-  in one parameter is a `jax.jvp` (the one-column kernel; `jax.grad`
-  integrates a column per moved directed input)
-- The default run is the fast suite: 127 tests, 14 on the GPU, all LCDM, on
+  in one parameter is a `jax.jvp` (the one-column kernel)
+- The default run is the fast suite: 125 tests, 14 on the GPU, all LCDM, on
   6 kernels: `P(k)` plain, with one and with two sensitivity columns,
   `DIAG_KEEP` plain, the history (`_solve_batch`), and `REIO_KEEP` of
   `LCDM_REIO`. Its derivative tests take the `two_columns` fixture

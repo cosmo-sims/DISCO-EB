@@ -245,11 +245,8 @@ class ParameterDeclaration:
     it out when it has a ``default``. With ``value``, a function whose
     parameter names are other parameters, it is derived from them on the host
     in JAX. ``column`` puts it in the kernel's parameter row under its name,
-    for the providers to read. ``directed`` also makes it an input of the
-    solve: a column a derivative may move, which leads the row. ``differentiable``
-    lets ``solve_eb`` differentiate a key; any other key raises if
-    differentiated, unless ``solved`` is false: a key the solve never reads
-    (the primordial spectrum's), whose tangent ``solve_eb`` drops.
+    for the providers to read. A derivative reaches the solve through the
+    columns, so every key is differentiable.
     """
 
     def __init__(
@@ -258,26 +255,14 @@ class ParameterDeclaration:
         *,
         value: Callable | None = None,
         column: bool = False,
-        directed: bool = False,
-        differentiable: bool = False,
-        solved: bool = True,
     ):
         if value is not None and not callable(value):
             raise TypeError("value must be a function of other parameters")
         if value is not None and default is not REQUIRED:
             raise TypeError("a derived parameter has no default")
-        if value is not None and differentiable:
-            raise TypeError("only a key is differentiable, not a derived parameter")
-        if not solved and (value is not None or column or directed or differentiable):
-            raise TypeError(
-                "a key the solve never reads is no column and not differentiable"
-            )
         self.default = default
         self.value: Any = value
-        self.directed = directed
-        self.differentiable = differentiable
-        self.solved = solved
-        self.column = column or directed
+        self.column = column
         self.name: str | None = None
         self.reads: tuple[str, ...] = ()
         if value is not None:
@@ -312,8 +297,6 @@ class ParameterDeclaration:
         copy = ParameterDeclaration(
             self.default if self.value is None else REQUIRED,
             column=self.column,
-            directed=self.directed,
-            differentiable=self.differentiable,
         )
         copy.value = self.value
         copy.reads = tuple(renames.get(r, r) for r in self.reads)
@@ -335,43 +318,24 @@ def _annotated_names(cls) -> set[str]:
     return set(vars(cls).get("__annotations__", {}))
 
 
-def Parameter(
-    default: Any = REQUIRED,
-    *,
-    column: bool = False,
-    directed: bool = False,
-    differentiable: bool = False,
-    solved: bool = True,
-) -> Any:
-    """Declare a cosmology key: ``omega_c: ArrayLike = Parameter()``.
+def Parameter(default: Any = REQUIRED, *, column: bool = False) -> Any:
+    """Declare a cosmology key: ``omega_c: ArrayLike = Parameter(column=True)``.
 
     It is an argument of every model whose components include the class:
     required without a ``default``, optional with one. ``column`` puts it in
-    the kernel's parameter row under its name, for the providers to read, and
-    ``directed`` among the inputs a derivative may move
-    (:class:`ParameterDeclaration`). ``differentiable`` lets
-    ``solve_eb`` differentiate it: set it where the derivative through the
-    directed inputs it reaches matches central differences. ``solved=False``
-    marks a key the solve never reads, such as the primordial spectrum's:
-    ``solve_eb`` drops its tangent instead of raising. The annotation is required:
-    it is what lets a type checker see the argument (the
-    ``dataclass_transform`` on :class:`Component`).
+    the kernel's parameter row under its name, for the providers to read
+    (:class:`ParameterDeclaration`). The annotation is required: it is what
+    lets a type checker see the argument (the ``dataclass_transform`` on
+    :class:`Component`).
     """
 
-    return ParameterDeclaration(
-        default,
-        column=column,
-        directed=directed,
-        differentiable=differentiable,
-        solved=solved,
-    )
+    return ParameterDeclaration(default, column=column)
 
 
 def Derived(
     value: Callable,
     *,
     column: bool = False,
-    directed: bool = False,
     init: Literal[False] = False,
 ) -> Any:
     """Declare a parameter derived from others: ``omega_g: ArrayLike = Derived(lambda T_cmb: ...)``.
@@ -382,7 +346,7 @@ def Derived(
     signature.
     """
 
-    return ParameterDeclaration(value=value, column=column, directed=directed)
+    return ParameterDeclaration(value=value, column=column)
 
 
 def declared_parameters(classes) -> dict[str, ParameterDeclaration]:

@@ -133,15 +133,6 @@ DERIV_GATE = 5.0e-3
 FD_STEP = 1.0e-2
 
 
-# T_cmb also reaches P(k) through the recombination rates, and the thermal
-# inputs' sensitivities are biased against central differences of the joint
-# solve (Y_He 2 percent, T_cmb 1.9, Omega_b 0.5, with fp32 or fp64 rate math),
-# while the densities' agree to 1e-4. Through P(k) that leaves dP/dTcmb 3.7
-# percent off. A known gap of the recombination block's sensitivities, gated
-# loosely here so it cannot grow unnoticed.
-DERIV_GATES = {"T_cmb": 5.0e-2}
-
-
 @pytest.mark.gpu
 @pytest.mark.parametrize(
     "columns",
@@ -183,10 +174,11 @@ def test_matter_power_spectrum_derivatives(columns, benchmark, monkeypatch):
         params = {**cosmology, **dict(zip(DIFFERENTIABLE_PARAMETERS, t))}
         return jnp.sum(_matter_power(MATTER_POWER_K, cosmologies_of(LCDM, params)))
 
-    value_and_grad = jax.value_and_grad(total_power)
+    # forward mode: the value comes out of the same launch as has_aux
+    value_and_grad = jax.jacfwd(lambda t: (total_power(t),) * 2, has_aux=True)
 
     def run():
-        value, grad = value_and_grad(theta)
+        grad, value = value_and_grad(theta)
         return float(value), np.asarray(jax.block_until_ready(grad))
 
     value, grad = benchmark.pedantic(run, rounds=1, warmup_rounds=1, iterations=1)
@@ -198,7 +190,7 @@ def test_matter_power_spectrum_derivatives(columns, benchmark, monkeypatch):
         minus = float(total_power(theta.at[i].add(-step)))
         finite = (plus - minus) / (2.0 * step)
         rel = abs(grad[i] - finite) / max(abs(finite), 1e-300)
-        assert rel < DERIV_GATES.get(name, DERIV_GATE), (
+        assert rel < DERIV_GATE, (
             f"d(sum P)/d{name}: sensitivity {grad[i]:.8e} against central "
             f"difference {finite:.8e}, relative {rel:.3g}"
         )
@@ -257,7 +249,7 @@ def test_matter_power_spectrum_under_jit(two_columns):
 
     One trace serves every cosmology of the same keys, the values agree with
     the eager solve, the gradient under ``jit`` with the eager one, and a key
-    outside :func:`~discoeb.solver.differentiable_parameters` still refuses a derivative.
+    the model does not have has a zero derivative.
     """
 
     import jax
@@ -302,12 +294,13 @@ def test_matter_power_spectrum_under_jit(two_columns):
     def total(t, of):
         return jnp.sum(of({**cosmology, **dict(zip(DIFFERENTIABLE_PARAMETERS, t))}))
 
-    eager = np.asarray(jax.grad(total)(theta, lambda c: power(to_physical(c))))
-    under_jit = np.asarray(jax.jit(jax.grad(lambda t: total(t, jitted)))(theta))
+    eager = np.asarray(jax.jacfwd(total)(theta, lambda c: power(to_physical(c))))
+    under_jit = np.asarray(jax.jit(jax.jacfwd(lambda t: total(t, jitted)))(theta))
     np.testing.assert_allclose(under_jit, eager, rtol=1e-12)
 
-    with pytest.raises(ValueError, match="cannot be differentiated"):
-        jax.jit(jax.grad(lambda w: jnp.sum(jitted({**cosmology, "w_DE_0": w}))))(-1.0)
+    # LCDM has no dark-energy fluid: the kernel never reads w_DE_0
+    slope = jax.jacfwd(lambda w: jnp.sum(jitted({**cosmology, "w_DE_0": w})))(-1.0)
+    assert float(slope) == 0.0
 
 
 MORE_PK_GATES: dict = {"z_re": 1.0e-2}
@@ -326,8 +319,7 @@ def test_more_parameters_matter_power(name):
 
     The derivative of ``P(k)`` today, at fixed scale factor. Central
     differences from converged solves. One direction, so each model's
-    one-column kernel: ``jax.grad`` would integrate a column per directed
-    input the parameter moves and compile a kernel of that width.
+    one-column kernel.
     """
 
     import jax

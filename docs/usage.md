@@ -29,11 +29,11 @@ The solve integrates in the scale factor, from `A_START` to 1, so you give the s
 
 The device holds `n_cosmologies * n_k * n_a * len(keep)` numbers and never the full state history.
 
-Reionization is set by its redshift `z_re` (0, the default, for none). Its optical depth is an output: add `ReionizationDepth` (`discoeb.components.recombination`) to a model, `LCDM.add(ReionizationDepth, name="LCDM+reio")`, and keep `kappa_reio`, whose value today is $\tau_\mathrm{reio}$. The same model is the one that differentiates in `z_re`.
+Reionization is set by its redshift `z_re` (0, the default, for none). Its optical depth is an output: add `ReionizationDepth` (`discoeb.components.recombination`) to a model, `LCDM.add(ReionizationDepth, name="LCDM+reio")`, and keep `kappa_reio`, whose value today is $\tau_\mathrm{reio}$. Take derivatives in `z_re` with that model too: its state makes the solver's steps resolve the reionization step, and without it the derivative is inaccurate.
 
 ## Derivatives
 
-Give `omega_b`, `omega_c`, `omega_de`, `T_cmb` or `N_eff` as JAX values and the kept values become differentiable. `jax.jvp`, `jax.jacfwd` and `jax.grad` each cost one joint launch, which forms the derivatives inside the kernel by forward sensitivities:
+Give any parameter as a JAX value and the kept values become differentiable in it. `jax.jvp` and `jax.jacfwd` each cost one joint launch, which forms the derivatives inside the kernel by forward sensitivities, one column per direction:
 
 ```python
 import jax.numpy as jnp
@@ -44,7 +44,7 @@ def R_today(omega_c):
 dR = jax.jacfwd(R_today)(jnp.asarray(planck.omega_c))  # (64,)
 ```
 
-The derivative is taken at fixed scale factor, so at fixed redshift. The other parameters can't be differentiated, and trying raises an error.
+The derivative is taken at fixed scale factor, so at fixed redshift. It is forward mode only: `jax.grad` and the other reverse-mode transforms raise. For the gradient of a scalar, use `jax.jacfwd`, which costs one column per parameter, and `has_aux=True` to get the value from the same launch. For a batch, map over the cosmologies outside the derivative, `jax.vmap(jax.jacfwd(f))`.
 
 ## Under `jit`
 

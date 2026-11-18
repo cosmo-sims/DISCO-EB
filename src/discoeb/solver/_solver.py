@@ -2,7 +2,8 @@
 
 It runs one modax launch over every (wave mode, cosmology) pair and
 records only the named quantities at the scale factors given. The
-values are differentiable in the model's :func:`differentiable_parameters`.
+values are differentiable in every parameter of the cosmologies, in forward
+mode.
 """
 
 from collections.abc import Sequence
@@ -16,7 +17,6 @@ from ..components.recombination import THERMO_ERROR_WEIGHT
 from ..models._model import Model, _batch_of, _is_concrete, _model_of
 from ._kernel import (
     A_START,
-    N_COMMON_DIRECTED,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
@@ -63,8 +63,7 @@ def solve_eb(
         A cosmology, ``LCDM(omega_b=..., ...)``, or a sequence of cosmologies of
         one model. The model says which species and interactions the solve
         evolves, and one kernel is compiled per model. Every parameter may be
-        a JAX array, traced under ``jit`` or not. Only those of
-        :func:`differentiable_parameters` may be differentiated.
+        a JAX array, traced under ``jit`` or not, and differentiated.
     k_values
         Wave numbers in 1/Mpc, in any order. They must be numbers, not
         traced: they set the launch's shape.
@@ -90,14 +89,12 @@ def solve_eb(
         model's quantities and add their own (the line-of-sight sources of
         :mod:`discocmb.cmb`). The hook cache tells them apart by class.
     inputs
-        The ``(n_cosmologies, n_directed)`` directed inputs of the model
-        (:func:`directed_inputs`, in the order of its
-        :func:`~discoeb.solver._kernel.parameter_layout`), or only the first seven
-        every built-in model shares (the five background densities and the
-        recombination block's ``Y_He`` and ``T_cmb``),
-        replacing those the cosmologies imply. They are differentiable in
-        their own right: the solution becomes a function of them. Given
-        seven, the rest come from the cosmologies.
+        ``{name: values}`` of parameter-row columns
+        (:func:`solve_inputs` names them) to set in place of those the
+        cosmologies imply, each value a number or ``(n_cosmologies,)``. The
+        solution becomes a function of them, so this is how to differentiate
+        in a derived parameter such as ``omega_g`` on its own. The initial
+        state stays the cosmologies'.
     rtol, atol, first_step, max_steps, error_weights, thermo_weight
         Solver settings.
         ``error_weights`` is either ``{state name: weight}`` or modax's array
@@ -132,23 +129,27 @@ def solve_eb(
     (:func:`~discoeb.solver._kernel._pack`), so ``solve_eb`` traces under ``jit``, and
     the whole solve then runs on the device. Under ``jit`` the cosmologies are
     not checked against the model, since their ``w_DE_*`` and ``N_mnu`` have no
-    values yet. The returned values are differentiable in the
-    cosmologies' :func:`differentiable_parameters` of the model under
-    ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad``, with or without ``jit``.
-    The derivative runs through the model's directed inputs: the background
-    densities, the thermal inputs, the curvature, the massive neutrinos and
-    the dark-energy parameters. modax's forward sensitivities carry it, with
-    a hook that stores each kept quantity's derivative beside it, so it also
-    costs one joint launch and no history. ``jax.jvp`` integrates one
-    sensitivity column, ``jax.jacfwd`` one per direction, and over a batch,
-    whose every cosmology is a direction, one per directed input that moves.
-    ``jax.grad`` integrates one per directed input that moves, and so does
-    every transform under ``jit``, where JAX stages the derivative before it
-    knows whether it will transpose it. A thread holds
-    at most :data:`~discoeb.solver._kernel.MAX_SENSITIVITY_STATE`
+    values yet.
+
+    The returned values are differentiable in every parameter of the
+    cosmologies under ``jax.jvp`` and ``jax.jacfwd``, with or without
+    ``jit``. Reverse mode (``jax.grad``, ``jax.vjp``, ``jax.jacrev``)
+    raises: modax integrates the derivative along each tangent direction,
+    and reverse mode has none to give it. For the gradient of a scalar,
+    ``jax.jacfwd`` costs one column per parameter. The derivative reaches the
+    kernel through the parameter row. modax's forward sensitivities carry
+    it, with a hook that stores each kept quantity's derivative beside it,
+    so it also costs one joint launch and no history. ``jax.jvp``
+    integrates one sensitivity column and ``jax.jacfwd`` one per direction,
+    however many columns of the row a direction moves. Over a batch, take
+    ``jax.vmap(jax.jacfwd(f))`` of a function of one cosmology: ``jacfwd``
+    of the batch would ask every cosmology for every other's directions. A
+    thread holds at most :data:`~discoeb.solver._kernel.MAX_SENSITIVITY_STATE`
     components, and more columns run as several launches. It is the
-    derivative at fixed scale factor, so at fixed redshift, and at fixed
-    initial state.
+    derivative at fixed scale factor, so at fixed redshift. The initial
+    state carries its tangent too, as the start of the sensitivity column,
+    at no cost. A key the solve never reads (``A_s``, ``n_s``, ``k_p``)
+    has a zero derivative.
     """
 
     model, dicts = _batch_of(cosmologies)
@@ -177,40 +178,31 @@ def solve_eb(
 
     columns = _columns(dicts, model)
     prepared = _prepare_solve(model, dicts, k_values, extra, columns)
-    # The directed inputs the cosmologies imply, one column each, and those
-    # ``inputs`` replaces. A derivative reaches the launch through them, and
-    # modax integrates a sensitivity column along their tangent. The
-    # primordial keys the solve never reads carry no tangent (_columns).
-    x = _directed_inputs(columns, model, extra)
+    # A derivative reaches the launch through the parameter rows and the
+    # initial state, and modax integrates a sensitivity column along their
+    # tangent. The save times are held fixed.
+    layout = prepared.layout
+    n_k = len(prepared.k_sorted)
+    params = prepared.params
     if inputs is not None:
-        given = jnp.asarray(inputs, dtype=jnp.float64)
-        directed = parameter_layout(model, extra).directed
-        if (
-            given.ndim != 2
-            or given.shape[0] != n_cosmo
-            or given.shape[1] not in (N_COMMON_DIRECTED, len(directed))
-        ):
+        unknown = sorted(set(inputs) - {name for name, _ in layout.values})
+        if unknown:
             raise ValueError(
-                f"inputs must be (n_cosmologies, {len(directed)}) or "
-                f"(n_cosmologies, {N_COMMON_DIRECTED}), got {given.shape}"
+                f"inputs {unknown} are not columns of the parameter row: "
+                f"{[name for name, _ in layout.values]}"
             )
-        x = [*jnp.unstack(given, axis=1), *x[given.shape[1] :]]
+        for name, value in inputs.items():
+            value = jnp.broadcast_to(jnp.asarray(value, jnp.float64), (n_cosmo,))
+            params = params.at[:, layout.columns[name]].set(jnp.tile(value, n_k))
 
     if isinstance(error_weights, dict):
         error_weights = _named_error_weights(
             error_weights, prepared.model, np.repeat(prepared.k_sorted, n_cosmo)
         )
-    n_k = len(prepared.k_sorted)
-    # The directed parameters lead the row (parameter_layout). Each is a
-    # params leaf of its own, so one that does not move reaches modax as a
-    # symbolic zero and gets no column in reverse mode. The rest of the row
-    # and the initial state are held fixed, as are the save times.
-    rows = jax.lax.stop_gradient(prepared.params)
-    params = (*(jnp.tile(column, n_k)[:, None] for column in x), rows[:, len(x) :])
     _, out = _launch(
         prepared,
         params,
-        jax.lax.stop_gradient(prepared.y0),
+        prepared.y0,
         jax.lax.stop_gradient(a_grid),
         error_weights=error_weights,
         save_hook=_keep_hook(prepared.cosmology_model, tuple(extra), names),
@@ -233,59 +225,23 @@ def solve_eb(
     return values
 
 
-def _directed_inputs(columns, model, extra=()) -> list[jax.Array]:
-    """Return the directed inputs of ``model`` from a batch's columns, one ``(n_cosmologies,)`` array each.
-
-    They are the layout's directed parameters, in its order
-    (:func:`~discoeb.solver._kernel.parameter_layout`). Kept apart, not
-    stacked, so that each carries its own tangent, or none.
-    """
-
-    values = density_parameters(columns, model=model)
-    names = parameter_layout(model, extra).directed
-    return [jnp.asarray(values[name], dtype=jnp.float64) for name in names]
-
-
-def differentiable_parameters(model: type[Model]) -> tuple[str, ...]:
-    """Return the cosmology keys :func:`solve_eb` differentiates for ``model``.
-
-    Each component marks its own: ``Parameter(differentiable=True)``
-    (:meth:`Model.differentiable_parameters
-    <discoeb.models.Model.differentiable_parameters>`). For the built-in
-    components these are ``omega_b``, ``omega_c``, ``omega_de``, ``T_cmb``,
-    ``N_eff`` and ``omega_k``, ``m_nu`` with
-    :class:`~discoeb.components.species.MassiveNeutrinos`, ``w_DE_0`` and
-    ``w_DE_a`` with :class:`~discoeb.components.species.DarkEnergy` and
-    ``z_re`` with :class:`~discoeb.components.recombination.ReionizationDepth`.
-    They reach the solve through the directed inputs, and the forward
-    sensitivities carry them through the hierarchy and the recombination
-    history. The derivative is at fixed scale factor and holds the initial
-    state fixed.
-
-    Differentiating another key raises: ``N_mnu``, a count, and ``Y_He`` and
-    ``cs2_DE``, whose derivatives of ``P(k)`` miss central differences by
-    0.8 and 1 percent. The solve never reads ``A_s``, ``n_s`` and ``k_p``.
-    """
-
-    return _model_of(model).differentiable_parameters()
-
-
-def directed_inputs(cosmologies) -> jax.Array:
-    """Return the ``(n_cosmologies, n_directed)`` directed inputs the cosmologies imply.
+def solve_inputs(cosmologies) -> dict[str, jax.Array]:
+    """Return the parameter-row columns the cosmologies imply, ``(n_cosmologies,)`` each, by name.
 
     ``cosmologies`` is a cosmology or a sequence of cosmologies of one
-    model. These are the model's directed
-    parameters: the five background densities and the recombination block's
-    ``Y_He`` and ``T_cmb``, then those of the model's other
-    components (curvature, dark energy, massive neutrinos): the variables
-    :func:`solve_eb` takes as
-    ``inputs`` and differentiates with respect to. A JAX array, traceable
+    model. The columns are what the kernel reads: the keys it takes as
+    given (``omega_c``, ``omega_b``, ``Y_He``, ``T_cmb``, ...) and the
+    parameters derived from keys (``omega_g``, ``omega_ur``, ``amnu``, ...).
+    :func:`solve_eb` takes any of them as ``inputs``. JAX arrays, traceable
     under ``jit``.
     """
 
     model, dicts = _batch_of(cosmologies)
-    columns = _columns(dicts, model, held=False)
-    return jnp.stack(_directed_inputs(columns, model), axis=1)
+    values = density_parameters(_columns(dicts, model), model=model)
+    return {
+        name: jnp.asarray(values[name], dtype=jnp.float64)
+        for name, _ in parameter_layout(model).values
+    }
 
 
 def state_names(model: type[Model]) -> tuple[str, ...]:

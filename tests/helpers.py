@@ -103,7 +103,7 @@ def packed(model, cosmology, k):
     from discoeb.solver._kernel import _columns, _pack
 
     model, dicts = _batch_of(cosmology)
-    columns = _columns(dicts, model, held=False)
+    columns = _columns(dicts, model)
     params, y0 = _pack(model.resolved(), (), tuple(np.asarray(k).tolist()), columns)
     return np.asarray(params), np.asarray(y0)
 
@@ -234,7 +234,7 @@ class SecondDarkMatter(Species):
 
     delta_x = State(initial=lambda F: 0.75 * F[0])
 
-    omega_x: ArrayLike = Parameter(0.0, directed=True)
+    omega_x: ArrayLike = Parameter(0.0, column=True)
 
     @classmethod
     def check(cls, omega_x):
@@ -319,7 +319,7 @@ class Quintessence(Species):
     ddphi = State()
 
     lam: ArrayLike = Parameter(0.0, column=True)
-    V0: ArrayLike = Parameter(directed=True)  # in units of omega, as omega_de
+    V0: ArrayLike = Parameter(column=True)  # in units of omega, as omega_de
 
     def V(self, V0, lam, phi):
         return V0 * math.exp(-lam * phi)

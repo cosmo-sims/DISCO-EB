@@ -73,7 +73,7 @@ def test_two_copies_share_a_model():
     assert names[-4:] == ("x_delta", "x_theta", "y_delta", "y_theta")
     layout = parameter_layout(LCDM_XY)
     # the reionization redshift, declared by the recombination block, comes last
-    assert layout.directed[-3:] == ("x_omega", "y_omega", "z_re")
+    assert list(layout.columns)[-1] == "z_re"
     assert {"x_w", "y_cs2", "x_omega", "y_omega"} <= set(layout.columns)
     # unnamed, the fluid's cs2 would be the baryons'
     with pytest.raises(ValueError, match="needs a name"):
@@ -213,15 +213,12 @@ def test_the_parameter_reaches_the_dictionary_the_row_and_the_inputs():
     assert LCDM_X.parameter_keys()["omega_x"] == 0.0
     assert "omega_x" not in LCDM.parameter_keys()
     layout = parameter_layout(LCDM_X)
-    # in component order after the shared seven
-    own = parameter_layout(LCDM).directed
-    assert layout.directed[:7] == own[:7]
-    assert sorted(layout.directed) == sorted((*own, "omega_x"))
-    i = layout.directed.index("omega_x")
-    assert layout.directed_columns[i] == layout.columns["omega_x"]
-    # the directed parameters lead the row, and nothing else stands for them
-    assert layout.directed_columns == tuple(range(len(layout.directed)))
-    assert not {"eps", "omega_x_nominal", "dir_omega_x"} & set(layout.columns)
+    own = parameter_layout(LCDM).columns
+    assert sorted(layout.columns) == sorted((*own, "omega_x"))
+    # the wave number leads the row, then the parameters in component order
+    assert list(layout.columns)[0] == "k"
+    assert sorted(layout.columns.values()) == list(range(layout.n))
+    assert dict(layout.values) == {n: c for n, c in layout.columns.items() if n != "k"}
     # The built-in models' rows have no trace of it.
     assert "omega_x" not in parameter_layout(LCDM).columns
 
@@ -337,31 +334,6 @@ def test_the_field_is_background_and_its_perturbation_is_not():
     assert model.published() == ("phidot", "tau", "V", "opacity", "cs2")
 
 
-# --- The columns of a batch, and the keys the solve holds fixed.
-
-
-def test_a_held_key_raises_when_differentiated():
-    """``Y_He`` is read by the solve but not differentiated: no silent zero."""
-    import jax
-
-    from discoeb.models._model import _batch_of
-    from discoeb.solver._kernel import _columns
-
-    reference = cosmologies_of(LCDM, COSMOLOGY)
-
-    def column(key):
-        def of(value):
-            model, dicts = _batch_of(reference.replace(**{key: value}))
-            return _columns(dicts, model)[key][0]
-
-        return jax.grad(of)(getattr(reference, key))
-
-    assert float(column("omega_c")) == 1.0
-    assert float(column("A_s")) == 0.0  # never read by the solve: no tangent
-    with pytest.raises(ValueError, match="Y_He"):
-        column("Y_He")
-
-
 # ============================================================================
 # sensitivities: modax's forward sensitivities: derivatives of ``solve_eb`` values against central differences
 # ============================================================================
@@ -374,18 +346,18 @@ def test_solve_eb_derivatives(two_columns):
     """The kept quantities are differentiable in the cosmological parameters.
 
     The derivative chains the densities' dependence on ``Omega_m``, ``Omega_b``,
-    ``H_0``, ``T_cmb`` and ``N_eff`` into the directed inputs, along which modax
-    integrates sensitivity columns and stores each quantity's derivative:
-    ``jax.jvp``, ``jax.jacfwd`` and ``jax.grad`` of the kept values all come
-    from the joint launch. The densities-level derivative is checked
-    against central differences of its own primal at fixed thermal history;
+    ``H_0``, ``T_cmb`` and ``N_eff`` into the parameter row, along whose
+    tangent modax integrates sensitivity columns and stores each quantity's
+    derivative: ``jax.jvp`` and ``jax.jacfwd`` of the kept values come from
+    the joint launch, and reverse mode raises. The derivative in each
+    column of the row (``inputs``) is checked against central differences
+    of its own primal, at fixed initial state;
     the differences are the noisy side: the solve runs at rtol = atol = 1e-4,
     a step-acceptance flip between the two shifted solves moves a value by
     ~1e-6 of its scale, so the Jacobian is checked as the change it predicts
     over a 0.1 percent step against the measured change, in units of each
-    quantity's scale, and the gradient of a scale-weighted sum over a 1
-    percent step. The parameter-level derivative is then the chain rule
-    through ``density_parameters``.
+    quantity's scale. The parameter-level derivative moves the row and the
+    initial state, and is checked the same way.
 
     The two contrasts ``P(k)`` reads are kept today, in launches of two
     columns: the kernels of the ``P(k)`` derivative tests, which are
@@ -399,9 +371,7 @@ def test_solve_eb_derivatives(two_columns):
     import jax.numpy as jnp
 
     from discoeb.models import LCDM
-    from discoeb.models._model import _batch_of
-    from discoeb.solver._kernel import _columns, parameter_layout
-    from discoeb.solver._solver import _directed_inputs, solve_eb
+    from discoeb.solver._solver import solve_eb, solve_inputs
 
     DIFFERENTIABLE_PARAMETERS = DENSITY_PARAMETERS
     cosmology = _perturbed_cosmologies(1)[0]
@@ -412,9 +382,7 @@ def test_solve_eb_derivatives(two_columns):
 
     def inputs_of(theta):
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
-        model, dicts = _batch_of(LCDM.from_dict(physical(LCDM, param)))
-        columns = _columns(dicts, model)
-        return jnp.stack(_directed_inputs(columns, LCDM), axis=1)
+        return solve_inputs(LCDM.from_dict(physical(LCDM, param)))
 
     densities = inputs_of(theta)
     a = np.array([1.0])
@@ -436,99 +404,71 @@ def test_solve_eb_derivatives(two_columns):
 
     # The joint launch's primal: the fp64 LU in place of the plain fp32 one,
     # so the same trajectories to within the solver's tolerance.
-    primal, _ = jax.jvp(kept, (densities,), (jnp.zeros_like(densities),))
+    still = {name: jnp.zeros_like(value) for name, value in densities.items()}
+    primal, _ = jax.jvp(kept, (densities,), (still,))
     assert np.abs(np.asarray(primal) - base).max() < 1.0e-4 * scale.max()
 
     # The central differences are converged (rtol = atol = 1e-6): at the default
     # tolerance the solve's own error, different on the two sides of a step,
     # is the larger part of a difference.
-    def kept_converged(densities):
-        return kept(densities, rtol=1.0e-6, atol=1.0e-6, max_steps=200_000)
+    converged = dict(rtol=1.0e-6, atol=1.0e-6, max_steps=200_000)
 
-    jac = np.asarray(jax.jacfwd(kept)(densities))[..., 0, :]
-    DIRECTED_NAMES = parameter_layout(LCDM).directed
-    assert jac.shape == base.shape + (len(DIRECTED_NAMES),)
-    assert np.isfinite(jac).all()
-    for j, dn in enumerate(DIRECTED_NAMES):
-        if densities[0, j] == 0.0:  # omega_k, amnu and z_re of a flat LCDM
-            continue
-        step = 1.0e-3 * float(densities[0, j])
-        unit = jnp.zeros_like(densities).at[0, j].set(1.0)
-        finite = (
-            np.asarray(kept_converged(densities + step * unit))
-            - np.asarray(kept_converged(densities - step * unit))
-        ) / (2.0 * step)
-        err = np.abs(jac[..., j] - finite) * step / scale
+    def check(jac, finite, step, what):
+        err = np.abs(jac - finite) * step / scale
         for q, name in enumerate(names):
             worst = err[0, q].max()
             assert worst < noise[name], (
-                f"d{name}/d{dn}: {worst:.3g} of the scale over a 1e-3 step"
+                f"d{name}/d{what}: {worst:.3g} of the scale over a 1e-3 step"
             )
 
-    weights = 1.0 / scale
+    # One direction per column of the row, in launches of two.
+    jac = jax.jacfwd(kept)(densities)
+    assert set(jac) == set(densities)
+    for dn, column in jac.items():
+        column = np.asarray(column)[..., 0]
+        assert column.shape == base.shape and np.isfinite(column).all()
+        if densities[dn][0] == 0.0:  # omega_k and z_re of a flat LCDM
+            continue
+        step = 1.0e-3 * float(densities[dn][0])
+        finite = (
+            np.asarray(kept({**densities, dn: densities[dn] + step}, **converged))
+            - np.asarray(kept({**densities, dn: densities[dn] - step}, **converged))
+        ) / (2.0 * step)
+        check(column, finite, step, dn)
 
-    def total(d):
-        return jnp.sum(kept(d) * weights)
-
-    grad = np.asarray(jax.grad(total)(densities))[0]
-    # The transposed rule against the untransposed one: jax.grad of a weighted
-    # sum is the Jacobian contracted with the weights (the Jacobian's accuracy
-    # is the check above; a central difference of the sum is ill-conditioned,
-    # its terms cancelling to 1e-3 of their size for T_cmb).
-    summed = np.einsum("cqkt,cqktj->j", np.broadcast_to(weights, base.shape), jac)
-    np.testing.assert_allclose(
-        grad, summed, rtol=1.0e-6, err_msg="grad vs contracted jacfwd"
-    )
-
-    # Through the dictionary: the chain rule with the densities' Jacobian,
-    # under jacfwd and grad alike, and a plain number where a derivative is
-    # not carried.
-    def of_parameters(theta):
+    # Through the cosmology: one column per parameter, along the tangent of
+    # the row and of the initial state.
+    def of_parameters(theta, **settings):
         param = {**fixed, **dict(zip(DIFFERENTIABLE_PARAMETERS, theta))}
-        return solve_eb(cosmologies_of(LCDM, param), SOLVE_EB_K, a, keep=names)
+        return solve_eb(
+            cosmologies_of(LCDM, param), SOLVE_EB_K, a, keep=names, **settings
+        )
 
     jac_theta = np.asarray(jax.jacfwd(of_parameters)(theta))
-    d_densities = np.asarray(jax.jacfwd(lambda t: inputs_of(t)[0])(theta))
-    # The two are separate launches, one column per parameter along
-    # d inputs / d theta against one per input, so they differ by the
-    # solve's noise: checked like the central differences above, as the
-    # change each predicts over a 0.1 percent step in units of the
-    # quantity's scale.
-    chained = np.einsum("cqktj,jp->cqktp", jac, d_densities)
+    assert np.all(np.abs(jac_theta).max(axis=(0, 1, 2, 3)) > 0.0)
     for p, key in enumerate(DIFFERENTIABLE_PARAMETERS):
         step = 1.0e-3 * float(theta[p])
-        err = np.abs(jac_theta[..., p] - chained[..., p]) * step / scale
-        for q, name in enumerate(names):
-            assert err[0, q].max() < noise[name], (
-                f"d{name}/d{key}: {err[0, q].max():.3g} against the chain rule"
-            )
-    grad_theta = np.asarray(
-        jax.grad(lambda t: jnp.sum(of_parameters(t) * weights))(theta)
-    )
-    # grad integrates a column per moved input (six: T_cmb moves three) and
-    # jacfwd one per direction (five), so they agree to rounding, not bit
-    # for bit (1.3e-10 measured in one launch each).
-    np.testing.assert_allclose(
-        grad_theta, np.einsum("cqkt,cqktp->p", weights, jac_theta), rtol=1e-8
-    )
-    assert np.all(grad_theta != 0.0)
+        finite = (
+            np.asarray(of_parameters(theta.at[p].add(step), **converged))
+            - np.asarray(of_parameters(theta.at[p].add(-step), **converged))
+        ) / (2.0 * step)
+        check(jac_theta[..., p], finite, step, key)
 
-    # m_nu needs MassiveNeutrinos, cs2_DE DarkEnergy. The sensitivities in
-    # Y_He and cs2_DE miss central differences of P(k) by 0.8 and 1 percent
-    # (2026-11-13), so they stay held.
-    # z_re needs ReionizationDepth, whose state resolves its derivative.
-    for key, value in (("m_nu", 0.0), ("Y_He", 0.245), ("z_re", 7.0)):
-        with pytest.raises(ValueError, match="cannot be differentiated"):
-            jax.grad(
-                lambda v, key=key: jnp.sum(
-                    solve_eb(
-                        cosmologies_of(LCDM, {**cosmology, key: v}),
-                        SOLVE_EB_K,
-                        a,
-                        keep=names,
-                    )
-                )
-            )(value)
+    # Forward mode only: modax integrates along the tangents it is given.
+    with pytest.raises(NotImplementedError, match="forward mode"):
+        jax.grad(lambda t: jnp.sum(of_parameters(t)))(theta)
+
+    # Every key is differentiable, Y_He too (one direction: the kernel above).
+    def of_helium(Y_He):
+        batch = cosmologies_of(LCDM, {**cosmology, "Y_He": Y_He})
+        return solve_eb(batch, SOLVE_EB_K, a, keep=names)
+
+    _, along = jax.jvp(
+        of_helium, (jnp.asarray(cosmology["Y_He"]),), (jnp.asarray(1.0),)
+    )
+    assert (
+        np.isfinite(np.asarray(along)).all() and np.abs(np.asarray(along)).max() > 0.0
+    )
 
 
 REIO_NAMES = ("R", "delta_b", "kappa", "kappa_reio")
@@ -610,11 +550,14 @@ OMEGA_FLUID = 0.04
 def test_a_dictionary_names_no_model():
     """No model stands in for a bare dictionary: the caller names one."""
 
-    from discoeb import directed_inputs
+    from discoeb import solve_inputs
+    from discoeb.solver._kernel import parameter_layout
 
     with pytest.raises(TypeError, match="LCDM"):
-        directed_inputs(COSMOLOGY)
-    directed_inputs(cosmologies_of(LCDM, COSMOLOGY))
+        solve_inputs(COSMOLOGY)
+    inputs = solve_inputs(cosmologies_of(LCDM, COSMOLOGY))
+    assert ("k", *inputs) == tuple(parameter_layout(LCDM).columns)
+    assert all(value.shape == (1,) for value in inputs.values())
 
 
 SOLVE_K = np.geomspace(1.0e-3, 0.3, 8)
@@ -629,12 +572,12 @@ def test_components_from_outside_leave_the_solve_unchanged():
     """A third of the CDM in a species of the tests' own and a third in a named fluid evolve as the CDM did.
 
     One model holds every kind of component a user adds
-    (:data:`helpers.LCDM_OUTSIDE`): ``SecondDarkMatter``, with a directed
+    (:data:`helpers.LCDM_OUTSIDE`): ``SecondDarkMatter``, with a column
     parameter of its own, a named ``Fluid`` and the background state
     ``CosmicTime``. Both fluids' contrasts equal the CDM's in the same solve,
     the contrast, the curvature perturbation and the conformal time agree
     with the plain LCDM solve to the solver's tolerance, the cosmic time ends
-    at the age of the universe, and the directed input ``omega_x`` moves
+    at the age of the universe, and the input ``omega_x`` moves
     every kept quantity as ``omega_c`` does. (Three tests and seven kernels
     until 2026-11-17, one model each.)
     """
@@ -642,8 +585,7 @@ def test_components_from_outside_leave_the_solve_unchanged():
     import jax
     import jax.numpy as jnp
 
-    from discoeb import directed_inputs, solve_eb
-    from discoeb.solver._kernel import parameter_layout
+    from discoeb import solve_eb, solve_inputs
 
     lcdm = cosmologies_of(LCDM, COSMOLOGY)
     plain = by_name(solve_eb(lcdm, SOLVE_K, SOLVE_A, keep=DIAG_KEEP), DIAG_KEEP)
@@ -687,17 +629,14 @@ def test_components_from_outside_leave_the_solve_unchanged():
     np.testing.assert_allclose(split["t"][0, :, -1], age, rtol=1e-4)
     np.testing.assert_allclose(split["tau"][0, :, -1], conformal_age, rtol=1e-4)
 
-    directed = parameter_layout(LCDM_OUTSIDE).directed
-    x = jnp.asarray(directed_inputs(batch))
-    assert x.shape == (1, len(directed))
-
-    def kept(inputs):
-        return solve_eb(batch, SOLVE_K, SOLVE_A, keep=keep, inputs=inputs)
+    x = solve_inputs(batch)
 
     def along(name):
         # one direction, so the model's one-column kernel
-        unit = jnp.zeros_like(x).at[0, directed.index(name)].set(1.0)
-        return np.asarray(jax.jvp(kept, (x,), (unit,))[1])
+        def kept(value):
+            return solve_eb(batch, SOLVE_K, SOLVE_A, keep=keep, inputs={name: value})
+
+        return np.asarray(jax.jvp(kept, (x[name],), (jnp.ones_like(x[name]),))[1])
 
     along_c, along_x = along("omega_c"), along("omega_x")
     assert np.isfinite(along_c).all() and np.isfinite(along_x).all()

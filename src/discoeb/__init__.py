@@ -16,22 +16,19 @@ from .models import (
 from .observables import matter_power_spectrum
 from .solver import (
     A_START,
-    DIRECTED_NAMES,
     PERTURB_ATOL,
     PERTURB_FIRST_STEP,
     PERTURB_MAX_STEPS,
     PERTURB_RTOL,
-    differentiable_parameters,
-    directed_inputs,
     joint_model,
     solve_eb,
+    solve_inputs,
     state_names,
 )
 
 __all__ = [
     "Component",
     "Model",
-    "DIRECTED_NAMES",
     "A_START",
     "H100",
     "PERTURB_ATOL",
@@ -43,10 +40,9 @@ __all__ = [
     "W0WACDM",
     "W0WACDM_MNU",
     "THERMO_ERROR_WEIGHT",
-    "differentiable_parameters",
-    "directed_inputs",
     "joint_model",
     "matter_power_spectrum",
     "solve_eb",
+    "solve_inputs",
     "state_names",
 ]

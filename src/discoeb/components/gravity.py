@@ -79,9 +79,9 @@ class AdiabaticMode(Component):
     matter power spectrum does.
     """
 
-    A_s: ArrayLike = Parameter(solved=False)
-    n_s: ArrayLike = Parameter(solved=False)
-    k_p: ArrayLike = Parameter(0.05, solved=False)
+    A_s: ArrayLike = Parameter()
+    n_s: ArrayLike = Parameter()
+    k_p: ArrayLike = Parameter(0.05)
 
     rho_matter = Sum()
     """The density of the pressureless species."""
@@ -117,7 +117,7 @@ class Curvature(Gravity):
     ``K`` and none of the sums.
     """
 
-    omega_k: ArrayLike = Parameter(0.0, directed=True, differentiable=True)
+    omega_k: ArrayLike = Parameter(0.0, column=True)
 
     def K(self, omega_k):
         return -H100_SQ * omega_k

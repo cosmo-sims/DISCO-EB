@@ -64,9 +64,8 @@ def matter_power_spectrum(
 
     Notes
     -----
-    Differentiable in the model's
-    :func:`~discoeb.solver.differentiable_parameters` given as JAX values,
-    as ``solve_eb``'s values are: the derivative at fixed scale factor.
+    Differentiable in the parameters given as JAX values, as ``solve_eb``'s
+    values are: the derivative at fixed scale factor.
     """
 
     ks, delta_c, delta_b, omega_c, omega_b, A_s, n_s, k_p = (

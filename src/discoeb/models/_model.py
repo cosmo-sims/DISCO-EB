@@ -31,7 +31,7 @@ from ..components._component import (
     derive_parameters,
 )
 from ..components.gravity import H100
-from ..components.recombination import Recombination, ReionizationDepth
+from ..components.recombination import Recombination
 
 __all__ = ["Model"]
 
@@ -61,10 +61,10 @@ class Model(Recombination):
     explicit.
 
     A cosmology is an immutable JAX pytree whose leaves are its
-    parameters, so ``jax.jit`` traces them and ``jax.grad`` returns a
-    cosmology of derivatives. Differentiating one outside the model's
-    :func:`~discoeb.solver.differentiable_parameters` raises, so take the
-    gradient in chosen parameters: ``grad(lambda om: f(planck.replace(omega_c=om)))``.
+    parameters, so ``jax.jit`` traces them and ``jax.jacfwd`` returns a
+    cosmology of derivatives, one column of the solve per parameter. Take
+    it in chosen parameters to integrate fewer:
+    ``jacfwd(lambda om: f(planck.replace(omega_c=om)))``.
     """
 
     name: ClassVar[str]
@@ -314,24 +314,6 @@ class Model(Recombination):
         """Return the constructor's parameters and their defaults, :data:`REQUIRED` if none."""
 
         return {n: p.default for n, p in cls.parameters().items() if p.is_key}
-
-    @classmethod
-    def differentiable_parameters(cls) -> tuple[str, ...]:
-        """Return the keys a solve of this model differentiates, in declaration order.
-
-        Those declared ``Parameter(differentiable=True)``, except ``z_re``
-        without :class:`~discoeb.components.recombination.ReionizationDepth`,
-        whose state makes the steps resolve the reionization step's
-        derivative.
-        """
-
-        return tuple(
-            n
-            for n, p in cls.parameters().items()
-            if p.is_key
-            and p.differentiable
-            and (n != "z_re" or cls.has(ReionizationDepth))
-        )
 
     @classmethod
     def state_names(cls) -> tuple[str, ...]:
@@ -620,12 +602,9 @@ def _documented(cls: type[Model]) -> str:
     """The class's own docstring with its constructor's parameters listed after it."""
 
     own = inspect.cleandoc(vars(cls).get("__doc__") or "")
-    differentiable = cls.differentiable_parameters()
     lines = ["Parameters", "----------"]
     for key, default in cls._keys.items():
         line = "Required." if default is REQUIRED else f"Default {default!r}."
-        if key in differentiable:
-            line += " Differentiable through solve_eb."
         lines += [f"{key} : float or jax.Array", f"    {line}"]
     return "\n\n".join(part for part in (own, "\n".join(lines)) if part)
 

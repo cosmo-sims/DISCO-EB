@@ -39,52 +39,26 @@ PERTURB_MAX_STEPS = 20000
 SOLVER_COLUMNS = ("k",)
 """The row's column the solver sets rather than a component: the wave number."""
 
-DIRECTED_NAMES = (
-    "omega_g",
-    "omega_ur",
-    "omega_c",
-    "omega_b",
-    "omega_de",
-    "Y_He",
-    "T_cmb",
-)
-"""The directed inputs every built-in model leads with: the five background
-densities and the recombination rates' ``Y_He`` and ``T_cmb``. A model's others (the curvature density, the dark-energy
-parameters, the massive neutrinos' density and mass) follow in component
-order (:func:`parameter_layout`)."""
-N_COMMON_DIRECTED = len(DIRECTED_NAMES)
-"""The number of :data:`DIRECTED_NAMES`, which ``solve_eb`` also takes alone
-as ``inputs``."""
-
 
 @dataclass(frozen=True)
 class ParameterLayout:
     """The columns of a model's parameter row, generated from its parameters.
 
-    The row is ``(the directed parameters, SOLVER_COLUMNS, the other column
-    parameters)``. The directed parameters come in :data:`DIRECTED_NAMES`
-    order, then in component order, and the other columns in component and
-    declaration order, so the layout is a function of the resolved model and
-    the kernels cached on it stay valid. A derivative moves the directed
-    columns alone: modax integrates a sensitivity column along their
-    tangent (:func:`~discoeb.solver.solve_eb`).
+    The row is ``(SOLVER_COLUMNS, the column parameters)``, the parameters in
+    component and declaration order, so the layout is a function of the
+    resolved model and the kernels cached on it stay valid. A derivative
+    may move any of the parameters' columns: modax integrates a sensitivity
+    column along the row's tangent (:func:`~discoeb.solver.solve_eb`).
     """
 
     columns: dict
     """Column by the name the providers read it under: ``omega_c``, ``k``."""
-    directed: tuple[str, ...]
-    """The directed parameters: the inputs a derivative moves."""
     values: tuple[tuple[str, int], ...]
     """``(parameter, column)`` of the parameters the row holds."""
 
     @property
     def n(self) -> int:
         return len(self.columns)
-
-    @property
-    def directed_columns(self) -> tuple[int, ...]:
-        """The columns of :attr:`directed`."""
-        return tuple(self.columns[name] for name in self.directed)
 
 
 def parameter_layout(model: type[Model], extra=()) -> ParameterLayout:
@@ -96,20 +70,12 @@ def parameter_layout(model: type[Model], extra=()) -> ParameterLayout:
 @functools.lru_cache(maxsize=None)
 def _parameter_layout(model: type[Model], extra) -> ParameterLayout:
     parameters = model.parameters(extra)
-    directed = [n for n, p in parameters.items() if p.directed]
-    directed.sort(
-        key=lambda n: (
-            DIRECTED_NAMES.index(n) if n in DIRECTED_NAMES else len(DIRECTED_NAMES)
-        )
-    )
-    others = [n for n, p in parameters.items() if p.column and not p.directed]
     clash = sorted(set(SOLVER_COLUMNS) & set(parameters))
     if clash:
         raise ValueError(f"{clash} name solver columns, not parameters")
-    names = [*directed, *SOLVER_COLUMNS, *others]
-    columns = {name: i for i, name in enumerate(names)}
-    values = tuple((n, columns[n]) for n in (*directed, *others))
-    return ParameterLayout(columns, tuple(directed), values)
+    held = [n for n, p in parameters.items() if p.column]
+    columns = {name: i for i, name in enumerate((*SOLVER_COLUMNS, *held))}
+    return ParameterLayout(columns, tuple((n, columns[n]) for n in held))
 
 
 TRAJECTORIES_PER_BLOCK = 32
@@ -306,9 +272,8 @@ def _prepare_solve(
     numbers. The kernel compiles once per model, and :func:`_pack` once per
     model, wave-mode grid and batch size.
 
-    The derivative holds the parameter rows and the initial state fixed:
-    :func:`~discoeb.solver.solve_eb` sets the directed columns from its own
-    inputs.
+    The rows and the initial state carry the cosmologies' tangents, and
+    :func:`~discoeb.solver.solve_eb` differentiates through both.
     """
 
     resolved = _model_of(model).resolved()
@@ -320,7 +285,6 @@ def _prepare_solve(
     k_sorted = k[order]
     if columns is None:
         columns = _columns(cosmologies, resolved)
-    columns = jax.lax.stop_gradient(columns)
     params, y0 = _pack(resolved, tuple(extra), tuple(k_sorted.tolist()), columns)
     return _PreparedSolve(
         cosmologies,
@@ -362,54 +326,23 @@ def _pack(model: type[Model], extra, k_sorted, columns):
     return params, y0
 
 
-@functools.partial(jax.custom_jvp, nondiff_argnums=(1,))
-def _not_differentiable(value, name):
-    """Return ``value``, and raise if anything differentiates with respect to it."""
-
-    return value
-
-
-@_not_differentiable.defjvp
-def _not_differentiable_jvp(name, primals, tangents):
-    raise ValueError(
-        f"{name!r} cannot be differentiated through solve_eb of this model. The "
-        "differentiable parameters are those its components declare "
-        "differentiable (differentiable_parameters(model))"
-    )
-
-
-def _columns(cosmologies, model: type[Model], held: bool = True) -> dict:
+def _columns(cosmologies, model: type[Model]) -> dict:
     """Return a batch's parameters as JAX columns ``(n_cosmologies,)`` by key.
 
     ``cosmologies`` are the batch's parameter dictionaries
     (:func:`~discoeb.models._model._batch_of`), their values numbers or JAX
-    values, traced or not. With ``held``, the columns are the variables of
-    a derivative. A key the solve never reads (``solved=False``) then
-    carries no tangent, and a key it reads but the model does not
-    differentiate (:meth:`Model.differentiable_parameters
-    <discoeb.models.Model.differentiable_parameters>`) raises if
-    differentiated, where its derivative would come back as a silent zero.
-    So does a traced key of another model that a cosmology holds
-    (:meth:`Model.from_dict <discoeb.models.Model.from_dict>`), which the
-    kernel never reads.
+    values, traced or not. A key of another model that a cosmology holds
+    (:meth:`Model.from_dict <discoeb.models.Model.from_dict>`) is left out:
+    the kernel never reads it.
     """
 
-    model = _model_of(model)
-    declared = model.parameters()
-    differentiable = model.differentiable_parameters()
-    keys = model.parameter_keys()
-    foreign = sorted({key for c in cosmologies for key in c} - set(keys))
     columns = {}
-    for key in (*keys, *foreign):
-        values = [c.get(key, 0.0) if key in foreign else c[key] for c in cosmologies]
+    for key in _model_of(model).parameter_keys():
+        values = [c[key] for c in cosmologies]
         if any(isinstance(v, jax.Array) for v in values):
             column = jnp.stack([jnp.asarray(v, dtype=jnp.float64) for v in values])
         else:  # one device array, not one per cosmology
             column = jnp.asarray(np.asarray(values, dtype=np.float64))
-        if held and key in keys and not declared[key].solved:
-            column = jax.lax.stop_gradient(column)
-        elif held and key not in differentiable:
-            column = _not_differentiable(column, key)
         columns[key] = column
     return columns
 
