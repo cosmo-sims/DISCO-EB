@@ -884,8 +884,7 @@ conformal times and interpolated). They build cosmologies with
 - **JAX 64-bit:** `import discoeb` enables `jax_enable_x64`; `conftest.py`
   also sets it before anything else is imported
 - **Recfast License:** `recombination.py` contains code adapted from Recfast (UBC license, not MIT)
-- **Benchmarks:** See BENCHMARKS.md for reference timings on various hardware.
-  The spectrum benchmarks (`test_power_spectra_match_class`,
+- **Benchmarks:** The spectrum benchmarks (`test_power_spectra_match_class`,
   `test_matter_power_spectrum_matches_class` likewise if changed) time a *fresh*
   batch after warming up on a distinct one: the thermodynamics is included, as
   in an inference iteration
