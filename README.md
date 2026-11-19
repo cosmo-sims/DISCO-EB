@@ -34,23 +34,19 @@ site does not repeat them.
 
 <!-- start:overview -->
 
-DISCO-EB is a **differentiable linear Einstein-Boltzmann solver** for cosmology, and the Einstein-Boltzmann module of the DISCO-DJ framework (DIfferentiable Simulations for COsmology, Done with Jax). It evolves the background, the recombination history and the linear perturbations of every wave mode of a **batch of cosmologies in one GPU launch**.
-
-The solve runs as a [modax](https://github.com/lawrenceberry/modax) Rodas5P kernel. RECFAST and the optical depth step alongside the perturbation hierarchy in the same kernel, so the solve needs no tables. You choose which quantities to keep at which times, and the kernel evaluates them as it goes. The results are JAX arrays, differentiable in the cosmological parameters by forward sensitivities. DISCO-EB supports flat or curved ΛCDM, a CPL dark-energy fluid $(w_0, w_a)$, massive neutrinos and reionization.
+DISCO-EB is a **differentiable linear Einstein-Boltzmann solver** for cosmology, and the Einstein-Boltzmann module of the DISCO-DJ framework (DIfferentiable Simulations for COsmology, Done with Jax). It evolves the background, the recombination history and the linear perturbations of every wave mode of a **batch of cosmologies in one GPU launch**. DISCO-EB supports models including: flat or curved ΛCDM, a CPL dark-energy fluid $(w_0, w_a)$ and massive neutrinos.
 
 <!-- end:overview -->
-
-The [documentation](https://cosmo-sims.github.io/DISCO-EB/) covers the API and how to use it. The [paper](https://arxiv.org/abs/2311.03291) describes the method and its accuracy against CLASS.
 
 ## Installation
 
 <!-- start:install -->
 
 ```bash
-pip install "disco-eb[cuda13]"   # or [cuda12], which Python 3.10 needs
+pip install "disco-eb[cuda13]"   # or [cuda12], which Python 3.10 or older GPUs need
 ```
 
-You need a GPU to run a solve, but not to import the package. modax brings the CUDA compiler stack with it. The CMB spectra live in a separate package, [DISCO-CMB](https://github.com/lawrenceberry/DISCO-CMB), which builds on this one.
+A GPU is required to run the E-B solve. Whilst the matter power spectrum is included in this package, CMB observables live in a separate package, [DISCO-CMB](https://github.com/lawrenceberry/DISCO-CMB).
 
 <!-- end:install -->
 
@@ -58,7 +54,7 @@ You need a GPU to run a solve, but not to import the package. modax brings the C
 
 <!-- start:quickstart -->
 
-A cosmology is an instance of a model, with the model's parameters as keyword arguments. This example keeps the comoving curvature perturbation $\mathcal{R}$ and the CDM density contrast of flat LCDM, for 64 wave modes at 100 scale factors:
+A particular cosmology is defined as an instance of a DISCO-EB cosmological model initialised with particular cosmological parameters. In the following example we set up two LCDM cosmologies and configure the solver to return the comoving curvature perturbation $\mathcal{R}$ and the CDM overdensity, for 64 wave modes at 100 scale factors:
 
 ```python
 import numpy as np
@@ -75,19 +71,8 @@ values = solve_eb([planck, planck.replace(omega_c=0.125)], k, a, keep=("R", "del
 R = values[:, 0]  # (2, 64, 100): cosmologies, wave modes, scale factors
 ```
 
-A model's own parameters are physical densities, `omega_b`, `omega_c` and
-`omega_de` ($\omega = \Omega h^2$), and `planck.H_0` is what they sum to.
-`from_density_parameters` takes $\Omega_m$, $\Omega_b$ and $H_0$ and
-finds the dark-energy density that closes the budget. The solve integrates
-in the scale factor, so nothing runs before it and every cosmology ends at
-`a = 1`. Keep `tau` for the conformal time.
-
-`discoeb.models` has `LCDM`, `W0WACDM` (a CPL dark-energy fluid) and their
-massive-neutrino variants `LCDM_MNU` and `W0WACDM_MNU`. Each takes exactly
-its own parameters, so a type checker flags a missing or unknown one.
-The notebook `examples/flat_lcdm_power_spectrum.ipynb` computes and
-times the matter power spectrum of 128 flat LCDM cosmologies about Planck
-2018 in one jitted function.
+Cosmologies are described by their physical density parameters, `omega_b`, `omega_c` and
+`omega_de` ($\omega = \Omega h^2$), or by their density fractions, `Omega_m`, `Omega_b` and `Omega_de` ($\Omega = \rho / \rho_\text{crit}$) using `from_density_parameters`. All work is fused into a single set of ODE solves, with no background or thermal history interpolation tables. The solver is JIT-compiled and runs on the GPU, so it is fast and differentiable in the cosmological parameters. Users can choose which quantities to keep at which times, and the GPU kernel evaluates them on the fly. The integration runs using a [modax](https://github.com/lawrenceberry/modax) Rodas5P GPU kernel.
 
 <!-- end:quickstart -->
 
@@ -101,15 +86,14 @@ The repository uses [uv](https://docs.astral.sh/uv/):
 git clone https://github.com/cosmo-sims/DISCO-EB.git && cd DISCO-EB
 uv sync --extra cuda13  # or --extra cuda12
 
-uv run pytest tests -rs   # needs a GPU, and -rs shows skipped CLASS comparisons
-uv run pytest tests -m "not gpu" -n auto   # the host tests, on every core
-uv run ruff format && uv run ruff check --fix
-uv run ty check
-uv run pre-commit install   # the checks above, and a commit-message check
+uv run pytest tests -rs   # includes GPU tests, -rs shows skipped CLASS comparisons
+uv run pytest tests -m "not gpu" -n auto   # host only tests, parallelised across CPU cores
+uv run ruff format && uv run ruff check --fix  # format and lint
+uv run ty check  # type check
+uv run pre-commit install   # formatting, linting and type checking on commit
 ```
 
-The documentation (Sphinx with MyST and autodoc) builds in an environment of
-its own, the package's CPU install plus the docs group:
+The documentation (Sphinx with MyST and autodoc) builds in its own environment:
 
 ```bash
 export UV_PROJECT_ENVIRONMENT=.venv-docs
@@ -151,7 +135,7 @@ If you use DISCO-EB in your research, please cite the
 DISCO-EB uses the
 [MIT License](https://github.com/cosmo-sims/DISCO-EB/blob/main/LICENSE). The
 recombination module adapts code from
-[Recfast](https://www.astro.ubc.ca/people/scott/recfast.html), whose UBC
-license its file header reproduces.
+[RECFAST](https://www.astro.ubc.ca/people/scott/recfast.html), whose UBC
+license is included in our version.
 
 <!-- end:license -->

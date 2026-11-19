@@ -19,8 +19,6 @@
 :end-before: <!-- end:quickstart -->
 ```
 
-Pass a list of cosmologies of one model to solve a batch in the same launch. They share the scale factors, and `a = 1` is today for each. Keep `tau` there for a cosmology's conformal age.
-
 ## Where to go next?
 
 ::::{grid} 1 2 2 2
