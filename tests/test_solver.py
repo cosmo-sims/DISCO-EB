@@ -402,8 +402,8 @@ def test_solve_eb_derivatives(two_columns):
     np.testing.assert_allclose(np.asarray(plain), base, rtol=1e-12)
     scale = np.abs(base).max(axis=(2, 3), keepdims=True)
 
-    # The joint launch's primal: the fp64 LU in place of the plain fp32 one,
-    # so the same trajectories to within the solver's tolerance.
+    # The joint launch's primal: the same trajectories to within the
+    # solver's tolerance.
     still = {name: jnp.zeros_like(value) for name, value in densities.items()}
     primal, _ = jax.jvp(kept, (densities,), (still,))
     assert np.abs(np.asarray(primal) - base).max() < 1.0e-4 * scale.max()

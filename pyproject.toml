@@ -33,10 +33,10 @@ dependencies = [
     "jax>=0.6.2",
     "numpy>=2.2.6",
     # The hierarchy of blocks the joint solve is built on (Block, Hierarchy)
-    # and its forward sensitivities. 0.4.0 for the plain (y, t, p) -> tuple
-    # save hook and jax.jvp over a pytree params leaf, which solve_eb's
-    # derivatives use. modax brings numba-cuda-mlir.
-    "modax-solvers>=0.4.0",
+    # and its forward sensitivities. 0.5.0 for the directional forward mode
+    # solve_eb's derivatives use (jax.jvp, jax.jacfwd) and
+    # max_directions_per_thread. modax brings numba-cuda-mlir.
+    "modax-solvers>=0.5.0",
     # 0.3.0 for the O3 prepasses the kernels need and Blackwell support.
     "numba-enzyme-cuda>=0.3.0",
     # dataclass_transform, which lets a type checker read a model's

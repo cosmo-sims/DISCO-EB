@@ -60,13 +60,13 @@ uv run --no-sync sphinx-build -W docs docs/_build/html   # as CI builds it
 ```
 
 Requires Python >= 3.10 (`.python-version` pins 3.13). modax-solvers and
-numba-enzyme-cuda come from PyPI. The code needs modax 0.4.0 or later:
+numba-enzyme-cuda come from PyPI. The code needs modax 0.5.0 or later:
 `modax.solve` is its only entry point and takes the Rodas5P numerics on the
 method object (`kernel._launch` passes `method=Rodas5P(lu_precision=...,
 gains=PIDGains(pcoeff=0.3, icoeff=0.4))`), a save hook is a plain `(y, t, p)
 -> tuple` function whose values come back as `(N, n_save, n_out)`, and
 `params` may be a pytree. It also needs modax's directional forward mode
-(2026-11-17, the release after 0.4.0): `jax.jvp` of a launch integrates
+(0.5.0, 2026-11-18): `jax.jvp` of a launch integrates
 one sensitivity column along the row's tangent, and a `vmap` over tangents
 integrates one column per direction in the trajectory's own thread. There is no `sensitivity=`, `hook_size` or `quantity_hook` any more. numba-enzyme-cuda's CPU-only cap on numba
 and llvmlite is lifted by `override-dependencies`, since only the CUDA
@@ -477,12 +477,13 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      derivative (other models return one too since 2026-11-18, unresolved).
      Same parametrization as CLASS `reio_camb`:
      `kappa_reio` today against its `tau_reio` at the same `z_reio`
-     (`tests/test_components.py`). A sensitivity launch
+     (`tests/test_components.py`). Every launch of a model with the state
      weights `kappa_reio` by `REIO_ERROR_WEIGHT` = 1e4: at the block's
      weight the steps across the 0.5-wide step resolve `tau_reio` but not
-     its `z_re` derivative (6 percent off; `dP/dz_re` 3), and the weight
-     costs a primal P(k) batch with reionization 14 percent, so primal
-     launches go without it
+     its `z_re` derivative (`dP/dz_re` 12 percent off on modax 0.5.0), and
+     the weight costs a P(k) batch with reionization 14 percent. Until
+     2026-11-19 only sensitivity launches carried it; modax 0.5.0
+     differentiates a launch with the launch's own settings
    - `helium_rate_equation` floors `1 - x_He` at 1e-6: a solver stage that
      probes `x_He >= 1` made the escape probabilities overflow, and the NaN
      stalled one sweep cosmology at `max_steps` (2026-11-16)
@@ -565,13 +566,14 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    with the parameter rows as one array and holds only the save times
    fixed with `stop_gradient` (2026-11-18; before, each directed input was
    a leaf of its own and the rest of the row and the initial state were
-   held fixed, which the column method needed to keep the columns few). `_launch` passes modax a `Derivatives` (modax branch
-   `feat/derivative-options`) that applies only to differentiated
-   launches: fp64 LU, no register cap, `kappa_reio` weighted by
-   `REIO_ERROR_WEIGHT`, at most `MAX_SENSITIVITY_STATE // nvar - 1`
-   columns a thread (`MAX_SENSITIVITY_STATE` = 330,
-   `DISCO_MAX_SENSITIVITY_STATE`, in `_kernel.py`) and, with
-   `solve_eb(..., split_derivatives=True)`, `replicas=True`. What each
+   held fixed, which the column method needed to keep the columns few). A differentiated launch uses the launch's own
+   settings (modax 0.5.0, 2026-11-19; a `Derivatives` object on an
+   unreleased modax branch gave it the fp64 LU, no register cap and the
+   `kappa_reio` weight until then, and both suites pass without).
+   `_launch` passes `max_directions_per_thread`: `MAX_SENSITIVITY_STATE
+   // nvar - 1` (`MAX_SENSITIVITY_STATE` = 330,
+   `DISCO_MAX_SENSITIVITY_STATE`, in `_kernel.py`), or 1 with
+   `solve_eb(..., split_derivatives=True)`. What each
    transform costs, in modax's terms:
    - `jax.jvp`: one column along the tangent
    - `jax.jacfwd`: one column per direction, however many columns of the
@@ -585,8 +587,9 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      raises `NotImplementedError` in modax (2026-11-18). `jax.jacfwd` of a
      scalar costs a column per parameter, and `has_aux=True` returns the
      value from the same launch
-   - more columns than the cap run as several launches of one width, the
-     last padded with zero directions, so one kernel serves them
+   - more columns than the cap run in one launch as groups of one width,
+     the last padded with zero directions, each group in a thread of its
+     own beside a copy of its trajectory, so one kernel serves them
    A thread's local memory, which the driver reserves for every resident
    thread, grows with its columns: seven columns of the 55-state system
    exhaust a 12 GB card. Measured before the move (RTX 4070 SUPER, five
@@ -594,8 +597,8 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    128 cosmologies 3.6 s with columns, 4.5 s with replicas. The two modes
    agree to 1e-7 at rtol 1e-6 and to 1e-3 at the default 1e-4
    (`test_split_derivatives_match_one_thread`). The launch runs with
-   `sens_error_control=False`; the joint primal agrees with the plain
-   fp32-LU one to ~1e-6 of scale. At *fixed scale factor*. The initial
+   `sens_error_control=False`, so the joint primal takes the plain one's
+   steps. At *fixed scale factor*. The initial
    state carries its tangent (2026-11-18): it starts the sensitivity
    column, at no cost, where the column method paid `nvar` columns for
    it. Held fixed, it left `dP/dT_cmb` 3.7 percent off central
@@ -794,7 +797,7 @@ The typical computation flow is:
   `DIAG_KEEP` plain, the history (`_solve_batch`), and `REIO_KEEP` of
   `LCDM_REIO`. Its derivative tests take the `two_columns` fixture
   (`conftest.py`), which caps a thread at two columns
-  (`helpers.cap_columns`), so five parameters run as three launches, the
+  (`helpers.cap_columns`), so five parameters run as three groups, the
   last padded. Marked `slow`, which `pyproject.toml` deselects, 10 more
   kernels: the five-column `P(k)` kernel of the default cap
   (`test_matter_power_spectrum_derivatives[five-columns]`), the fp64-LU

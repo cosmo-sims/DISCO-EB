@@ -87,9 +87,9 @@ CUDA_MAX_REGISTERS = int(os.environ.get("DISCO_CUDA_MAX_REGISTERS", "168"))
 MAX_SENSITIVITY_STATE = int(os.environ.get("DISCO_MAX_SENSITIVITY_STATE", "330"))
 """The most components one thread integrates in a sensitivity launch: the
 state and its sensitivity columns. The driver reserves every resident
-thread's local memory, so this bounds the columns per launch, and modax
-splits a derivative along more directions into several launches of one
-width. 330 is five columns of the 55-state LCDM system, which fills 9 GB of
+thread's local memory, so this bounds the columns per thread, and modax
+splits a derivative along more directions into groups of one width, each
+in a thread of its own beside a copy of its trajectory. 330 is five columns of the 55-state LCDM system, which fills 9 GB of
 a 12 GB card. Seven exhaust it."""
 
 
@@ -430,7 +430,7 @@ def _launch(
     max_steps,
     error_weights=None,
     thermo_weight=THERMO_ERROR_WEIGHT,
-    reio_weight=None,
+    reio_weight=REIO_ERROR_WEIGHT,
     lu_precision="fp32",
     max_registers=CUDA_MAX_REGISTERS,
     split_derivatives=False,
@@ -441,34 +441,23 @@ def _launch(
     The method object carries the numerics: the hierarchy's LU precision and the
     PI controller's gains. The recombination block, which the hierarchy reads,
     always factorises in double. Every trajectory runs over the same span
-    of the scale factor, ``t_span``.
+    of the scale factor, ``t_span``. A model with
+    :class:`~discoeb.components.recombination.ReionizationDepth` weights its
+    ``kappa_reio`` by ``reio_weight``.
 
-    Differentiated, modax launches the joint system with the settings of
-    ``derivatives``: the fp64 LU, no register cap (local memory, not
-    registers, bounds the joint system's occupancy, and a capped budget
-    halves the resident threads the driver reserves it for),
-    ``kappa_reio`` weighted by :data:`REIO_ERROR_WEIGHT` (at the block's
-    weight the steps across the reionization step resolve ``tau_reio`` but
-    not its ``z_re`` derivative) and at most :data:`MAX_SENSITIVITY_STATE`
-    components a thread. ``split_derivatives`` gives each direction a
-    thread of its own instead.
+    Differentiated, modax integrates the sensitivity columns in the same
+    launch, with these settings. A thread holds at most
+    :data:`MAX_SENSITIVITY_STATE` components, so more directions run in
+    groups, each in a thread of its own beside a copy of its trajectory.
+    ``split_derivatives`` gives every direction such a thread.
     """
 
-    from modax import Derivatives, PIDGains, Rodas5P
+    from modax import PIDGains, Rodas5P
     from modax import solve as modax_solve
 
-    gains = PIDGains(pcoeff=0.3, icoeff=0.4)
-    method = Rodas5P(lu_precision=lu_precision, gains=gains)
+    method = Rodas5P(lu_precision=lu_precision, gains=PIDGains(pcoeff=0.3, icoeff=0.4))
     n_traj = np.shape(y0)[0]
-    derivatives = Derivatives(
-        method=Rodas5P(lu_precision="fp64", gains=gains),
-        error_weights=error_weights_for(
-            prepared, n_traj, error_weights, thermo_weight, REIO_ERROR_WEIGHT
-        ),
-        max_registers=None,
-        max_directions=max(1, MAX_SENSITIVITY_STATE // prepared.model.nvar - 1),
-        replicas=split_derivatives,
-    )
+    columns = max(1, MAX_SENSITIVITY_STATE // prepared.model.nvar - 1)
     return modax_solve(
         prepared.ode_fn,
         y0,
@@ -484,7 +473,7 @@ def _launch(
         error_weights=error_weights_for(
             prepared, n_traj, error_weights, thermo_weight, reio_weight
         ),
-        derivatives=derivatives,
+        max_directions_per_thread=1 if split_derivatives else columns,
         cache=True,
         **extra,
     )

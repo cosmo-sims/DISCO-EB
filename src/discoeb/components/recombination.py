@@ -149,7 +149,7 @@ hierarchy's steps. ``P(k)`` does not change between 0.3 and 100. A weight of
 0 leaves the block's steps uncontrolled."""
 
 REIO_ERROR_WEIGHT = 1.0e4
-"""Weight of ``kappa_reio`` (:class:`ReionizationDepth`) in the error norm of a sensitivity launch.
+"""Weight of ``kappa_reio`` (:class:`ReionizationDepth`) in the error norm.
 
 Reionization's step is 0.5 wide in ``z``, ~150 Mpc of conformal time. At
 the block's weight the steps across it resolve ``tau_reio`` (to 2e-4) but
@@ -157,8 +157,10 @@ not its derivative in ``z_re``, which the sensitivities carry without error
 control: ``d tau_reio / d z_re`` came out 6 percent high and ``dP/dz_re``
 3 percent off. ``kappa_reio`` changes only there, so its weight refines
 those steps alone; at 1e4 the derivative is converged. It costs a P(k)
-batch with reionization 14 percent, so primal launches go without it
-(2026-11-16). The state itself costs 4 to 7 percent of a solve, so it is a
+batch with reionization 14 percent, and every launch of a model with the
+state pays it (2026-11-19: modax 0.5.0 differentiates a launch with the
+launch's own settings; before, only sensitivity launches carried the
+weight). The state itself costs 4 to 7 percent of a solve, so it is a
 component a model adds, not one of every model's."""
 
 AKTHOM_PER_OMEGAB_H0SQ = 2.3038921003709498e-9
@@ -657,11 +659,10 @@ class ReionizationDepth(Component):
     A model adds it to read ``tau_reio`` off a solve or to differentiate in
     the reionization redshift, ``LCDM.add(ReionizationDepth, name=...)``.
     ``kappa_reio`` integrates the opacity of reionization's electrons alone,
-    a background state beside :class:`Recombination`'s. A sensitivity
-    launch weights it (:data:`REIO_ERROR_WEIGHT`) so that the steps resolve
-    the reionization step's derivative in ``z_re``: without the state,
-    ``dP/dz_re`` is 3 to 5 percent off, and :func:`~discoeb.solver.solve_eb`
-    refuses to differentiate ``z_re``.
+    a background state beside :class:`Recombination`'s. A launch weights
+    it (:data:`REIO_ERROR_WEIGHT`) so that the steps resolve the
+    reionization step's derivative in ``z_re``: without the state,
+    ``dP/dz_re`` is 3 to 9 percent off.
     """
 
     kappa_reio = State()

@@ -145,7 +145,7 @@ def solve_eb(
     ``jax.vmap(jax.jacfwd(f))`` of a function of one cosmology: ``jacfwd``
     of the batch would ask every cosmology for every other's directions. A
     thread holds at most :data:`~discoeb.solver._kernel.MAX_SENSITIVITY_STATE`
-    components, and more columns run as several launches. It is the
+    components, and more columns run in threads of their own. It is the
     derivative at fixed scale factor, so at fixed redshift. The initial
     state carries its tangent too, as the start of the sensitivity column,
     at no cost. A key the solve never reads (``A_s``, ``n_s``, ``k_p``)

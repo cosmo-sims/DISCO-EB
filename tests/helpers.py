@@ -511,8 +511,9 @@ def count_kernels():
 def cap_columns(monkeypatch, columns, model=LCDM):
     """Let a thread of ``model`` integrate at most ``columns`` sensitivity columns.
 
-    A derivative in more variables then runs as several launches of that
-    width, the last padded, on the ``columns``-wide kernel: the same code as
+    A derivative in more variables then runs in groups of that width, the
+    last padded, each in a thread of its own on the ``columns``-wide
+    kernel: the same code as
     the default width (five for LCDM), whose kernel takes minutes to compile.
     """
 
