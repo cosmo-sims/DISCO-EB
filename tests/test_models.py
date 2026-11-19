@@ -77,9 +77,10 @@ def test_the_rhs_builds_and_is_finite(name):
     p[PARAM_COLUMNS["w_DE_0"]], p[PARAM_COLUMNS["cs2_DE"]] = -0.9, 1.0
     (
         p[PARAM_COLUMNS["omega_nu_flavour"]],
-        p[PARAM_COLUMNS["n_mnu"]],
+        p[PARAM_COLUMNS["N_mnu"]],
         p[PARAM_COLUMNS["amnu"]],
-    ) = 5.6e-6, 1.0, 300.0
+        p[PARAM_COLUMNS["massive"]],
+    ) = 5.6e-6, 1.0, 300.0, 1.0
     y = rng.standard_normal(model.nvar)
     dy = np.asarray(rhs(tuple(y), 100.0, tuple(p)))
     assert dy.shape == (model.nvar,) and np.isfinite(dy).all()

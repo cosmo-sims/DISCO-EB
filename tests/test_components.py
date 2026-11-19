@@ -29,6 +29,7 @@ from helpers import (
     model_parameters,
     on_the_host,
     packed,
+    physical,
     state_index,
 )
 from jax.typing import ArrayLike
@@ -828,9 +829,12 @@ def test_a_named_copy_prefixes_what_the_component_declares():
         "x_w",
         "x_cs2",
     ]
-    # a derived parameter reads the copy's own key
-    hot = dict(species.Photons.named("hot").declared_parameters())
-    assert hot["hot_omega_g"].reads == ("hot_T_cmb",)
+    # a method of the copy reads the copy's own parameter
+    hot_model = LCDM.add(species.Photons.named("hot"), name="hot-photons")
+    hot = hot_model.build()
+    (omega_g,) = [p for p in hot._all_providers() if p.attr == "hot_omega_g"]
+    assert omega_g.params == ("hot_T_cmb",)
+    assert "hot_omega_g" in hot.hoisted(hot_model.parameters())
     with pytest.raises(TypeError, match="already carries a name"):
         X.named("z")
     with pytest.raises(ValueError, match="not a name"):
@@ -926,7 +930,7 @@ def test_the_einstein_sources_sum_over_the_enabled_species():
     lines = [ell.strip() for ell in model.source.splitlines()]
     assert (
         "rho = ColdDarkMatter__rho_cdm(ColdDarkMatter_self, rho_c) + Baryons__rho_baryons(Baryons_self, rho_b)"
-        " + Photons__rho_photons(Photons_self, rho_g) + MasslessNeutrinos__rho_neutrinos(MasslessNeutrinos_self, rho_ur) + CosmologicalConstant__rho_dark_energy(CosmologicalConstant_self, rho_de)"
+        " + Photons__rho_photons(Photons_self, rho_g) + MasslessNeutrinos__rho_neutrinos(MasslessNeutrinos_self, rho_ur) + CosmologicalConstant__rho_lambda(CosmologicalConstant_self, omega_de)"
     ) in lines
     assert (
         "momentum = Baryons__momentum_b(Baryons_self, rho_b, theta_b) + Photons__momentum_g(Photons_self, rho_g, theta_g) + MasslessNeutrinos__momentum_ur(MasslessNeutrinos_self, rho_ur, N, k, rsa, rsa_theta)"
@@ -1293,15 +1297,56 @@ def test_a_built_in_species_takes_a_name_too():
     assert "warm_omega_c" in parameter_layout(two).columns
 
 
-def test_the_row_holds_the_parameters_the_providers_read():
-    """A parameter is a column when a method names it, and stays on the host otherwise."""
+def test_a_method_of_parameters_runs_on_the_host():
+    """A quantity that reads parameters only is hoisted, and the kernel takes the frontier."""
 
-    from discoeb.solver._kernel import parameter_layout
+    class Gas(Component):
+        x = State()
+        T: ArrayLike = Parameter()
+        n: ArrayLike = Parameter()
+        amplitude: ArrayLike = Parameter(1.0)
+
+        def T4(T):  # only `density` reads it: it stays on the host
+            return T**4
+
+        def density(self, T4, n):
+            return 2.0 * n * T4
+
+        def floor():  # reads nothing: the compiler folds it
+            return 1.0e-30
+
+        def diluted(self, density, a):
+            return density / a**3
+
+        @derivative("x")
+        def decay(self, x, diluted, floor, n):
+            return -(diluted + floor) * n * x
+
+    model = Equations([Gas()], time="a")
+    parameters = ("T", "n", "amplitude")
+    assert model.hoisted(parameters) == ("T4", "density")
+    # n is read in the kernel too, T through the density only, amplitude by nothing
+    assert model.frontier(parameters) == ("n", "density")
+    assert model.evaluate("density", T=2.0, n=3.0) == 96.0
+    # the row's value stands in for the method
+    rhs = model.build({"n": 0, "density": 1}, **HOST)
+    assert rhs((1.0,), 2.0, (3.0, 96.0)) == (-(12.0 + 1.0e-30) * 3.0,)
+
+
+def test_the_row_holds_what_the_kernel_reads():
+    """A parameter or a quantity of parameters is a column when a method in the kernel names it."""
+
+    from discoeb.solver._kernel import density_parameters, parameter_layout
 
     columns = parameter_layout(LCDM).columns
-    assert {"k", "omega_c", "omega_b", "omega_g", "omega_ur", "T_cmb"} <= set(columns)
-    # N_eff enters through omega_ur, and the spectrum's amplitude after the solve
-    assert not {"N_eff", "A_s", "n_s", "k_p"} & set(columns)
+    assert {"k", "omega_c", "omega_b", "omega_de", "T_cmb"} <= set(columns)
+    assert {"omega_g", "omega_ur", "K", "fHe"} <= set(columns)
+    # N_eff enters through omega_ur, omega_k through K, and the spectrum's
+    # amplitude after the solve
+    assert not {"N_eff", "omega_k", "A_s", "n_s", "k_p"} & set(columns)
+    values = density_parameters({**physical(LCDM, COSMOLOGY)}, LCDM, xp=np)
+    assert values["omega_g"] == gravity.OMEGA_G_PER_TCMB4 * values["T_cmb"] ** 4
+    assert values["k_p"] == 0.05
 
 
 # --- The Einstein-Boltzmann component model, on the host.

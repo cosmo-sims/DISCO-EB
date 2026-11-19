@@ -72,8 +72,17 @@ def test_two_copies_share_a_model():
     names = LCDM_XY.state_names()
     assert names[-4:] == ("x_delta", "x_theta", "y_delta", "y_theta")
     layout = parameter_layout(LCDM_XY)
-    # the reionization redshift, declared by the recombination block, comes last
-    assert list(layout.columns)[-1] == "z_re"
+    # the parameters first, the recombination block's last of them, then
+    # what the host computes from parameters
+    names = list(layout.columns)
+    assert names[names.index("z_re") + 1 :] == [
+        "K",
+        "omega_g",
+        "omega_ur",
+        "fHe",
+        "akthom",
+        "Nnow",
+    ]
     assert {"x_w", "y_cs2", "x_omega", "y_omega"} <= set(layout.columns)
     # unnamed, the fluid's cs2 would be the baryons'
     with pytest.raises(ValueError, match="needs a name"):

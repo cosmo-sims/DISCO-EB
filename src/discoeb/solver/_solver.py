@@ -89,7 +89,10 @@ def solve_eb(
         (:func:`solve_inputs` names them) to set in place of those the
         cosmologies imply, each value a number or ``(n_cosmologies,)``. The
         solution becomes a function of them, which lets you differentiate
-        in a derived parameter such as ``omega_g``. The initial state stays
+        in a quantity computed from parameters such as ``omega_g``. An
+        input that is a parameter also moves the columns computed from it,
+        unless they are inputs too: ``T_cmb`` moves ``omega_g``. The
+        initial state stays
         the cosmologies'.
     rtol, atol, first_step, max_steps
         Settings of the Rodas5P step controller.
@@ -179,9 +182,18 @@ def solve_eb(
                 f"inputs {unknown} are not columns of the parameter row: "
                 f"{[name for name, _ in layout.values]}"
             )
-        for name, value in inputs.items():
-            value = jnp.broadcast_to(jnp.asarray(value, jnp.float64), (n_cosmo,))
-            params = params.at[:, layout.columns[name]].set(jnp.tile(value, n_k))
+        given = {
+            name: jnp.broadcast_to(jnp.asarray(value, jnp.float64), (n_cosmo,))
+            for name, value in inputs.items()
+        }
+        # An input that is a parameter moves what the host computes from it
+        # (the opacity's prefactor with omega_b), unless that is given too.
+        own = {n: v for n, v in given.items() if n in columns}
+        moved = density_parameters({**columns, **own}, model=model, extra=extra)
+        moved.update(given)
+        for name, column in layout.values:
+            value = jnp.broadcast_to(jnp.asarray(moved[name], jnp.float64), (n_cosmo,))
+            params = params.at[:, column].set(jnp.tile(value, n_k))
 
     if isinstance(error_weights, dict):
         error_weights = _named_error_weights(
@@ -217,9 +229,10 @@ def solve_inputs(cosmologies) -> dict[str, jax.Array]:
     """Return the parameter-row columns the cosmologies imply, ``(n_cosmologies,)`` each, by name.
 
     ``cosmologies`` is a cosmology or a sequence of cosmologies of one
-    model. The kernel reads these columns: the keys it takes as
-    given (``omega_c``, ``omega_b``, ``Y_He``, ``T_cmb``, ...) and the
-    parameters derived from keys (``omega_g``, ``omega_ur``, ``amnu``, ...).
+    model. The kernel reads these columns: the parameters its methods
+    name (``omega_c``, ``omega_b``, ``Y_He``, ``T_cmb``, ...) and the
+    quantities the host computes from parameters for them (``omega_g``,
+    ``omega_ur``, ``amnu``, ...).
     :func:`solve_eb` takes any of them as ``inputs``. JAX arrays, traceable
     under ``jit``.
     """

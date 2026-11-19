@@ -24,8 +24,6 @@ models](../usage/models.md) for how to write one.
 
 .. autofunction:: discoeb.components.Parameter
 
-.. autofunction:: discoeb.components.Derived
-
 .. autoclass:: discoeb.components.Setting
    :no-members:
 

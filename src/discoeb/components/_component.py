@@ -42,7 +42,9 @@ decorated with ``@derivative("x")`` contributes to the rate of the state
 ``rho = Sum()``. A method's name never makes it a contribution.
 
 **Parameters.** ``omega_c: ArrayLike = Parameter()`` declares a cosmological
-parameter.
+parameter. A method that reads only parameters, such as ``def omega_g(self,
+T_cmb)``, runs once per cosmology on the host before the solve
+(:meth:`Equations.hoisted`).
 
 **Sparsity.** :meth:`Equations.sparsity` traces the Jacobian's sparsity
 pattern through the providers.
@@ -60,7 +62,7 @@ import sys
 import types
 from collections import namedtuple
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar
+from typing import Any, ClassVar, Generic, Protocol, TypeVar
 
 import numpy as np
 
@@ -238,36 +240,21 @@ _DECLARED: dict[str, list[tuple[type, ParameterDeclaration]]] = {}
 
 
 class ParameterDeclaration:
-    """A cosmological parameter a component declares, as :func:`Parameter` and :func:`Derived` make it.
+    """A cosmological parameter a component declares, as :func:`Parameter` makes it.
 
-    Without ``value`` it is a key of the cosmology dictionary, which may leave
-    it out when it has a ``default``. With ``value``, a function whose
-    parameter names are other parameters, it is derived from them on the host
-    in JAX. A parameter that a provider names in its signature gets a column
-    of the kernel's parameter row
-    (:func:`~discoeb.solver._kernel.parameter_layout`). A derivative reaches
-    the solve through the columns, so every key is differentiable.
+    It is a key of the cosmology, which may leave it out when it has a
+    ``default``. A quantity computed from parameters is an ordinary method
+    that names them: the solve evaluates it on the host before the launch
+    (:meth:`Equations.hoisted`). A parameter or such a quantity that a
+    method running in the kernel names gets a column of the kernel's
+    parameter row (:func:`~discoeb.solver._kernel.parameter_layout`). A
+    derivative reaches the solve through the columns, so every key is
+    differentiable.
     """
 
-    def __init__(
-        self,
-        default=REQUIRED,
-        *,
-        value: Callable | None = None,
-    ):
-        if value is not None and not callable(value):
-            raise TypeError("value must be a function of other parameters")
-        if value is not None and default is not REQUIRED:
-            raise TypeError("a derived parameter has no default")
+    def __init__(self, default=REQUIRED):
         self.default = default
-        self.value: Any = value
         self.name: str | None = None
-        self.reads: tuple[str, ...] = ()
-        if value is not None:
-            takes_self, reads = _positional_names(value, "a parameter's value")
-            self.reads = tuple(reads)
-            if takes_self:
-                raise TypeError("a parameter's value reads other parameters, not self")
 
     def __set_name__(self, owner, name):
         if not name.isidentifier() or name.startswith("_"):
@@ -277,25 +264,17 @@ class ParameterDeclaration:
             # constructor (the dataclass_transform on Component).
             raise TypeError(
                 f"{owner.__name__}.{name} needs an annotation: "
-                f"{name}: ArrayLike = {'Derived' if not self.is_key else 'Parameter'}(...)"
+                f"{name}: ArrayLike = Parameter(...)"
             )
         if self.name is not None and self.name != name:
             raise ValueError(f"one parameter declared as {self.name!r} and {name!r}")
         self.name = name
         _DECLARED.setdefault(name, []).append((owner, self))
 
-    @property
-    def is_key(self) -> bool:
-        """Whether a cosmology dictionary gives it (else it is derived)."""
-        return self.value is None
+    def renamed(self) -> ParameterDeclaration:
+        """A copy for a named component, which declares it under a name of its own."""
 
-    def renamed(self, renames: Mapping[str, str]) -> ParameterDeclaration:
-        """A copy for a named component: it reads its component's own parameters under their new names."""
-
-        copy = ParameterDeclaration(self.default if self.value is None else REQUIRED)
-        copy.value = self.value
-        copy.reads = tuple(renames.get(r, r) for r in self.reads)
-        return copy
+        return ParameterDeclaration(self.default)
 
     def __repr__(self):
         return f"Parameter({self.name})"
@@ -327,22 +306,6 @@ def Parameter(default: Any = REQUIRED) -> Any:
     return ParameterDeclaration(default)
 
 
-def Derived(
-    value: Callable,
-    *,
-    init: Literal[False] = False,
-) -> Any:
-    """Declare a parameter derived from others: ``omega_g: ArrayLike = Derived(lambda T_cmb: ...)``.
-
-    ``value`` is a function whose parameter names are other parameters. It
-    is not a constructor argument: ``init`` is there for type checkers,
-    which read its default (``False``) to leave it out of the model's
-    signature.
-    """
-
-    return ParameterDeclaration(value=value)
-
-
 def declared_parameters(classes) -> dict[str, ParameterDeclaration]:
     """The parameters the component classes declare, by name, in class and declaration order.
 
@@ -369,50 +332,19 @@ def declarations_of(name: str) -> list[tuple[type, ParameterDeclaration]]:
     return list(_DECLARED.get(name, ()))
 
 
-def derive_parameters(
-    parameters: Mapping[str, ParameterDeclaration],
-    given: Mapping,
-    *,
-    math=math,
+def parameter_values(
+    parameters: Mapping[str, ParameterDeclaration], given: Mapping
 ) -> dict:
-    """Return the value of every parameter in ``parameters``.
+    """Return the value of every parameter in ``parameters``: ``given[name]``, or its default."""
 
-    A key's value is ``given[key]``, or its default. A derived parameter's is
-    its ``value`` function of the others, evaluated with ``math`` as the
-    module its ``math.sqrt`` and friends use (``jax.numpy`` for traced
-    values).
-    """
-
-    names = _host_names(math)
-    memo: dict = {}
-    values: dict = {}
-
-    def get(name, stack=()):
-        if name in values:
-            return values[name]
-        if name in stack:
-            raise ValueError("circular parameters: " + " -> ".join((*stack, name)))
-        p = parameters.get(name)
-        if p is None:
-            raise NameError(
-                f"{stack[-1] if stack else 'a parameter'} reads {name!r}, "
-                "which no component of the model declares"
-            )
-        if p.value is None:
-            if name in given:
-                value = given[name]
-            elif p.default is REQUIRED:
-                raise KeyError(name)
-            else:
-                value = p.default
+    values = {}
+    for name, parameter in parameters.items():
+        if name in given:
+            values[name] = given[name]
+        elif parameter.default is REQUIRED:
+            raise KeyError(name)
         else:
-            fn = _bound_function(p.value, lambda f: f, names, memo)
-            value = fn(*(get(r, (*stack, name)) for r in p.reads))
-        values[name] = value
-        return value
-
-    for name in parameters:
-        get(name)
+            values[name] = parameter.default
     return values
 
 
@@ -466,7 +398,7 @@ class Sum:
 
 
 @dataclass_transform(
-    kw_only_default=True, eq_default=False, field_specifiers=(Parameter, Derived)
+    kw_only_default=True, eq_default=False, field_specifiers=(Parameter,)
 )
 class Component:
     """Provides quantities and may own settings, parameters and state variables (see the module docstring).
@@ -552,9 +484,7 @@ class Component:
             own += [n for n, _ in cls.declared_parameters()]
             own += cls.provided_names()
             renames = {n: f"{name}_{n}" for n in dict.fromkeys(own)}
-            parameters = {
-                renames[n]: p.renamed(renames) for n, p in cls.declared_parameters()
-            }
+            parameters = {renames[n]: p.renamed() for n, p in cls.declared_parameters()}
             _NAMED[key] = type(
                 f"{cls.__name__}_{name}",
                 (cls,),
@@ -596,7 +526,7 @@ class Component:
 
     @classmethod
     def declared_parameters(cls) -> list[tuple[str, ParameterDeclaration]]:
-        """The parameter attributes (:func:`Parameter`, :func:`Derived`), in declaration order, base classes first."""
+        """The parameter attributes (:func:`Parameter`), in declaration order, base classes first."""
 
         if cls._named_parameters is not None:
             return list(cls._named_parameters)
@@ -1379,10 +1309,76 @@ class Equations:
             ]
         return self._provider_list
 
-    def reads(self) -> frozenset[str]:
-        """The names the providers read: every parameter of every method's signature."""
+    def hoisted(self, parameters: Iterable[str]) -> tuple[str, ...]:
+        """The quantities that depend on the ``parameters`` and on nothing else, in provider order.
 
-        return frozenset(n for p in self._all_providers() for n in p.params)
+        A quantity is hoisted when every name it reads, directly or through
+        other quantities, is one of ``parameters``, and it reads at least
+        one. It is then the same at every time and wave number, so a solve
+        evaluates it once per cosmology on the host (:meth:`evaluate`) and
+        hands the kernel its value (:meth:`frontier`). Nothing declares
+        this: it is read off the signatures. A quantity that reads the
+        time, a state or any other input stays in the kernel, as does one
+        that reads nothing, which the compiler folds.
+        """
+
+        key = tuple(parameters)
+        cache = self.__dict__.setdefault("_hoisted_cache", {})
+        if key not in cache:
+            producers, contributions, _ = self._host_providers()
+            given = frozenset(key)
+            known: dict[str, tuple[bool, bool]] = {}
+
+            def kind(name, stack=()):
+                """``(constant, reads a parameter)`` of the quantity ``name``."""
+                if name in given:
+                    return True, True
+                if name in known:
+                    return known[name]
+                if name in producers:
+                    reads = [producers[name].params]
+                elif name in self.sums and contributions[name]:
+                    reads = [p.params for p in contributions[name]]
+                else:  # a state, a rate, the time or another input
+                    return False, False
+                if name in stack:
+                    return False, False
+                kinds = [kind(d, (*stack, name)) for ds in reads for d in ds]
+                known[name] = (
+                    all(constant for constant, _ in kinds),
+                    any(parametric for _, parametric in kinds),
+                )
+                return known[name]
+
+            cache[key] = tuple(
+                q for q in (*producers, *self.sums) if q not in given and all(kind(q))
+            )
+        return cache[key]
+
+    def frontier(self, parameters: Iterable[str]) -> tuple[str, ...]:
+        """What the kernel reads of a cosmology: the ``parameters`` and hoisted quantities its providers name.
+
+        The providers that run in the kernel are all but the hoisted ones
+        (:meth:`hoisted`). Each parameter or hoisted quantity one of them
+        names in its signature is a value the host hands over, a column of
+        the parameter row. A parameter that only hoisted quantities read,
+        and a hoisted quantity that only other hoisted ones read, stay on
+        the host. The parameters come first, in the order given, then the
+        hoisted quantities in provider order.
+        """
+
+        parameters = tuple(parameters)
+        hoisted = self.hoisted(parameters)
+        on_host = set(hoisted)
+        read = {
+            n
+            for p in self._all_providers()
+            if p.written is not None or p.attr not in on_host
+            for n in p.params
+        }
+        if self.clock:
+            read.add(self.clock)
+        return tuple(n for n in (*parameters, *hoisted) if n in read)
 
     def _host_providers(self):
         """``(providers by quantity, contributions by sum, derivative providers by state)`` of a host evaluation, once per model."""
@@ -1651,9 +1647,7 @@ class Equations:
                     f"{provider.label} provides {q!r}, which is a state variable"
                 )
             elif q in params:
-                raise ValueError(
-                    f"{provider.label} provides {q!r}, which is a parameter"
-                )
+                continue  # hoisted: the row holds its value (frontier)
             elif q in base and not shadow:
                 raise ValueError(f"{provider.label} provides {q!r}, which is given")
             elif q not in base:

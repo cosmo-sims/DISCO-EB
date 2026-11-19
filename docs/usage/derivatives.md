@@ -64,10 +64,11 @@ split_derivatives=True)` gives each direction a copy of every trajectory in
 a thread of its own. The copies repeat the plain solve but run side by
 side, so one cosmology finishes sooner.
 
-## Derived inputs
+## Inputs computed from parameters
 
 {py:func}`~discoeb.solve_inputs` returns the columns of the parameter row
-that the kernel reads, including derived ones such as `omega_g`.
+that the kernel reads. They include the quantities the model computes from
+parameters before the solve, such as `omega_g` from `T_cmb`.
 `solve_eb(..., inputs={"omega_g": value})` overrides a column, which makes
 the solution a function of it:
 

@@ -21,7 +21,6 @@ from jax.typing import ArrayLike
 
 from ._component import (
     Component,
-    Derived,
     Parameter,
     Setting,
     Species,
@@ -329,11 +328,14 @@ class Photons(Species):
     E = State(lambda self: self.LMAX_POL - 1)
 
     T_cmb: ArrayLike = Parameter()  # K, the recombination rates' too
-    omega_g: ArrayLike = Derived(lambda T_cmb: OMEGA_G_PER_TCMB4 * T_cmb**4)
 
     def __init__(self, **settings):
         super().__init__(**settings)
         _needs_octupole(LMAX_G=self.LMAX_G, LMAX_POL=self.LMAX_POL)
+
+    def omega_g(self, T_cmb):
+        """The photons' physical density today, from the temperature."""
+        return OMEGA_G_PER_TCMB4 * T_cmb**4
 
     def rho_g(self, omega_g, a):
         inv_a = 1.0 / a
@@ -434,13 +436,14 @@ class MasslessNeutrinos(Species):
     N = State(lambda self: self.LMAX_NR + 1, initial=_N_initial)
 
     N_eff: ArrayLike = Parameter()
-    omega_ur: ArrayLike = Derived(
-        lambda N_eff, T_cmb: N_eff * (OMEGA_NU_PER_TCMB4 * T_cmb**4)
-    )
 
     def __init__(self, **settings):
         super().__init__(**settings)
         _needs_octupole(LMAX_NR=self.LMAX_NR)
+
+    def omega_ur(self, N_eff, T_cmb):
+        """The massless neutrinos' physical density today."""
+        return N_eff * (OMEGA_NU_PER_TCMB4 * T_cmb**4)
 
     def rho_ur(self, omega_ur, a):
         inv_a = 1.0 / a
@@ -515,9 +518,6 @@ class MassiveNeutrinos(Species):
 
     N_mnu: ArrayLike = Parameter(0.0)  # flavours
     m_nu: ArrayLike = Parameter(0.0)  # eV, each
-    omega_nu_flavour: ArrayLike = Derived(lambda T_cmb: OMEGA_NU_PER_TCMB4 * T_cmb**4)
-    n_mnu: ArrayLike = Derived(lambda N_mnu: N_mnu)
-    amnu: ArrayLike = Derived(lambda m_nu, T_cmb: m_nu * C2OK / T_cmb)
 
     def __init__(self, **settings):
         super().__init__(**settings)
@@ -529,6 +529,14 @@ class MassiveNeutrinos(Species):
         q, w, _ = neutrino_momentum_bins(NQ_NU_BACKGROUND)
         self.nu_q = tuple(float(x) for x in q)
         self.nu_w = tuple(float(x) for x in w)
+
+    def omega_nu_flavour(self, T_cmb):
+        """The physical density today of one flavour without its mass."""
+        return OMEGA_NU_PER_TCMB4 * T_cmb**4
+
+    def amnu(self, m_nu, T_cmb):
+        """The mass over the neutrino temperature today, ``m c^2 / (k_B T_nu)``."""
+        return m_nu * C2OK / T_cmb
 
     def massive(self, amnu):
         """1 with a mass and 0 without, branch-free so it runs on arrays too."""
@@ -548,11 +556,11 @@ class MassiveNeutrinos(Species):
             total += self.nu_w[i] / math.sqrt(1.0 + (a * amnu / self.nu_q[i]) ** 2)
         return (1.0 + massive * (total - 1.0)) * (1.0 / 3.0)
 
-    def rho_nu_massless(self, omega_nu_flavour, n_mnu, a):
+    def rho_nu_massless(self, omega_nu_flavour, N_mnu, a):
         """The density the flavours would have without their mass."""
         inv_a = 1.0 / a
         inv_a2 = inv_a * inv_a
-        return omega_nu_flavour * n_mnu * inv_a2 * inv_a2
+        return omega_nu_flavour * N_mnu * inv_a2 * inv_a2
 
     @contributes("rho")
     def rho_nu(self, rho_nu_massless, rhonu):
@@ -610,20 +618,17 @@ class _DarkEnergyDensity(Species):
 
     omega_de: ArrayLike = Parameter()
 
-    @contributes("rho")
-    def rho_dark_energy(self, rho_de):
-        return rho_de
-
 
 class CosmologicalConstant(_DarkEnergyDensity):
     """A cosmological constant: density only, no perturbations."""
 
-    def rho_de(self, omega_de):
+    @contributes("rho")
+    def rho_lambda(self, omega_de):
         return omega_de
 
     @contributes("pressure")
-    def pressure_lambda(self, rho_de):
-        return -rho_de
+    def pressure_lambda(self, omega_de):
+        return -omega_de
 
 
 class DarkEnergy(_DarkEnergyDensity):
@@ -679,6 +684,10 @@ class DarkEnergy(_DarkEnergyDensity):
 
     def w_de(self, a, w_DE_0, w_DE_a):
         return w_DE_0 + w_DE_a * (1.0 - a)
+
+    @contributes("rho")
+    def rho_dark_energy(self, rho_de):
+        return rho_de
 
     def rho_de(self, omega_de, a, w_DE_0, w_DE_a):
         """``omega_de`` times ``rho(a) / rho(1)`` of the CPL equation of state."""

@@ -18,7 +18,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..components._component import Equations, _compile, derive_parameters
+from ..components._component import Equations, _compile, parameter_values
 from ..components.recombination import (
     REIO_ERROR_WEIGHT,
     THERMO_ERROR_WEIGHT,
@@ -44,21 +44,25 @@ SOLVER_COLUMNS = ("k",)
 class ParameterLayout:
     """The columns of a model's parameter row, generated from its parameters.
 
-    The row is ``(SOLVER_COLUMNS, the parameters a provider reads)``. A
-    parameter is in the row when a method of the joint model names it in its
-    signature. A parameter that only a :func:`~discoeb.components.Derived`
-    value or an observable reads (``N_eff``, ``A_s``) stays on the host. The
-    parameters are in
-    component and declaration order, so the layout is a function of the
-    resolved model and the kernels cached on it stay valid. A derivative
-    may move any of the parameters' columns: modax integrates a sensitivity
-    column along the row's tangent (:func:`~discoeb.solver.solve_eb`).
+    The row is ``(SOLVER_COLUMNS, what the kernel reads of a cosmology)``:
+    the parameters, and the quantities computed from parameters only, that
+    a method running in the kernel names in its signature
+    (:meth:`Equations.frontier
+    <discoeb.components._component.Equations.frontier>`). The host
+    evaluates those quantities before the launch (``omega_g`` from
+    ``T_cmb``). A parameter that only they or an observable read
+    (``N_eff``, ``A_s``) stays on the host. The parameters come first, in
+    component and declaration order, then the quantities in provider
+    order, so the layout is a function of the resolved model and the
+    kernels cached on it stay valid. A derivative may move any column:
+    modax integrates a sensitivity column along the row's tangent
+    (:func:`~discoeb.solver.solve_eb`).
     """
 
     columns: dict
     """Column by the name the providers read it under: ``omega_c``, ``k``."""
     values: tuple[tuple[str, int], ...]
-    """``(parameter, column)`` of the parameters the row holds."""
+    """``(name, column)`` of the parameters and quantities the row holds."""
 
     @property
     def n(self) -> int:
@@ -77,8 +81,11 @@ def _parameter_layout(model: type[Model], extra) -> ParameterLayout:
     clash = sorted(set(SOLVER_COLUMNS) & set(parameters))
     if clash:
         raise ValueError(f"{clash} name solver columns, not parameters")
-    read = joint_model(model, extra).reads()
-    held = [n for n in parameters if n in read]
+    joint = joint_model(model, extra)
+    provided = sorted({p.attr for p in joint._all_providers()} & set(parameters))
+    if provided:
+        raise ValueError(f"{provided} are parameters and methods of the model both")
+    held = joint.frontier(parameters)
     columns = {name: i for i, name in enumerate((*SOLVER_COLUMNS, *held))}
     return ParameterLayout(columns, tuple((n, columns[n]) for n in held))
 
@@ -142,19 +149,27 @@ def _joint_model(cosmology_model: type[Model], extra) -> Equations:
     return model
 
 
-def density_parameters(param, model: type[Model], xp=jnp) -> dict:
-    """The parameters of ``model`` for a parameter dictionary, keyed as the components name them.
+def density_parameters(param, model: type[Model], xp=jnp, extra=()) -> dict:
+    """The parameters of ``model`` for a parameter dictionary, and what the model computes from them.
 
-    The keys pass through, and every derived parameter comes from its
-    declaration (:class:`~discoeb.components._component.Parameter`): ``omega_g``,
-    ``omega_ur``, ``omega_c``, ``omega_b``, ``omega_de`` and ``omega_k`` the
-    photons, massless neutrinos, cold dark matter, baryons, dark energy and
-    curvature, ``omega_nu_flavour``, ``n_mnu`` and ``amnu`` the massive neutrinos.
-    Pass ``xp=jnp`` for a traced cosmology and ``xp=np`` for one given as floats.
+    The keys pass through, a missing one at its default. Every quantity
+    that depends on parameters only (:meth:`Equations.hoisted
+    <discoeb.components._component.Equations.hoisted>`) is evaluated by its
+    method: ``omega_g`` and ``omega_ur`` the photons' and massless
+    neutrinos' densities, ``omega_nu_flavour`` and ``amnu`` the massive
+    neutrinos'. Pass ``xp=jnp`` for a traced cosmology and ``xp=np`` for
+    one given as floats.
     """
 
-    parameters = model.parameters()
-    return derive_parameters(parameters, param, math=math if xp is np else jnp)
+    parameters = model.parameters(extra)
+    joint = joint_model(model, extra)
+    values = parameter_values(parameters, param)
+    names = joint.hoisted(parameters)
+    module = math if xp is np else jnp
+    computed = joint.evaluate(*names, math=module, **values) if names else ()
+    if len(names) == 1:
+        computed = (computed,)
+    return {**values, **dict(zip(names, computed))}
 
 
 def thermal_indices(model) -> tuple[int, ...]:
@@ -315,7 +330,7 @@ def _pack(model: type[Model], extra, k_sorted, columns):
 
     joint = joint_model(model, extra)
     layout = parameter_layout(model, extra)
-    values = density_parameters(columns, model=model)
+    values = density_parameters(columns, model=model, extra=extra)
     n_cosmo = next(iter(columns.values())).shape[0]
     n_k = len(k_sorted)
     params = jnp.tile(_rows(layout, values, n_cosmo), (n_k, 1))
@@ -354,8 +369,8 @@ def _columns(cosmologies, model: type[Model]) -> dict:
 def _rows(layout: ParameterLayout, values, n_cosmo: int):
     """Return the cosmologies' parameter rows ``(n_cosmologies, layout.n)``, without the wave number.
 
-    ``values`` are the model's parameters (:func:`density_parameters`), each
-    ``(n_cosmologies,)``.
+    ``values`` are the model's parameters and the quantities computed
+    from them (:func:`density_parameters`), each ``(n_cosmologies,)``.
     """
 
     by_column = {column: values[name] for name, column in layout.values}

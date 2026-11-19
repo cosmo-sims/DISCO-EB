@@ -234,18 +234,33 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    - Cosmological parameters are declared by components too (2026-11-13),
      annotated since 2026-11-15: `omega_c: ArrayLike = Parameter()` a key, a
      constructor argument of every model with the component (with a default
-     it may be left out), `omega_g: ArrayLike = Derived(lambda T_cmb: ...)`
-     a parameter derived on the host by name from other parameters. `Parameter`
-     and `Derived` are `dataclass_transform` field specifiers returning a
-     `ParameterDeclaration`: `Derived`'s `init: Literal[False]` default keeps
-     it out of the signature a type checker sees, and `__set_name__` raises
+     it may be left out). `Parameter` is a `dataclass_transform` field
+     specifier returning a `ParameterDeclaration`, and `__set_name__` raises
      on an unannotated declaration, which no type checker would see.
-     A declaration has no flags (2026-11-19): a parameter is a column of
-     the kernel's row when a provider of the joint model names it in its
-     signature (`Equations.reads()`, `parameter_layout`), and a key only a
-     `Derived` value or an observable reads (`N_eff`, `A_s`) stays on the
-     host. Until then `column=True` marked the columns, and the inferred
-     rows equal the flagged ones for every model. Before 2026-11-18, `directed=True`
+     There is no `Derived` (removed 2026-11-19; before, `omega_g: ArrayLike
+     = Derived(lambda T_cmb: ...)`): a quantity computed from parameters is
+     an ordinary method, `def omega_g(self, T_cmb)`. `Equations.hoisted(
+     parameters)` reads off the signatures which quantities depend on
+     parameters and nothing else (no state, time or other input, and at
+     least one parameter, so a literal stays in the kernel for LLVM to
+     fold): `K`, `omega_g`, `omega_ur`, `fHe`, `akthom`, `Nnow`, and
+     `omega_nu_flavour`, `amnu`, `massive` with massive neutrinos.
+     `density_parameters` evaluates them on the host with
+     `Equations.evaluate` (`math` or `jnp`), so a hoisted method must run
+     under `jax.numpy`: no branch on a value, no `cuda.local.array`.
+     `Equations.frontier(parameters)` is the row: the parameters and
+     hoisted quantities that a provider running in the kernel names. A
+     parameter only hoisted quantities or an observable read (`N_eff`,
+     `omega_k`, `m_nu`, `A_s`) stays on the host, as does a hoisted
+     quantity only hoisted ones read. In a build a row column shadows the
+     provider of its name (`_collect`). `CosmologicalConstant` contributes
+     `omega_de` directly (no `rho_de`), which keeps `omega_de` a column of
+     every model: DISCO-CMB passes it in `inputs=`. An `inputs=` value
+     for a parameter also moves the columns computed from it, unless they
+     are inputs too (`omega_b` moves `akthom` and `Nnow`, as when the
+     kernel computed them; without it DISCO-CMB's `dD_l^TE/domega_b` was
+     0.36 percent off). Until 2026-11-19
+     `column=True` marked the columns. Before 2026-11-18, `directed=True`
      marked the columns a derivative could move, each a params leaf of its
      own so that modax's column method gave it a column only when it moved,
      `differentiable=True` the keys `solve_eb` let through (the rest
@@ -314,11 +329,11 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      `aH(a = 1)`, `Model.H_0`; `Background.a_prime = a aH` is the
      solve's clock), `A_s`, `n_s`, `k_p` on `AdiabaticMode`, `omega_k`
      on `Curvature`; in `species.py` `omega_c` on CDM,
-     `omega_b`, `Y_He` on `Baryons`, `T_cmb`, `omega_g` on `Photons`,
-     `N_eff`, `omega_ur` on `MasslessNeutrinos`, `omega_de` on
+     `omega_b`, `Y_He` on `Baryons`, `T_cmb` on `Photons`,
+     `N_eff` on `MasslessNeutrinos`, `omega_de` on
      both dark energies, `omega` on `Fluid`, the
-     `w_DE_*`, `cs2_DE` on `DarkEnergy`, `N_mnu`, `m_nu`, `omega_nu_flavour`, `n_mnu`,
-     `amnu` on `MassiveNeutrinos`; `z_re` on `Recombination`
+     `w_DE_*`, `cs2_DE` on `DarkEnergy`, `N_mnu`, `m_nu` on `MassiveNeutrinos` (whose methods `omega_nu_flavour`
+     and `amnu` the host evaluates); `z_re` on `Recombination`
    - The gravity interface (2026-11-14): species contribute to the sums
      (fluids only) and read `aH`, `h_prime`, `alpha`, which
      `component.Gravity` subclasses (`Background`, `Metric`, `Curvature`)
@@ -559,13 +574,14 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      self-convergence 5.7e-5 (5.7e-5), 267 ms (270), one cosmology 186 ms
      (188); `PERTURB_FIRST_STEP` = `A_START`
    - The parameter row is generated: `parameter_layout(model, extra)` (cached
-     per resolved model) is `(SOLVER_COLUMNS = k, the parameters a provider reads)`
-     in component and declaration order (2026-11-18; before, the "directed"
-     parameters led the row in `DIRECTED_NAMES` order), `z_re` last since
-     `Recombination` comes last; `H_0` and `Omega_b`
-     left with the physical densities (2026-11-17); `amnu` is one
-     declaration `MassiveNeutrinos` and `Recombination` share. `_rows` and the
-     initial state iterate over the declarations. Host tests that build any
+     per resolved model) is `(SOLVER_COLUMNS = k, Equations.frontier)`: the parameters the
+     kernel reads in component and declaration order, `z_re` last of them
+     since `Recombination` comes last, then the hoisted quantities in
+     provider order (2026-11-19; before, the parameters a provider read,
+     and until 2026-11-18 the "directed" parameters in `DIRECTED_NAMES`
+     order); `H_0` and `Omega_b` left with the physical densities
+     (2026-11-17). `_rows` and the initial state read
+     `density_parameters`' values. Host tests that build any
      built-in model on one row use `helpers.PARAM_COLUMNS` and `N_PARAM`,
      `W0WACDM_MNU`'s row, a superset of every built-in model's
    - `build_keep_hook(model, names)` is the save hook: a `(y, a, p) ->

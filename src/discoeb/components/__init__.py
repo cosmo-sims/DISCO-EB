@@ -7,7 +7,6 @@ This module defines the public API for components.
 from . import gravity, interactions, recombination, species
 from ._component import (
     Component,
-    Derived,
     Equations,
     Gravity,
     Interaction,
@@ -22,7 +21,6 @@ from ._component import (
 
 __all__ = [
     "Component",
-    "Derived",
     "Equations",
     "Gravity",
     "Interaction",

@@ -28,7 +28,7 @@ from ..components._component import (
     ParameterDeclaration,
     declarations_of,
     declared_parameters,
-    derive_parameters,
+    parameter_values,
 )
 from ..components.gravity import H100
 from ..components.recombination import Recombination
@@ -301,8 +301,9 @@ class Model(Recombination):
 
         They include those of the recombination block every solve appends
         (:func:`discoeb.solver._kernel.joint_model`) and of the component classes
-        ``extra``. The keys among them make up the cosmology dictionary
-        (:meth:`parameter_keys`), the columns the kernel's parameter row
+        ``extra``. They make up the cosmology dictionary
+        (:meth:`parameter_keys`). Those a method running in the kernel
+        reads are columns of its parameter row
         (:func:`discoeb.solver._kernel.parameter_layout`).
         """
 
@@ -312,7 +313,7 @@ class Model(Recombination):
     def parameter_keys(cls) -> dict[str, Any]:
         """Return the constructor's parameters and their defaults, :data:`REQUIRED` if none."""
 
-        return {n: p.default for n, p in cls.parameters().items() if p.is_key}
+        return {n: p.default for n, p in cls.parameters().items()}
 
     @classmethod
     def state_names(cls) -> tuple[str, ...]:
@@ -395,7 +396,7 @@ class Model(Recombination):
         for key, value in values.items():
             if key in parameters or not _is_concrete(value):
                 continue
-            owners = [(c, p) for c, p in declarations_of(key) if p.is_key]
+            owners = declarations_of(key)
             if not owners:
                 continue  # a key no component declares
             default = owners[0][1].default
@@ -426,7 +427,7 @@ class Model(Recombination):
             "aH",
             math=module,
             a=1.0,
-            **derive_parameters(cls.parameters(), values, math=module),
+            **parameter_values(cls.parameters(), values),
         )
         return aH * (100.0 / H100)
 
