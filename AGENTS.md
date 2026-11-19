@@ -100,6 +100,8 @@ Five workflows, all in `.github/workflows/`, structured as in modax:
   since the last `v*` tag; a `feat`, `fix`, `perf` or breaking change bumps
   `version`, updates `CHANGELOG.md` and `uv.lock`, tags, builds and uploads
   to PyPI (`disco-eb`, imported as `discoeb`) by trusted publishing. Do not bump `version` by hand.
+  It runs in `cosmo-sims/DISCO-EB` only (`if: github.repository == ...`),
+  so a push to a fork's `main` releases nothing.
 
 The docs pages pull the overview, installation, quickstart, development,
 citation and license from `README.md` between `<!-- start:... -->` markers,
