@@ -234,15 +234,18 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
    - Cosmological parameters are declared by components too (2026-11-13),
      annotated since 2026-11-15: `omega_c: ArrayLike = Parameter()` a key, a
      constructor argument of every model with the component (with a default
-     it may be left out), `w_DE_0: ArrayLike = Parameter(-1.0, column=True)`
-     a key the kernel reads as a row column, `omega_g: ArrayLike =
-     Derived(lambda T_cmb: ..., column=True)` a kernel
-     input derived on the host by name from other parameters. `Parameter`
+     it may be left out), `omega_g: ArrayLike = Derived(lambda T_cmb: ...)`
+     a parameter derived on the host by name from other parameters. `Parameter`
      and `Derived` are `dataclass_transform` field specifiers returning a
      `ParameterDeclaration`: `Derived`'s `init: Literal[False]` default keeps
      it out of the signature a type checker sees, and `__set_name__` raises
      on an unannotated declaration, which no type checker would see.
-     `column` is the only flag (2026-11-18). Before, `directed=True`
+     A declaration has no flags (2026-11-19): a parameter is a column of
+     the kernel's row when a provider of the joint model names it in its
+     signature (`Equations.reads()`, `parameter_layout`), and a key only a
+     `Derived` value or an observable reads (`N_eff`, `A_s`) stays on the
+     host. Until then `column=True` marked the columns, and the inferred
+     rows equal the flagged ones for every model. Before 2026-11-18, `directed=True`
      marked the columns a derivative could move, each a params leaf of its
      own so that modax's column method gave it a column only when it moved,
      `differentiable=True` the keys `solve_eb` let through (the rest
@@ -556,7 +559,7 @@ import Component, State`, `from discoeb.solver import solve_eb`). The modules:
      self-convergence 5.7e-5 (5.7e-5), 267 ms (270), one cosmology 186 ms
      (188); `PERTURB_FIRST_STEP` = `A_START`
    - The parameter row is generated: `parameter_layout(model, extra)` (cached
-     per resolved model) is `(SOLVER_COLUMNS = k, the column parameters)`
+     per resolved model) is `(SOLVER_COLUMNS = k, the parameters a provider reads)`
      in component and declaration order (2026-11-18; before, the "directed"
      parameters led the row in `DIRECTED_NAMES` order), `z_re` last since
      `Recombination` comes last; `H_0` and `Omega_b`

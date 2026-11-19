@@ -1,6 +1,6 @@
 """
-Couplings between species are defined by :class:`~discoeb.components._component.Interaction`
-classes. These contribute to the derivatives of species' states, but hold no state themselves.
+:class:`~discoeb.components._component.Interaction` classes couple species. They
+contribute to the derivatives of the species' states and hold no state.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ class ThomsonScattering(Interaction):
     the photon dipole), the scattering source ``Pi = sigma_g / 5 + (3/5)
     E_2`` of the quadrupoles, and the damping ``-kappa' X_l`` of every
     higher temperature and polarization multipole. ``opacity`` is ``kappa'
-    = a n_e sigma_T``. The buffers it fills start at zero, so it leaves the
-    unscattered monopole alone.
+    = a n_e sigma_T``. The buffers it fills start at zero, so the
+    monopole, which does not scatter, gets no contribution.
     """
 
     def photbar(self, rho_g, rho_b):

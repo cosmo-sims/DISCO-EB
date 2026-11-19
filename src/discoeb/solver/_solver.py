@@ -49,107 +49,95 @@ def solve_eb(
 ) -> Annotated[jax.Array, ("cosmology", "name", "k", "a")]:
     """Solve the Einstein-Boltzmann system of ``cosmologies`` and keep ``keep`` at the scale factors ``a``.
 
-    One modax Rodas5P launch integrates every (wave mode, cosmology) pair
-    and records only the quantities named in ``keep`` at the requested
-    scale factors, through modax's save hook. The kernel evaluates them from the dense-output state at
-    each save and stores ``len(keep)`` numbers, so the device holds ``n_k *
-    n_cosmologies * len(a) * len(keep)`` values and never the history. Keeping
-    only the comoving curvature perturbation at 1000 times for 128 modes and 128
-    cosmologies stores 130 MB instead of the 7 GB of the 55-variable history.
+    One modax Rodas5P launch integrates every (wave mode, cosmology) pair.
+    At each save the kernel evaluates the quantities named in ``keep`` from
+    the dense-output state and stores them, so the device holds ``n_k *
+    n_cosmologies * len(a) * len(keep)`` values and never the history.
 
     Parameters
     ----------
     cosmologies
         A cosmology, ``LCDM(omega_b=..., ...)``, or a sequence of cosmologies of
-        one model. The model says which species and interactions the solve
-        evolves, and one kernel is compiled per model. Every parameter may be
-        a JAX array, traced under ``jit`` or not, and differentiated.
+        one model. The model sets the species and interactions the solve
+        evolves, and each model compiles one kernel. A parameter may be a
+        JAX array, traced under ``jit`` or not, and differentiated.
     k_values
-        Wave numbers in 1/Mpc, in any order. They must be numbers, not
-        traced: they set the launch's shape.
+        Wave numbers in 1/Mpc, in any order. They must be concrete numbers,
+        since they set the launch's shape.
     a
         Strictly increasing scale factors at which to record, from
-        :data:`A_START` on: the solve integrates in ``a``, and 1 is today
+        :data:`A_START` on. The solve integrates in ``a``, and 1 is today
         for every cosmology. Traced values must start after ``A_START``.
         Every launch starts there, so a first value equal to it records the
-        initial state. Keep ``tau`` for the conformal time at each, whose
-        value at 1 is the conformal age.
+        initial state. Keep ``tau`` for the conformal time at each ``a``.
+        Its value at 1 is the conformal age.
     keep
-        Names of the quantities to record: state elements
+        Names of the quantities to record. A name is a state element
         (:meth:`~discoeb.models.Model.state_names`, or the recombination
         block's ``tau``, ``thermo_0``, ``thermo_1``, ``thermo_2``, ``kappa``,
-        ``kappa_reio``) or
-        quantities the joint model provides, such as the comoving curvature
-        perturbation ``R``, the shear ``alpha``, the expansion rate ``aH`` or
-        the opacity. Default: every element of the perturbation state, which
-        amounts to the hierarchy's full history.
+        ``kappa_reio``) or a quantity the model provides, such as the
+        comoving curvature perturbation ``R``, the shear ``alpha``, the
+        expansion rate ``aH`` or the ``opacity``. Default: every element of
+        the perturbation state.
     extra
         Components to append to the model for the hook: stateless
-        :class:`~discoeb.components._component.Component` subclasses whose providers read the
-        model's quantities and add their own (the line-of-sight sources of
-        :mod:`discocmb.cmb`). The hook cache tells them apart by class.
+        :class:`~discoeb.components.Component` subclasses whose providers
+        read the model's quantities and add their own (DISCO-CMB's
+        line-of-sight sources). The hook cache tells them apart by class.
     inputs
         ``{name: values}`` of parameter-row columns
         (:func:`solve_inputs` names them) to set in place of those the
         cosmologies imply, each value a number or ``(n_cosmologies,)``. The
-        solution becomes a function of them, so this is how to differentiate
-        in a derived parameter such as ``omega_g`` on its own. The initial
-        state stays the cosmologies'.
-    rtol, atol, first_step, max_steps, error_weights, thermo_weight
-        Solver settings.
-        ``error_weights`` is either ``{state name: weight}`` or modax's array
-        ``(n_k * n_cosmologies, nvar)`` in launch order (wave modes ascending,
-        cosmologies within). In the dictionary, each weight is a number or a
+        solution becomes a function of them, which lets you differentiate
+        in a derived parameter such as ``omega_g``. The initial state stays
+        the cosmologies'.
+    rtol, atol, first_step, max_steps
+        Settings of the Rodas5P step controller.
+    error_weights
+        Either ``{state name: weight}`` or modax's array ``(n_k *
+        n_cosmologies, nvar)`` in launch order (wave modes ascending,
+        cosmologies within). In the dictionary each weight is a number or a
         function of the trajectories' wave numbers that returns one per
         trajectory, and unnamed states keep weight one.
+    thermo_weight
+        Weight of the recombination block in the error norm.
     split_derivatives
         How a derivative uses the device's threads. By default a trajectory
         and its sensitivity columns share one thread, which costs the least
         work and suits a batch that fills the device. With ``True`` each
         direction gets a copy of every trajectory in a thread of its own,
-        holding the state and one column. The copies repeat the
-        primal but run side by side, so one cosmology finishes about five
-        times sooner, and a thread's memory no longer grows with the
-        parameters.
+        holding the state and one column. The copies repeat the primal but
+        run side by side, so one cosmology finishes sooner, and a thread's
+        memory does not grow with the number of parameters.
 
     Returns
     -------
     jax.Array
         The kept quantities, ``(n_cosmologies, len(keep), n_k, n_a)``:
-        cosmologies in the order given, quantities in ``keep`` order (the
-        model's :func:`state_names` without ``keep``), wave modes and times
-        in the caller's order. ``jnp.unstack(values, axis=1)`` splits it
-        into one ``(n_cosmologies, n_k, n_a)`` array per name.
+        cosmologies in the order given, quantities in ``keep`` order, wave
+        modes and scale factors in the caller's order.
+        ``jnp.unstack(values, axis=1)`` splits it into one
+        ``(n_cosmologies, n_k, n_a)`` array per name.
 
     Notes
     -----
-    The hook compiles once per batch shape and set of names, like the
-    right-hand side. Everything before the launch is JAX and algebra: the
-    parameter rows and the initial states
-    (:func:`~discoeb.solver._kernel._pack`), so ``solve_eb`` traces under ``jit``, and
-    the whole solve then runs on the device. Under ``jit`` the cosmologies are
-    not checked against the model, since their ``w_DE_*`` and ``N_mnu`` have no
-    values yet.
+    The hook compiles once per model, set of names and number of save
+    times. Before the launch ``solve_eb`` computes only the parameter rows
+    and the initial states, in JAX, so it traces under ``jit``. Under
+    ``jit`` the model cannot check the cosmologies, since their values are
+    not known.
 
     The returned values are differentiable in every parameter of the
     cosmologies under ``jax.jvp`` and ``jax.jacfwd``, with or without
-    ``jit``. Reverse mode (``jax.grad``, ``jax.vjp``, ``jax.jacrev``)
-    raises: modax integrates the derivative along each tangent direction,
-    and reverse mode has none to give it. For the gradient of a scalar,
-    ``jax.jacfwd`` costs one column per parameter. The derivative reaches the
-    kernel through the parameter row. modax's forward sensitivities carry
-    it, with a hook that stores each kept quantity's derivative beside it,
-    so it also costs one joint launch and no history. ``jax.jvp``
-    integrates one sensitivity column and ``jax.jacfwd`` one per direction,
-    however many columns of the row a direction moves. Over a batch, take
-    ``jax.vmap(jax.jacfwd(f))`` of a function of one cosmology: ``jacfwd``
-    of the batch would ask every cosmology for every other's directions. A
-    thread holds at most :data:`~discoeb.solver._kernel.MAX_SENSITIVITY_STATE`
-    components, and more columns run in threads of their own. It is the
-    derivative at fixed scale factor, so at fixed redshift. The initial
-    state carries its tangent too, as the start of the sensitivity column,
-    at no cost. A key the solve never reads (``A_s``, ``n_s``, ``k_p``)
-    has a zero derivative.
+    ``jit``. modax integrates one sensitivity column per tangent direction
+    in the same launch and stores each kept quantity's derivative beside
+    it. Reverse mode (``jax.grad``, ``jax.vjp``, ``jax.jacrev``) raises.
+    For the gradient of a scalar use ``jax.jacfwd``. Over a batch, take
+    ``jax.vmap(jax.jacfwd(f))`` of a function of one cosmology, since
+    ``jacfwd`` of the batch would ask every cosmology for every other's
+    directions. The derivative holds the scale factor fixed, so it is the
+    derivative at fixed redshift. A parameter the solve never reads
+    (``A_s``, ``n_s``, ``k_p``) has a zero derivative.
     """
 
     model, dicts = _batch_of(cosmologies)
@@ -229,7 +217,7 @@ def solve_inputs(cosmologies) -> dict[str, jax.Array]:
     """Return the parameter-row columns the cosmologies imply, ``(n_cosmologies,)`` each, by name.
 
     ``cosmologies`` is a cosmology or a sequence of cosmologies of one
-    model. The columns are what the kernel reads: the keys it takes as
+    model. The kernel reads these columns: the keys it takes as
     given (``omega_c``, ``omega_b``, ``Y_He``, ``T_cmb``, ...) and the
     parameters derived from keys (``omega_g``, ``omega_ur``, ``amnu``, ...).
     :func:`solve_eb` takes any of them as ``inputs``. JAX arrays, traceable

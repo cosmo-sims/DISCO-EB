@@ -1,5 +1,5 @@
 """
-Each species is a :mod:`discoeb.components._component` that owns its own state.
+Each species is a :class:`~discoeb.components._component.Component` that owns its state.
 
 The variables are those of Ma & Bertschinger (1995): a density contrast
 ``delta`` and a velocity divergence ``theta`` per fluid. The Boltzmann
@@ -60,7 +60,7 @@ class ColdDarkMatter(Species):
     # adiabatic mode: 3/4 of the photon density contrast
     delta_c = State(initial=lambda F: 0.75 * F[0])
 
-    omega_c: ArrayLike = Parameter(column=True)  # Omega_c h^2
+    omega_c: ArrayLike = Parameter()  # Omega_c h^2
 
     def rho_c(self, omega_c, a):
         inv_a = 1.0 / a
@@ -90,8 +90,8 @@ class Baryons(Species):
     theta_b = State(initial=lambda F, k: 0.75 * k * F[1])
 
     # The recombination rates read omega_b and the helium fraction Y_He too.
-    omega_b: ArrayLike = Parameter(column=True)  # Omega_b h^2
-    Y_He: ArrayLike = Parameter(column=True)
+    omega_b: ArrayLike = Parameter()  # Omega_b h^2
+    Y_He: ArrayLike = Parameter()
 
     def rho_b(self, omega_b, a):
         inv_a = 1.0 / a
@@ -119,14 +119,16 @@ class Baryons(Species):
 
 
 class Fluid(Species):
-    """A perfect fluid with a constant equation of state ``w`` and rest-frame sound speed ``cs2``.
+    r"""A perfect fluid with a constant equation of state ``w`` and rest-frame sound speed ``cs2``.
 
     The fluid equations of :class:`DarkEnergy` at constant ``w``, where the
-    adiabatic sound speed is ``w`` itself:
+    adiabatic sound speed is ``w`` itself,
 
-    ``delta' = -(1+w)(theta + h'/2) - 3 (cs2 - w) aH delta
-               - 9 (1+w)(cs2 - w) (aH)^2 theta / k^2``,
-    ``theta' = -(1 - 3 cs2) aH theta + cs2 k^2 delta / (1+w)``,
+    .. math::
+
+        \delta' &= -(1+w)\left(\theta + \frac{h'}{2}\right) - 3 (c_s^2 - w)\, aH\, \delta
+                   - 9 (1+w)(c_s^2 - w) (aH)^2 \frac{\theta}{k^2}, \\
+        \theta' &= -(1 - 3 c_s^2)\, aH\, \theta + \frac{c_s^2 k^2}{1+w} \delta,
 
     with no anisotropic stress. Its physical density today is ``omega``
     (``Omega h^2``) and scales as ``a^(-3(1+w))``. It starts in the adiabatic
@@ -137,7 +139,7 @@ class Fluid(Species):
     ``rho_radiation``.
 
     Its names (``delta``, ``theta``, ``w``, ``cs2``) are generic, so a model
-    must rename it appropriately::
+    lists it under a name::
 
         LCDM.add(Fluid.named("dr"), name="LCDM+dr")   # dr_omega, dr_w, dr_delta ...
     """
@@ -145,9 +147,9 @@ class Fluid(Species):
     delta = State(initial=lambda w, delta_c: (1.0 + w) * delta_c)
     theta = State()
 
-    omega: ArrayLike = Parameter(0.0, column=True)
-    w: ArrayLike = Parameter(0.0, column=True)
-    cs2: ArrayLike = Parameter(0.0, column=True)
+    omega: ArrayLike = Parameter(0.0)
+    w: ArrayLike = Parameter(0.0)
+    cs2: ArrayLike = Parameter(0.0)
 
     def __init__(self, **settings):
         super().__init__(**settings)
@@ -326,10 +328,8 @@ class Photons(Species):
     F = State(lambda self: self.LMAX_G + 1, initial=_F_initial)
     E = State(lambda self: self.LMAX_POL - 1)
 
-    T_cmb: ArrayLike = Parameter(column=True)  # K, the recombination rates' too
-    omega_g: ArrayLike = Derived(
-        lambda T_cmb: OMEGA_G_PER_TCMB4 * T_cmb**4, column=True
-    )
+    T_cmb: ArrayLike = Parameter()  # K, the recombination rates' too
+    omega_g: ArrayLike = Derived(lambda T_cmb: OMEGA_G_PER_TCMB4 * T_cmb**4)
 
     def __init__(self, **settings):
         super().__init__(**settings)
@@ -413,7 +413,7 @@ class Photons(Species):
 
 
 class MasslessNeutrinos(Species):
-    """Massless neutrinos ``N`` (``N_0 .. N_LMAX_NR``) exhibit collisionless free streaming."""
+    """Massless neutrinos ``N`` (``N_0 .. N_LMAX_NR``) which stream freely without collisions."""
 
     LMAX_NR = Setting(15)
 
@@ -435,7 +435,7 @@ class MasslessNeutrinos(Species):
 
     N_eff: ArrayLike = Parameter()
     omega_ur: ArrayLike = Derived(
-        lambda N_eff, T_cmb: N_eff * (OMEGA_NU_PER_TCMB4 * T_cmb**4), column=True
+        lambda N_eff, T_cmb: N_eff * (OMEGA_NU_PER_TCMB4 * T_cmb**4)
     )
 
     def __init__(self, **settings):
@@ -515,11 +515,9 @@ class MassiveNeutrinos(Species):
 
     N_mnu: ArrayLike = Parameter(0.0)  # flavours
     m_nu: ArrayLike = Parameter(0.0)  # eV, each
-    omega_nu_flavour: ArrayLike = Derived(
-        lambda T_cmb: OMEGA_NU_PER_TCMB4 * T_cmb**4, column=True
-    )
-    n_mnu: ArrayLike = Derived(lambda N_mnu: N_mnu, column=True)
-    amnu: ArrayLike = Derived(lambda m_nu, T_cmb: m_nu * C2OK / T_cmb, column=True)
+    omega_nu_flavour: ArrayLike = Derived(lambda T_cmb: OMEGA_NU_PER_TCMB4 * T_cmb**4)
+    n_mnu: ArrayLike = Derived(lambda N_mnu: N_mnu)
+    amnu: ArrayLike = Derived(lambda m_nu, T_cmb: m_nu * C2OK / T_cmb)
 
     def __init__(self, **settings):
         super().__init__(**settings)
@@ -610,7 +608,7 @@ class _DarkEnergyDensity(Species):
     a model expand at a given ``H_0``.
     """
 
-    omega_de: ArrayLike = Parameter(column=True)
+    omega_de: ArrayLike = Parameter()
 
     @contributes("rho")
     def rho_dark_energy(self, rho_de):
@@ -629,14 +627,16 @@ class CosmologicalConstant(_DarkEnergyDensity):
 
 
 class DarkEnergy(_DarkEnergyDensity):
-    """A CPL fluid ``w = w_0 + w_a (1 - a)`` with rest-frame sound speed ``cs2_DE``.
+    r"""A CPL fluid ``w = w_0 + w_a (1 - a)`` with rest-frame sound speed ``cs2_DE``.
 
     Synchronous-gauge fluid equations after Ballesteros & Lesgourgues 2010, with
-    the adiabatic sound speed ``c_a^2 = w - w' / (3 (1+w) aH)``, ``w' = -w_a aH a``:
+    the adiabatic sound speed ``c_a^2 = w - w' / (3 (1+w) aH)``, ``w' = -w_a aH a``,
 
-    ``delta_de' = -(1+w)(theta_de + h'/2) - 3 (cs2 - w) aH delta_de
-                  - 9 (1+w)(cs2 - c_a^2) (aH)^2 theta_de / k^2``,
-    ``theta_de' = -(1 - 3 cs2) aH theta_de + cs2 k^2 delta_de / (1+w)``.
+    .. math::
+
+        \delta' &= -(1+w)\left(\theta + \frac{h'}{2}\right) - 3 (c_s^2 - w)\, aH\, \delta
+                   - 9 (1+w)(c_s^2 - c_a^2) (aH)^2 \frac{\theta}{k^2}, \\
+        \theta' &= -(1 - 3 c_s^2)\, aH\, \theta + \frac{c_s^2 k^2}{1+w} \delta.
 
     Valid for ``w != -1`` at every scale factor: a history that reaches
     ``w = -1`` between the start and today is rejected (``check``), since a
@@ -649,9 +649,9 @@ class DarkEnergy(_DarkEnergyDensity):
     delta_de = State(initial=lambda w_DE_0, delta_c: (1.0 + w_DE_0) * delta_c)
     theta_de = State()
 
-    w_DE_0: ArrayLike = Parameter(-1.0, column=True)
-    w_DE_a: ArrayLike = Parameter(0.0, column=True)
-    cs2_DE: ArrayLike = Parameter(1.0, column=True)
+    w_DE_0: ArrayLike = Parameter(-1.0)
+    w_DE_a: ArrayLike = Parameter(0.0)
+    cs2_DE: ArrayLike = Parameter(1.0)
 
     @classmethod
     def check(cls, w_DE_0, w_DE_a):

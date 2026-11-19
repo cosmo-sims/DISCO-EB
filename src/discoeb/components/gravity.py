@@ -1,5 +1,5 @@
 """
-Gravity in synchronous gauge including the metric, Friedmann sum and initial mode.
+Gravity in synchronous gauge: the metric, the Friedmann sum and the initial mode.
 
 The variables are those of Ma & Bertschinger (1995). :class:`Background`
 turns the summed density ``rho`` into the conformal Hubble rate ``aH``.
@@ -75,8 +75,8 @@ class AdiabaticMode(Component):
     ``rho_free_streaming``). The host evaluates them from the background
     densities when it assembles the initial state, and the states'
     ``initial`` functions read them by name. The primordial spectrum ``A_s
-    (k / k_p)^(n_s - 1)`` scales the mode. The solve never reads it, the
-    matter power spectrum does.
+    (k / k_p)^(n_s - 1)`` scales the mode. The matter power spectrum
+    reads it and the solve does not.
     """
 
     A_s: ArrayLike = Parameter()
@@ -113,11 +113,11 @@ class AdiabaticMode(Component):
 class Curvature(Gravity):
     """Spatial curvature ``K = -omega_k H100^2``, with ``omega_k = Omega_k h^2``, and the metric factor.
 
-    It is geometry, not a fluid: it enters the Friedmann equation through
-    ``K`` and none of the sums.
+    It is geometry: it enters the Friedmann equation through ``K`` and
+    contributes to none of the sums.
     """
 
-    omega_k: ArrayLike = Parameter(0.0, column=True)
+    omega_k: ArrayLike = Parameter(0.0)
 
     def K(self, omega_k):
         return -H100_SQ * omega_k

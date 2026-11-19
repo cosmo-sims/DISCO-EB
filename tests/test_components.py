@@ -1074,7 +1074,7 @@ def test_the_acceleration_equation_is_the_derivative_of_the_friedmann_equation(a
 class ScaledGravity(gravity.Background):
     """A Friedmann equation with a rescaled Newton constant: ``H^2 = mu H100^2 rho - K / a^2``."""
 
-    mu: ArrayLike = Parameter(1.0, column=True)
+    mu: ArrayLike = Parameter(1.0)
 
     def aH(self, rho, K, a, mu):
         return math.sqrt(mu * H100_SQ * a * a * rho - K)
@@ -1284,9 +1284,24 @@ def test_a_built_in_species_takes_a_name_too():
     """A second cold dark matter, with a density ``warm_omega_c`` of its own."""
 
     second = species.ColdDarkMatter.named("warm")
-    parameters = dict(second.declared_parameters())
-    assert parameters["warm_omega_c"].column
-    assert LCDM.add(second, name="two").state_names()[-1] == "warm_delta_c"
+    from discoeb.solver._kernel import parameter_layout
+
+    assert "warm_omega_c" in dict(second.declared_parameters())
+    two = LCDM.add(second, name="two")
+    assert two.state_names()[-1] == "warm_delta_c"
+    # its providers read the density, so the row has a column for it
+    assert "warm_omega_c" in parameter_layout(two).columns
+
+
+def test_the_row_holds_the_parameters_the_providers_read():
+    """A parameter is a column when a method names it, and stays on the host otherwise."""
+
+    from discoeb.solver._kernel import parameter_layout
+
+    columns = parameter_layout(LCDM).columns
+    assert {"k", "omega_c", "omega_b", "omega_g", "omega_ur", "T_cmb"} <= set(columns)
+    # N_eff enters through omega_ur, and the spectrum's amplitude after the solve
+    assert not {"N_eff", "A_s", "n_s", "k_p"} & set(columns)
 
 
 # --- The Einstein-Boltzmann component model, on the host.

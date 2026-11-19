@@ -23,8 +23,8 @@
 # The rest of the DISCO-EB module is distributed under the MIT license.
 ####################################################################################################################
 """
-The thermal recombination history as calculated by RECFAST, which is reimplemented
-here in pure Python, based on the original code by Douglas Scott.
+The recombination history of RECFAST, in Python after the original code by
+Douglas Scott.
 """
 
 from __future__ import annotations
@@ -141,11 +141,11 @@ DZ_H_SAHA_BLEND = 50.0
 equation (CLASS's ``recfast_delta_z_full_H_recombination``)."""
 
 THERMO_ERROR_WEIGHT = float(os.environ.get("DISCO_THERMO_WEIGHT", "1.0"))
-"""Weight of ``ln a`` and the three RECFAST states in the error norm of the
+"""Weight of ``tau`` and the three RECFAST states in the error norm of the
 recombination block's steps, which keep their error below ``rtol / weight``.
 The block takes its own steps ahead of the hierarchy, so the weight sets the
-thermal state's accuracy and the number of RECFAST evaluations, not the
-hierarchy's steps. ``P(k)`` does not change between 0.3 and 100. A weight of
+thermal state's accuracy and the number of RECFAST evaluations and leaves
+the hierarchy's steps unchanged. ``P(k)`` does not change between 0.3 and 100. A weight of
 0 leaves the block's steps uncontrolled."""
 
 REIO_ERROR_WEIGHT = 1.0e4
@@ -154,14 +154,12 @@ REIO_ERROR_WEIGHT = 1.0e4
 Reionization's step is 0.5 wide in ``z``, ~150 Mpc of conformal time. At
 the block's weight the steps across it resolve ``tau_reio`` (to 2e-4) but
 not its derivative in ``z_re``, which the sensitivities carry without error
-control: ``d tau_reio / d z_re`` came out 6 percent high and ``dP/dz_re``
+control: ``d tau_reio / d z_re`` comes out 6 percent high and ``dP/dz_re``
 3 percent off. ``kappa_reio`` changes only there, so its weight refines
-those steps alone; at 1e4 the derivative is converged. It costs a P(k)
+only those steps, and at 1e4 the derivative is converged. It costs a P(k)
 batch with reionization 14 percent, and every launch of a model with the
-state pays it (2026-11-19: modax 0.5.0 differentiates a launch with the
-launch's own settings; before, only sensitivity launches carried the
-weight). The state itself costs 4 to 7 percent of a solve, so it is a
-component a model adds, not one of every model's."""
+state pays it. The state itself costs 4 to 7 percent of a solve, so a model
+adds it as a component."""
 
 AKTHOM_PER_OMEGAB_H0SQ = 2.3038921003709498e-9
 """``n_H sigma_T c / (H_0 units)``: ``kappa' = x_e akthom / a^2`` with
@@ -301,11 +299,11 @@ def helium_rate(x_H, x_He, xe, Tmat, z, a, n_H, Hz, T_cmb, Nnow, fHe):
     The switch is RECFAST's ``x_He > 0.9``, tested on the Saha fraction at
     ``z`` instead of the state. While the Saha slope drives the state, the
     state equals that fraction, so the switch falls at the same redshift. A
-    test on the state can switch back, though. A lane whose step landed just
-    below 0.9 got pulled back across and crept along ``x_He = 0.9`` for a
+    test on the state can switch back, though. A lane whose step lands just
+    below 0.9 gets pulled back across and creeps along ``x_He = 0.9`` for a
     couple of hundred tiny steps (a few lanes of most warps, 40 percent of
     the recombination block's cost). Tested on the fraction, the switch
-    depends on ``z`` alone, like hydrogen's (CLASS 3 does the same).
+    depends only on ``z``, like hydrogen's (CLASS 3 does the same).
 
     Only one place calls the rate equation. A helper inlined at two call
     sites, or a local assigned in several branches, gives numba-cuda-mlir a
@@ -334,8 +332,7 @@ def helium_rate_equation(x_H, x_He, xe, Tmat, z, n_H, Hz, fHe):
     ``1 - x_He`` has a floor of 1e-6. The equations hold for ``x_He < 1``
     (at the handover from Saha it is 1e-3 or more), and a solver stage that
     probes ``x_He >= 1`` makes the escape probabilities ``(1 - exp(-tau)) /
-    tau`` overflow or 0/0. That NaN stalled one sweep cosmology's block at
-    ``max_steps`` once a sixth state changed its step sequence (2026-11-16).
+    tau`` overflow or 0/0. The NaN stalls the block at ``max_steps``.
     """
 
     Hz_z_term = Hz * (1.0 + z)
@@ -473,8 +470,8 @@ def logistic(x):
     do. The exponent is capped at 30, so the step reads ``1e-13`` instead of
     ``0`` where it is off. The cap keeps the exponential's derivatives finite,
     which the sensitivity sweeps multiply by tangents of order a thousand in
-    single precision. A cap of 80 (``e^80 = 5e34``) sat at the edge of single
-    precision: the second-order sweep overflowed it to infinity and turned the
+    single precision. A cap of 80 (``e^80 = 5e34``) sits at the edge of single
+    precision: the second-order sweep overflows to infinity and turns the
     optical depth's sensitivity into NaN.
     """
 
@@ -495,7 +492,7 @@ def _thermo_initial(a, T_cmb, output):
 def _tau_initial(aH, rho_matter, a):
     """The conformal time at the start, deep in radiation domination.
 
-    With radiation and matter alone, ``a'^2 = (R + M a) / 3`` integrates to
+    With only radiation and matter, ``a'^2 = (R + M a) / 3`` integrates to
     ``tau = 2 sqrt(3) a / (sqrt(R + M a) + sqrt(R))``, which is ``1 / aH``
     times ``2 sqrt(1 + e) / (sqrt(1 + e) + 1)`` with ``e = M a / R`` the
     matter-to-radiation ratio. The model's own ``aH`` carries every
@@ -512,7 +509,7 @@ def _tau_initial(aH, rho_matter, a):
 class Recombination(Component):
     """The conformal time, RECFAST's ``(x_H, x_He, T_m)`` and the optical depth as driver states.
 
-    The solve integrates in ``ln a``, so ``a`` is the time itself and the
+    The solve integrates in the scale factor, so ``a`` is the time itself and the
     conformal time ``tau`` a state whose rate is one (per unit of itself:
     the solve divides every rate by ``a'``,
     :class:`~discoeb.components._component.Equations`). It starts from the
@@ -534,7 +531,7 @@ class Recombination(Component):
     kappa = State()
 
     # The rates read Y_He, T_cmb and omega_b, which the species declare.
-    z_re: ArrayLike = Parameter(0.0, column=True)
+    z_re: ArrayLike = Parameter(0.0)
     """The redshift half way through CAMB's reionization step (0: none)."""
 
     def fHe(self, Y_He):
@@ -550,7 +547,7 @@ class Recombination(Component):
         return abs(thermo[2])
 
     def xe_rec(self, x_H, x_He, fHe):
-        """Free electrons per hydrogen nucleus from recombination alone."""
+        """Free electrons per hydrogen nucleus from recombination, without reionization."""
         return x_H + fHe * x_He
 
     def xe_reio(self, a, xe_rec, fHe, z_re):
@@ -658,18 +655,18 @@ class ReionizationDepth(Component):
 
     A model adds it to read ``tau_reio`` off a solve or to differentiate in
     the reionization redshift, ``LCDM.add(ReionizationDepth, name=...)``.
-    ``kappa_reio`` integrates the opacity of reionization's electrons alone,
+    ``kappa_reio`` integrates the opacity of the electrons reionization frees,
     a background state beside :class:`Recombination`'s. A launch weights
     it (:data:`REIO_ERROR_WEIGHT`) so that the steps resolve the
-    reionization step's derivative in ``z_re``: without the state,
-    ``dP/dz_re`` is 3 to 9 percent off.
+    reionization step's derivative in ``z_re``. Without the state the
+    derivative is inaccurate.
     """
 
     kappa_reio = State()
 
     @derivative("kappa_reio")
     def reionization_depth(self, xe_reio, akthom, a):
-        """The opacity of reionization's electrons alone, whose integral is ``tau_reio``."""
+        """The opacity of the electrons reionization frees, whose integral is ``tau_reio``."""
         inv_a = 1.0 / a
         inv_a2 = inv_a * inv_a
         return xe_reio * akthom * inv_a2

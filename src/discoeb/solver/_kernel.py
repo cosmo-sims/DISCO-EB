@@ -1,5 +1,5 @@
 """
-Constructs a modax GPU kernel.
+The joint modax GPU kernel and its launch.
 
 One launch integrates every (wave mode, cosmology) pair of a batch. The
 recombination block steps ahead of the perturbations as a modax
@@ -37,14 +37,18 @@ PERTURB_FIRST_STEP = A_START  # in a: 0.1 Mpc of conformal time
 PERTURB_MAX_STEPS = 20000
 
 SOLVER_COLUMNS = ("k",)
-"""The row's column the solver sets rather than a component: the wave number."""
+"""The column of the row that the solver sets: the wave number."""
 
 
 @dataclass(frozen=True)
 class ParameterLayout:
     """The columns of a model's parameter row, generated from its parameters.
 
-    The row is ``(SOLVER_COLUMNS, the column parameters)``, the parameters in
+    The row is ``(SOLVER_COLUMNS, the parameters a provider reads)``. A
+    parameter is in the row when a method of the joint model names it in its
+    signature. A parameter that only a :func:`~discoeb.components.Derived`
+    value or an observable reads (``N_eff``, ``A_s``) stays on the host. The
+    parameters are in
     component and declaration order, so the layout is a function of the
     resolved model and the kernels cached on it stay valid. A derivative
     may move any of the parameters' columns: modax integrates a sensitivity
@@ -73,7 +77,8 @@ def _parameter_layout(model: type[Model], extra) -> ParameterLayout:
     clash = sorted(set(SOLVER_COLUMNS) & set(parameters))
     if clash:
         raise ValueError(f"{clash} name solver columns, not parameters")
-    held = [n for n, p in parameters.items() if p.column]
+    read = joint_model(model, extra).reads()
+    held = [n for n in parameters if n in read]
     columns = {name: i for i, name in enumerate((*SOLVER_COLUMNS, *held))}
     return ParameterLayout(columns, tuple((n, columns[n]) for n in held))
 
@@ -107,8 +112,7 @@ def joint_model(model: type[Model], extra=()) -> Equations:
     conformal time the components write their rates in. Every cosmology
     then runs from :data:`A_START` to 1, and since ``a`` grows as ``tau``
     in the radiation era, the early solutions are the low-order polynomials
-    they are in ``tau``. In ``ln a`` they are exponentials, which the same
-    tolerance integrated 13 times less exactly (2026-11-17).
+    they are in ``tau``.
     """
 
     return _joint_model(_model_of(model), tuple(extra))
@@ -263,7 +267,7 @@ def _prepare_solve(
     """Return a batch packed for launch at ``k_values``: parameter rows and initial states.
 
     ``cosmologies`` are the batch's parameter dictionaries
-    (:func:`~discoeb.models._model._batch_of`); their values may be traced under ``jit``. ``k_values`` must be
+    (:func:`~discoeb.models._model._batch_of`). Their values may be traced under ``jit``. ``k_values`` must be
     numbers: they set the launch's shape and order. ``columns`` are the
     cosmologies' :func:`_columns` if already at hand. Every
     cosmology must suit
@@ -381,7 +385,7 @@ def error_weights_for(
     depth gets the block's weight too, so its
     error counts against ``rtol |kappa|``. The block's steps then resolve its
     increments where ``kappa`` is of order one, through recombination and after,
-    which is where ``exp(-kappa)`` reads them. Unweighted, it left the lensed TT
+    which is where ``exp(-kappa)`` reads them. Unweighted, it leaves the lensed TT
     0.5 percent off CLASS at ``l = 1500``.
     """
 

@@ -1,5 +1,5 @@
 """
-A cosmological model in DISCO-EB is comprised of a list of *components*. A component declares its settings and state
+A cosmological model in DISCO-EB is a list of *components*. A component declares its settings and state
 variables as class attributes and provides *quantities* through ordinary Python functions we call *providers*:
 
     class Baryons(Species):
@@ -33,20 +33,19 @@ matrix ``psi`` as ``psi_0_0, psi_0_1, ...``. A state also carries its
 like a provider's.
 
 **Providers.** Components provide quantities by defining them in methods. Each
-method can take as inputs any other defined quantity. The topological sorting
-algorithm that builds the right-hand side of the Einstein-Boltzmann system will
-call the providers in the order that respects their dependencies. A method
+method can take as inputs any other defined quantity. The build sorts the
+providers topologically, so each runs after the quantities it reads. A method
 decorated with ``@derivative("x")`` contributes to the rate of the state
 ``x``, and the rate is the quantity ``d_x``. A method decorated with
 ``@contributes`` adds to a sum over components, such as ``rho``,
 ``delta_rho`` and ``momentum``. The component that reads a sum declares it:
-``rho = Sum()``. A method's name alone never makes it a contribution.
+``rho = Sum()``. A method's name never makes it a contribution.
 
 **Parameters.** ``omega_c: ArrayLike = Parameter()`` declares a cosmological
 parameter.
 
-**Sparsity.** The sparsity pattern of the E-B system is automatically
-determined by tracing the dependencies of the various provider methods.
+**Sparsity.** :meth:`Equations.sparsity` traces the Jacobian's sparsity
+pattern through the providers.
 """
 
 from __future__ import annotations
@@ -244,9 +243,10 @@ class ParameterDeclaration:
     Without ``value`` it is a key of the cosmology dictionary, which may leave
     it out when it has a ``default``. With ``value``, a function whose
     parameter names are other parameters, it is derived from them on the host
-    in JAX. ``column`` puts it in the kernel's parameter row under its name,
-    for the providers to read. A derivative reaches the solve through the
-    columns, so every key is differentiable.
+    in JAX. A parameter that a provider names in its signature gets a column
+    of the kernel's parameter row
+    (:func:`~discoeb.solver._kernel.parameter_layout`). A derivative reaches
+    the solve through the columns, so every key is differentiable.
     """
 
     def __init__(
@@ -254,7 +254,6 @@ class ParameterDeclaration:
         default=REQUIRED,
         *,
         value: Callable | None = None,
-        column: bool = False,
     ):
         if value is not None and not callable(value):
             raise TypeError("value must be a function of other parameters")
@@ -262,7 +261,6 @@ class ParameterDeclaration:
             raise TypeError("a derived parameter has no default")
         self.default = default
         self.value: Any = value
-        self.column = column
         self.name: str | None = None
         self.reads: tuple[str, ...] = ()
         if value is not None:
@@ -294,10 +292,7 @@ class ParameterDeclaration:
     def renamed(self, renames: Mapping[str, str]) -> ParameterDeclaration:
         """A copy for a named component: it reads its component's own parameters under their new names."""
 
-        copy = ParameterDeclaration(
-            self.default if self.value is None else REQUIRED,
-            column=self.column,
-        )
+        copy = ParameterDeclaration(self.default if self.value is None else REQUIRED)
         copy.value = self.value
         copy.reads = tuple(renames.get(r, r) for r in self.reads)
         return copy
@@ -318,24 +313,23 @@ def _annotated_names(cls) -> set[str]:
     return set(vars(cls).get("__annotations__", {}))
 
 
-def Parameter(default: Any = REQUIRED, *, column: bool = False) -> Any:
-    """Declare a cosmology key: ``omega_c: ArrayLike = Parameter(column=True)``.
+def Parameter(default: Any = REQUIRED) -> Any:
+    """Declare a cosmology key: ``omega_c: ArrayLike = Parameter()``.
 
     It is an argument of every model whose components include the class:
-    required without a ``default``, optional with one. ``column`` puts it in
-    the kernel's parameter row under its name, for the providers to read
-    (:class:`ParameterDeclaration`). The annotation is required: it is what
-    lets a type checker see the argument (the ``dataclass_transform`` on
+    required without a ``default``, optional with one. A provider reads it
+    by naming it in its signature, which puts it in the kernel's parameter
+    row (:class:`ParameterDeclaration`). The annotation is required, since a
+    type checker reads the argument from it (the ``dataclass_transform`` on
     :class:`Component`).
     """
 
-    return ParameterDeclaration(default, column=column)
+    return ParameterDeclaration(default)
 
 
 def Derived(
     value: Callable,
     *,
-    column: bool = False,
     init: Literal[False] = False,
 ) -> Any:
     """Declare a parameter derived from others: ``omega_g: ArrayLike = Derived(lambda T_cmb: ...)``.
@@ -346,7 +340,7 @@ def Derived(
     signature.
     """
 
-    return ParameterDeclaration(value=value, column=column)
+    return ParameterDeclaration(value=value)
 
 
 def declared_parameters(classes) -> dict[str, ParameterDeclaration]:
@@ -831,7 +825,7 @@ def derivative(state: str) -> Callable[[F], F]:
 
 
 def _undeclared(label: str, attr: str, sums: Sequence[str]) -> None:
-    """Raise ``TypeError`` for a method whose name alone says it adds to a rate or a sum."""
+    """Raise ``TypeError`` for a method named like a contribution but not declared as one."""
 
     if attr.startswith("d_"):
         raise TypeError(
@@ -1385,6 +1379,11 @@ class Equations:
             ]
         return self._provider_list
 
+    def reads(self) -> frozenset[str]:
+        """The names the providers read: every parameter of every method's signature."""
+
+        return frozenset(n for p in self._all_providers() for n in p.params)
+
     def _host_providers(self):
         """``(providers by quantity, contributions by sum, derivative providers by state)`` of a host evaluation, once per model."""
 
@@ -1403,9 +1402,9 @@ class Equations:
         back carrying the columns of that row, a vector's element by element
         through the ``output`` it fills. The pattern is exact except at
         data-dependent branches, where a provider counts as reading all of its
-        inputs. That gives the superset a colouring needs and no more. The
-        diagonal the Rosenbrock matrix ``I/(h gamma) - J`` adds belongs to the
-        solver, not the pattern. Rows come sorted.
+        inputs, which gives the superset a colouring needs. The
+        solver adds the diagonal of the Rosenbrock matrix ``I/(h gamma) - J``,
+        which the pattern leaves out. Rows come sorted.
         """
 
         entries: set[tuple[int, int]] = set()
@@ -1590,13 +1589,11 @@ class Equations:
         base quantity, a state (its own initial value), or a provider
         evaluated on the host from the same pool.
 
-        One resolution covers all wave modes: ``k`` is the whole array,
+        One resolution covers all wave modes: ``k`` is the full array,
         ``numpy`` stands in for ``math`` so the initial conditions' algebra
         broadcasts over it, and a vector state's filler writes rows of ``n_k``
         values (``batch_shape`` of :class:`_HostValues`). Resolving once per
-        mode cost 6 ms per cosmology at 144 modes, mostly in inspecting every
-        initial condition's signature at every mode: 0.85 s of a batch of 128
-        cosmologies.
+        mode would inspect every initial condition's signature at every mode.
 
         ``xp`` is the array module, ``numpy`` or ``jax.numpy``. With
         ``jax.numpy`` the base values may be traced: nothing is written in
@@ -1789,7 +1786,7 @@ class Equations:
         A vector state comes back with its components as the leading axis (a
         matrix with two), so a provider's ``F[l]`` and ``psi[i, l]`` index
         the component and broadcast over the rest. That lets :meth:`evaluate`
-        run the model over a whole history on the host. ``xp`` is ``numpy``
+        run the model over a full history on the host. ``xp`` is ``numpy``
         or ``jax.numpy``, matching ``y``.
         """
 
@@ -1828,7 +1825,7 @@ class Equations:
         for the two device names to run the model on the host.
 
         ``states`` restricts the function to a block of the model: ``y`` then
-        holds those states alone, packed in model order, and the function
+        holds only those states, packed in model order, and the function
         returns their rates. ``quantities`` are names the function takes as
         given, in a tuple ``q`` after ``p`` (``rhs(y, tau, p, q)``), in place
         of their providers. A block of a modax hierarchy reads these from the

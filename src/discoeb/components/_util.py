@@ -9,22 +9,23 @@ import numpy as np
 
 
 def generalized_gauss_laguerre_weights(n, alpha):
-    """
-    Return the nodes and weights of the n-point generalized Gauss-Laguerre
-    rule for integrals of the form
-        ∫₀∞ x^α f(x) e^(-x) dx.
+    r"""Return the nodes and weights of the n-point generalised Gauss-Laguerre rule.
 
-    Parameters:
-        n : int
-            Number of quadrature points.
-        alpha : float
-            The exponent in the weight function x^α e^(-x).
+    The rule integrates :math:`\int_0^\infty x^\alpha f(x) e^{-x} \, dx`.
 
-    Returns:
-        nodes : ndarray
-            The quadrature nodes (abscissae).
-        weights : ndarray
-            The quadrature weights.
+    Parameters
+    ----------
+    n : int
+        Number of quadrature points.
+    alpha : float
+        The exponent in the weight function :math:`x^\alpha e^{-x}`.
+
+    Returns
+    -------
+    nodes : ndarray
+        The quadrature nodes.
+    weights : ndarray
+        The quadrature weights.
     """
     # i = 1, ..., n
     i = jnp.arange(1, n + 1)
@@ -84,7 +85,7 @@ def neutrino_momentum_bins(nqmax: int):
     counts a generalised Gauss-Laguerre rule. ``dlnf0/dlnq = -q/(1 +
     exp(-q))`` is the log-derivative of the Fermi-Dirac background
     distribution that sources the ``psi`` hierarchy. Cached per ``nqmax``,
-    because the rule's eigendecomposition, op by op, cost a second
+    because the rule's eigendecomposition, op by op, costs a second
     of compiles per call.
     """
 

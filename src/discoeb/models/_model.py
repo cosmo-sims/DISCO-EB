@@ -156,11 +156,10 @@ class Model(Recombination):
         Unlike ``cls(**params)``, it accepts keys this model does not have
         while they keep their declared default (``w_DE_0 = -1`` for a model
         without dark energy), and ignores keys no component declares
-        (:meth:`validate_keys`). For a dictionary written for another
+        (:meth:`validate_keys`). Use it for a dictionary written for another
         model. Under ``jit`` or a derivative such a key's value is traced
-        and can't be checked, so the cosmology holds it for the solve, which
-        raises if anything differentiates it. The model reads none of it,
-        and a zero derivative would pass for an answer.
+        and can't be checked. The solve reads none of it, so its derivative
+        is zero.
         """
 
         cls.validate_keys(params)
@@ -327,22 +326,21 @@ class Model(Recombination):
 
         modax's Rodas5P kernel uses the pattern twice. It colours the column
         intersection graph, so a Jacobian costs ``n_colours + 1`` Enzyme
-        sweeps rather than ``nvar + 1``. And it orders the pattern,
+        sweeps instead of ``nvar + 1``. It also orders the pattern,
         factorises it symbolically and compiles a sparse LU and a pair of
         sparse triangular solves for that exact structure.
         :meth:`Equations.sparsity <discoeb.components._component.Equations.sparsity>` traces the
         pattern through the equations, so the tridiagonal free-streaming
         tails and the Einstein constraints that tie the metric, the fluids
-        and the lowest multipoles together come straight from the code that
-        writes them. The pattern is exact: the superset a colouring needs and
-        no more. For flat LCDM at the default truncations it has 165
+        and the lowest multipoles together come from the code that
+        writes them. The pattern is exact. For flat LCDM at the default truncations it has 165
         entries, 11 colours and 198 slots of ``L + U`` after AMD's fill-in
-        (``tests/test_eb_sparsity.py``).
+        (``tests/test_models.py``).
 
         The kernel factorises ``I/(h gamma) - J``. modax keeps a slot for every
         diagonal and resolves ``slot(i, i)`` through that table even where
         ``J`` has no entry (an undamped free-streaming multipole has none).
-        This needs modax at or after commit 9f54d12 (2026-11-01).
+        This needs modax at or after commit 9f54d12.
         """
 
         return cls.build().sparsity()
@@ -358,8 +356,8 @@ class Model(Recombination):
         each component's ``check`` hook runs on the keys it names
         (:meth:`DarkEnergy.check <discoeb.components.species.DarkEnergy.check>` needs
         ``w != -1``). A traced value, under ``jit``, has nothing to compare
-        yet and is skipped. Not ``check``: a model inherits its components'
-        ``check`` hooks.
+        yet and is skipped. The method is not named ``check`` because a model
+        inherits its components' ``check`` hooks.
         """
 
         values = _cosmology_dictionary(cosmology)
@@ -389,7 +387,7 @@ class Model(Recombination):
 
         The first half of :meth:`validate`: a key that another component
         declares and none of this model's must keep its declared default, or
-        the solve would ignore it without a word.
+        the solve would silently ignore it.
         """
 
         values = _cosmology_dictionary(cosmology)
@@ -412,7 +410,7 @@ class Model(Recombination):
     def hubble_constant(cls, cosmology):
         """Return ``H_0`` in km/s/Mpc: the model's expansion rate today, ``aH(a = 1)``.
 
-        The densities are physical, so ``H_0`` follows from them. A model
+        The densities are physical and determine ``H_0``. A model
         whose expansion rate reads a state of its own (a scalar field) has
         it only from a solve, as ``aH`` today, and raises ``TypeError``.
         """
@@ -442,7 +440,7 @@ class Model(Recombination):
         dark-energy density
         that makes the model expand at ``H_0`` today. The expansion rate
         squared is linear in a density, so one secant step from two
-        evaluations finds it exactly. Every other key passes through. Plain
+        evaluations finds it exactly. Every other key passes through. It is plain
         JAX arithmetic, so a derivative in ``H_0`` or ``Omega_m`` goes through it.
         """
 
