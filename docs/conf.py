@@ -21,7 +21,7 @@ extensions = [
     "sphinx_design",
 ]
 
-exclude_patterns = ["_build"]
+exclude_patterns = ["_build", "**/__pycache__"]
 # layout.html there removes the theme's top navbar.
 templates_path = ["_templates"]
 

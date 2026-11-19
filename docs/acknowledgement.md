@@ -1,5 +1,7 @@
 # Acknowledgement
 
+DISCO-EB builds on JAX, modax, Numba-CUDA-MLIR and Enzyme. Its recombination history adapts RECFAST by Douglas Scott and collaborators, and its accuracy tests compare against CLASS.
+
 ## Citation
 
 ```{include} ../README.md
@@ -20,7 +22,3 @@
 :language: text
 ```
 :::
-
-## Acknowledgements
-
-DISCO-EB builds on JAX, modax, Numba-CUDA-MLIR and Enzyme. Its recombination history adapts RECFAST by Douglas Scott and collaborators, and its accuracy tests compare against CLASS.

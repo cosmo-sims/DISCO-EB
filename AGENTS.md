@@ -107,6 +107,14 @@ The docs pages pull the overview, installation, quickstart, development,
 citation and license from `README.md` between `<!-- start:... -->` markers,
 so edit those there. Keep the prose short, active and plain.
 
+The site is laid out like modax's (2026-11-19): `index.md` (Quickstart),
+`motivations.md`, `design.md`, `development.md`, `acknowledgement.md`, then
+`usage/` (`models`, `cosmologies`, `solving`, `derivatives`,
+`approximations`), the example notebooks, and `api/` with one autodoc page
+per source folder (`components`, `models`, `solver`, `observables`). A
+docstring's equations are `.. math::` blocks in a raw string: a literal
+spanning two lines fails the `-W` build.
+
 ## Code Architecture
 
 ### Module Structure
@@ -847,8 +855,8 @@ The typical computation flow is:
 code cells between explanation, committed with its outputs. The docs show
 them through MyST-NB with `nb_execution_mode = "off"`: nothing runs at build
 time (they need a GPU), so the pages are the notebooks as last run.
-`docs/examples` is a symlink to `examples/`, and `examples/index.md` is the
-card grid and toctree. After changing a notebook, rerun it with `uv run
+`docs/examples` is a symlink to `examples/`, and the "Examples" toctree of
+`docs/index.md` lists the notebooks (a new one goes there). After changing a notebook, rerun it with `uv run
 jupyter execute --inplace examples/<name>.ipynb` (nbclient, dev group) and
 commit the outputs. ruff lints and formats the notebooks too. They replaced
 the old notebooks on 2026-11-16 (the CMB one moved to DISCO-CMB):
