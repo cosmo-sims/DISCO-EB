@@ -49,7 +49,7 @@ A model is a class whose bases are its components.
 :::
 
 :::{grid-item-card} Examples
-:link: examples/flat_lcdm_power_spectrum
+:link: examples/batched_power_spectra
 :link-type: doc
 
 Notebooks, from a first power spectrum to a Fisher forecast.
@@ -82,10 +82,10 @@ usage/approximations
 :hidden:
 :caption: Examples
 
-examples/flat_lcdm_power_spectrum
-examples/matter_power_derivative
+examples/batched_power_spectra
+examples/power_spectrum_derivative
 examples/power_spectrum_jacobian
-examples/compare_with_class
+examples/comparison_with_class
 examples/correlation_function_multipoles
 examples/redshift_space_power_response
 examples/fisher_forecast
