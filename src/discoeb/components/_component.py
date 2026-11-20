@@ -1226,21 +1226,57 @@ def _minimum_vertex_cut(weight, edges, sources, sinks) -> set:
 
 
 class Equations:
-    """Components, their state in declaration order, and the functions built from them.
+    """The equations of a list of components, on the host and on the device.
 
-    ``time`` names the independent variable of :meth:`build`. The
-    components write their rates per unit of a time of their own (the
-    conformal time), and ``clock`` names the quantity that converts: the
-    rate of ``time`` in it, so that the built right-hand side is every
-    rate divided by ``clock``. With ``time="lna"`` and ``clock="aH"``
-    (``d ln a / d tau``) the equations integrate in ``ln a``, the conformal
-    time being a state whose rate is one. Without a clock the rates are
-    returned as written.
+    The components declare states, parameters, sums and providers, and an
+    ``Equations`` resolves them into one system. It lays the states out in
+    a flat state vector and orders the providers by the names in their
+    signatures. Every method below works from that resolution.
 
-    The flat state holds the states in declaration order, except those
-    named in ``last``, which follow all the others (in declaration order
-    too). A solve in two blocks lays the blocks out one after the other, so
-    the joint model puts its background states last.
+    On the host, :meth:`evaluate` computes any quantity from given values,
+    with ``math`` or ``jax.numpy``. :meth:`initial_state` fills the state
+    vector from the states' initial conditions, and :meth:`state_values`
+    splits a state array back into named states. :meth:`hoisted` and
+    :meth:`frontier` find the quantities that depend on nothing but the
+    parameters, and the columns the kernel reads.
+
+    The structure of the system comes from tracing the providers.
+    :meth:`sparsity` returns the Jacobian's nonzero pattern. :meth:`stages`
+    splits the states into a background block and a perturbation block, and
+    :meth:`published` names the quantities the background hands to the
+    perturbations.
+
+    On the device, :meth:`build` generates the right-hand side
+    ``rhs(y, t, p) -> tuple`` that modax integrates, for the full system or
+    one block of it. :meth:`build_function` generates a device function for
+    any other quantities, such as a save hook's outputs.
+
+    A model's :meth:`~discoeb.Model.build` returns its ``Equations``, and
+    :func:`~discoeb.joint_model` adds the recombination block and builds
+    with ``time="a"`` and ``clock="a_prime"``, so every solve integrates in
+    the scale factor::
+
+        equations = joint_model(LCDM)
+        background, perturbations = equations.stages()
+        pattern = equations.sparsity()  # (nnz, 2)
+
+    Parameters
+    ----------
+    components
+        The component instances, in state order.
+    time
+        The name of the independent variable of :meth:`build`, ``tau`` by
+        default.
+    clock
+        The name of the rate of ``time`` in conformal time. The components
+        write their rates in conformal time, and :meth:`build` divides each
+        by ``clock``, so the system integrates in ``time``. Without a
+        clock, :meth:`build` returns the rates as written.
+    last
+        States that go after all the others in the state vector. The rest
+        keep declaration order. A solve in two blocks lays out one block
+        after the other, so the joint model puts its background states
+        last.
     """
 
     def __init__(
@@ -1356,15 +1392,15 @@ class Equations:
         return cache[key]
 
     def frontier(self, parameters: Iterable[str]) -> tuple[str, ...]:
-        """What the kernel reads of a cosmology: the ``parameters`` and hoisted quantities its providers name.
+        """Returns the columns of the parameter row that the kernel will read.
 
-        The providers that run in the kernel are all but the hoisted ones
-        (:meth:`hoisted`). Each parameter or hoisted quantity one of them
-        names in its signature is a value the host hands over, a column of
-        the parameter row. A parameter that only hoisted quantities read,
-        and a hoisted quantity that only other hoisted ones read, stay on
-        the host. The parameters come first, in the order given, then the
-        hoisted quantities in provider order.
+        Every provider except the hoisted ones (:meth:`hoisted`) runs in the
+        kernel. When one of them names a parameter or a hoisted quantity in
+        its signature, the host passes that value to the kernel as a column
+        of the parameter row. Parameters that only hoisted quantities read,
+        and hoisted quantities that only other hoisted quantities read, stay
+        on the host. The row lists the parameters first, in the order given,
+        then the hoisted quantities in provider order.
         """
 
         parameters = tuple(parameters)
