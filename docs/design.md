@@ -30,7 +30,7 @@ class ColdDarkMatter(Species):
 
 Here `continuity_c` reads the metric's `h_prime`, which the `Metric`
 component provides. `rho_cdm` adds to the sums `rho` and `rho_matter`, which
-the Friedmann equation and the initial conditions require. At compile time, DISCO-EB traces through all these methods, sorts them by dependency and compiles them into a single right-hand side function that defines the ODE system.
+the Friedmann equation and the initial conditions require. At compile time, DISCO-EB traces through all these methods, sorts them by dependency and compiles them into a single right-hand side function that defines the ODE system. Methods that depend only on cosmological parameters and not conformal time or scale factor will automatically be hoisted out of the ODE solve and evaluated once upfront. Methods that depend on conformal time or scale factor but not on wave mode (e.g. background expansion and non-perturbative recombination equations) will be split out into their own parent system and integrated with larger, independent step sizes than the perturbations, which are more oscillatory and stiff. See [modax hierarchies](https://lawrenceberry.github.io/modax/usage/sparse.html#hierarchies-of-one-way-coupled-blocks) for details.
 
 ## Fused integration of background, recombination and perturbations
 

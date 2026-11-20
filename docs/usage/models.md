@@ -46,13 +46,9 @@ Components are base classes that model a particular fluid species, interaction b
 
 Components consist of the following elemtents:
 
-- `State(size, initial=...)` is a state, scalar by default. `initial`
-  gives its starting value for the integration.
-- `Parameter(default)` is a constructor argument of every model with the
-  component. A method reads it by naming it. A method that reads only
-  parameters, such as `def omega_g(self, T_cmb)`, runs once per cosmology
-  before the solve, and the kernel reads its value.
-- `Setting(defult)` is a compile-time constant.
+- `State(size, initial=...)` is a state, scalar by default, with `initial` its starting value.
+- `Parameter(default)` defines a run-time parameter of the model.
+- `Setting(defult)` defines a compile-time constant.
 - `@derivative("x")` marks a contribution to the rate of the state `x`, in
   conformal time.
 - `@contributes("rho")` marks a contribution to a summed quantity. The gravity

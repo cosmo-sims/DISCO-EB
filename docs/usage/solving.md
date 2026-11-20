@@ -19,35 +19,28 @@ values = solve_eb(
 # values: (2, 2, 64, 100) = (cosmology, name, k, a)
 ```
 
-One GPU launch integrates every (wave mode, cosmology) pair. The solve
-runs in the scale factor from `discoeb.A_START` to 1, so `a = 1` is today
-for every cosmology. `a` must increase strictly. `k` must hold plain
-numbers, since it sets the shape of the launch.
+Every (wave mode, cosmology) pair will be integrated in a single GPU launch. The solve
+runs in coordinates of the scale factor from `discoeb.A_START` to 1, where `a = 1` is today
+for every cosmology.
 
-## Choosing what to keep
+## Choosing what the solve should return
 
-`solve_eb` records only the quantities named in `keep`:
+To save memory, `solve_eb` will return only the quantities named in `keep`, such as:
 
 | Name | Quantity |
 |---|---|
-| `delta_c`, `delta_b`, `theta_b`, `eta` | states, which {py:func}`~discoeb.state_names` lists for a model |
+| `delta_c`, `delta_b`, `theta_b` | overdensities and velocity divergences |
 | `F_0` ... `F_15`, `E_2` ..., `N_0` ..., `psi_0_1` | multipoles of the photon, polarization and neutrino hierarchies |
-| `R`, `alpha`, `h_prime` | the comoving curvature perturbation and the metric quantities |
+| `R`, `alpha`, `eta`, `h_prime` | the comoving curvature perturbation and the metric quantities |
 | `aH`, `tau` | the conformal expansion rate and the conformal time |
 | `xe`, `Tmat`, `cs2`, `opacity`, `kappa` | the recombination history |
 
-Any quantity a component of the model provides is a valid name. The value
-of `tau` today is the conformal age. The device stores
-`n_cosmologies * len(keep) * n_k * n_a` numbers and never the state
-history.
-
-`jnp.unstack(values, axis=1)` splits the result by name.
+Any method defined on a component is a valid return quantity. The solve returns an array of shape 
+`n_cosmologies * len(keep) * n_k * n_a` numbers. You can use `jnp.unstack(values, axis=1)` to split the result by name.
 
 ## The matter power spectrum
 
-{py:func}`~discoeb.matter_power_spectrum` turns the two matter contrasts of
-one cosmology into $P(k)$. Wrapped in `jax.jit`, one compiled function
-serves every cosmology of the model:
+{py:func}`~discoeb.matter_power_spectrum` computes $P(k)$ from the two matter contrasts:
 
 ```python
 import jax
@@ -55,7 +48,7 @@ import jax.numpy as jnp
 from discoeb import matter_power_spectrum
 
 @jax.jit
-def power_spectrum(cosmology):
+def solve_matter_power_spectrum(cosmology):
     values = solve_eb(
         cosmology,
         k,
@@ -76,20 +69,17 @@ def power_spectrum(cosmology):
     )
 ```
 
-For a batch, solve the list and map `matter_power_spectrum` over the
-cosmologies with `jax.vmap`, as the {doc}`first example <../examples/flat_lcdm_power_spectrum>` does.
+For a batch, solve the list of cosmologies and map `matter_power_spectrum` over the
+cosmologies with `jax.vmap`, as the {doc}`notebook example <../examples/batched_power_spectra>` does.
 
 ## Tolerances
 
 `rtol` and `atol` are the tolerances of the Rodas5P step controller.
 `error_weights={"F_2": 10.0}` weights named states in its error norm, and a
 weight can be a function of the wave numbers. `thermo_weight` weights the
-recombination block.
+error of the recombination block relative to the perturbations.
 
-## Quantities of your own
+## Custom quantities
 
-`extra=` appends stateless components to the model for one solve. Their
-methods read the model's quantities and provide new names for `keep`, which
-compile into the same kernel.
-[DISCO-CMB](https://github.com/lawrenceberry/DISCO-CMB) defines its
-line-of-sight sources this way.
+You can add functions to derive new quantities from the existing ones on the fly as part of the solve. Pass these functions via the `extra=` argument to the `solve_eb` function. The functions will be compiled into the same kernel and become available as return values via the `keep` argument. This is how [DISCO-CMB](https://github.com/lawrenceberry/DISCO-CMB) computes its
+line-of-sight source functions.

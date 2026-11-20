@@ -12,9 +12,9 @@ planck = LCDM(
 ```
 
 The constructor raises a `TypeError` for an unknown or missing parameter, and
-a static type checker will report the same based on the declarations.
+a static type checker will report the same based on type declarations.
 
-## Densities and the Hubble constant
+## Setting densities
 
 The densities evolved in the model are physical, $\omega_i = \Omega_i h^2$. To start
 from $\Omega_m$, $\Omega_b$ and $H_0$ instead, use:
@@ -28,7 +28,7 @@ planck = LCDM.from_density_parameters(
 
 which finds the `omega_de` that makes the model expand at `H_0` today.
 
-## Changing and converting
+## Changing parameters
 
 A cosmology is immutable. `replace` returns a changed copy:
 
@@ -36,16 +36,13 @@ A cosmology is immutable. `replace` returns a changed copy:
 heavier = planck.replace(omega_c=0.125)
 ```
 
-`planck.to_dict()` returns the parameters as a dictionary. `LCDM(**params)`
-builds a cosmology from one, and `LCDM.from_dict(params)` accepts a
-dictionary written for a larger model as long as the extra keys keep their
-defaults.
+`planck.to_dict()` returns the parameters as a dictionary and `LCDM.from_dict(params)` accepts a
+dictionary as input.
 
 ## Reionization
 
-`z_re` is the redshift of reionization, and 0, the default, means none. The
-optical depth is an output. Add
-{py:class}`~discoeb.components.recombination.ReionizationDepth` to a model
+`z_re` is the redshift of reionization, and defaults to 0. To compute the optical depth as an output, add
+{py:class}`~discoeb.components.recombination.ReionizationDepth` to the model
 and keep `kappa_reio`, whose value today is $\tau_\mathrm{reio}$:
 
 ```python
@@ -53,14 +50,3 @@ from discoeb.components.recombination import ReionizationDepth
 
 LCDM_REIO = LCDM.add(ReionizationDepth, name="LCDM+reio")
 ```
-
-Take derivatives in `z_re` with this model too. Its extra state makes the
-solver resolve the reionization step, and without it the derivative is
-inaccurate.
-
-## Cosmologies under `jit`
-
-A cosmology is a JAX pytree whose leaves are its parameters. `jax.jit`
-traces them, so one compiled function serves every cosmology of a model.
-A traced cosmology has no values yet, so the model cannot validate it (for
-instance `w_DE_0 = -1` under `W0WACDM`).
