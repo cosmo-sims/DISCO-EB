@@ -1,9 +1,9 @@
 # Solver
 
-`solve_eb` is the entry point. It integrates every (wave mode, cosmology)
-pair in one launch of a [modax](https://lawrenceberry.github.io/modax/)
-Rodas5P kernel. See [Solving a batch](../usage/solving.md) and [Computing
-derivatives](../usage/derivatives.md).
+```{eval-rst}
+.. automodule:: discoeb.solver
+   :no-members:
+```
 
 ```{eval-rst}
 .. autofunction:: discoeb.solve_eb
